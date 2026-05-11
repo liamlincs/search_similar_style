@@ -2,7 +2,7 @@
   "ollama": {
     "host": "http://127.0.0.1:11434",
     "model": "deepseek-ocr",
-    "timeout_sec": 60
+    "timeout_sec": 600
   },
   "paths": {
     "standard_dir": "data/standard_samples",

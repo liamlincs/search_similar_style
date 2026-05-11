@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import re
+import time
 from collections import defaultdict
 from io import BytesIO
 from pathlib import Path
@@ -31,7 +32,14 @@ def to_png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def call_ollama_ocr_chat(img_bytes: bytes, model: str, host: str, timeout_sec: int) -> str:
+def call_ollama_ocr_chat(
+    img_bytes: bytes,
+    model: str,
+    host: str,
+    timeout_sec: int,
+    num_predict: int = 16,
+    retries: int = 3,
+) -> str:
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     prompt = (
         "只提取图片左上角第一行款号，并且只返回一个字符串。\n"
@@ -49,14 +57,34 @@ def call_ollama_ocr_chat(img_bytes: bytes, model: str, host: str, timeout_sec: i
             }
         ],
         "stream": False,
-        "options": {"temperature": 0},
+        "options": {"temperature": 0, "num_predict": num_predict},
         "keep_alive": "30m",
     }
-    resp = requests.post(f"{host.rstrip('/')}/api/chat", json=payload, timeout=timeout_sec)
-    resp.raise_for_status()
-    data = resp.json()
-    msg = data.get("message", {}) if isinstance(data, dict) else {}
-    return str(msg.get("content", "")).strip()
+    last_err: Optional[Exception] = None
+    for i in range(retries):
+        try:
+            resp = requests.post(f"{host.rstrip('/')}/api/chat", json=payload, timeout=timeout_sec)
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data.get("message", {}) if isinstance(data, dict) else {}
+            return str(msg.get("content", "")).strip()
+        except Exception as e:
+            last_err = e
+            if i < retries - 1:
+                time.sleep(2 ** i)
+            continue
+    raise RuntimeError(f"chat request failed after retries: {last_err}")
+
+
+def warmup_model(model: str, host: str, timeout_sec: int) -> None:
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "stream": False,
+        "options": {"temperature": 0, "num_predict": 4},
+        "keep_alive": "30m",
+    }
+    requests.post(f"{host.rstrip('/')}/api/chat", json=payload, timeout=timeout_sec).raise_for_status()
 
 
 def normalize_code(text: str, fallback_stem: str) -> str:
@@ -79,7 +107,7 @@ def try_extract_code_from_image(gray: Image.Image, model: str, host: str, timeou
     arr = ImageOps.autocontrast(gray)
     for th in (140, 160, 180):
         bw = arr.point(lambda p: 255 if p > th else 0, mode="1").convert("L")
-        raw = call_ollama_ocr_chat(to_png_bytes(bw), model, host, timeout_sec)
+        raw = call_ollama_ocr_chat(to_png_bytes(bw), model, host, timeout_sec, num_predict=16, retries=3)
         code = normalize_code(raw, "UNKNOWN")
         if re.fullmatch(r"[A-Za-z0-9_-]+#", code):
             return code
@@ -102,7 +130,7 @@ def main() -> None:
     parser.add_argument("--pattern", type=str, default="B*.png")
     parser.add_argument("--model", type=str, default="deepseek-ocr")
     parser.add_argument("--host", type=str, default="http://127.0.0.1:11434")
-    parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -118,7 +146,7 @@ def main() -> None:
             args.model = str(ollama_cfg["model"])
         if args.host == "http://127.0.0.1:11434" and ollama_cfg.get("host"):
             args.host = str(ollama_cfg["host"])
-        if args.timeout == 60 and ollama_cfg.get("timeout_sec") is not None:
+        if args.timeout == 600 and ollama_cfg.get("timeout_sec") is not None:
             args.timeout = int(ollama_cfg["timeout_sec"])
 
     files = sorted(args.standard_dir.glob(args.pattern))
@@ -126,6 +154,13 @@ def main() -> None:
         files = sorted(args.standard_dir.glob("*.png"))
     if not files:
         raise RuntimeError(f"no standard images found in {args.standard_dir}")
+
+    # Warmup once to avoid first-request timeout on large OCR model.
+    try:
+        warmup_model(args.model, args.host, min(args.timeout, 120))
+        logging.info("ollama warmup ok: model=%s host=%s", args.model, args.host)
+    except Exception as e:
+        logging.warning("ollama warmup failed, continue anyway: %s", e)
 
     # 1) OCR -> style code (failed OCR will be skipped, not renamed)
     plan = []
