@@ -21,15 +21,20 @@ DEFAULT_CONFIG = Path("config/search_config.json")
 
 
 def collect_images(base: Path, pattern: str, exts: List[str]) -> List[Path]:
-    files = sorted(base.glob(pattern))
-    if files:
-        return files
     allow = {e.lower().lstrip(".") for e in exts}
     out: List[Path] = []
-    for p in sorted(base.glob("*")):
+    for p in sorted(base.glob(pattern)):
         if not p.is_file():
             continue
         if p.suffix.lower().lstrip(".") in allow:
+            out.append(p)
+    if out:
+        return out
+    # fallback: if pattern misses files, scan directory and keep only allowed image extensions
+    for p in sorted(base.glob("*")):
+        if not p.is_file():
+            continue
+        if p.suffix.lower().lstrip(".") in allow and p not in out:
             out.append(p)
     return out
 

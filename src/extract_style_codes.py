@@ -20,16 +20,22 @@ OCR_ENGINE = RapidOCR()
 
 
 def collect_images(base: Path, pattern: str, exts: list[str]) -> list[Path]:
-    files = sorted(base.glob(pattern))
-    if files:
-        return files
     allow = {e.lower().lstrip(".") for e in exts}
     out = []
-    for p in sorted(base.glob("*")):
+    for p in sorted(base.glob(pattern)):
         if not p.is_file():
             continue
         ext = p.suffix.lower().lstrip(".")
         if ext in allow:
+            out.append(p)
+    if out:
+        return out
+    # fallback: if pattern misses files, scan directory and keep only allowed image extensions
+    for p in sorted(base.glob("*")):
+        if not p.is_file():
+            continue
+        ext = p.suffix.lower().lstrip(".")
+        if ext in allow and p not in out:
             out.append(p)
     return out
 
