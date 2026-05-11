@@ -42,38 +42,47 @@ def call_ollama_ocr_chat(
     retries: int = 3,
 ) -> str:
     b64 = base64.b64encode(img_bytes).decode("utf-8")
-    prompt = (
-        "只提取图片左上角第一行款号，并且只返回一个字符串。\n"
-        "返回格式必须匹配: [A-Za-z0-9_-]+#\n"
-        "如果无法识别，严格返回: UNKNOWN#\n"
-        "禁止输出解释、禁止换行、禁止其他字符。"
-    )
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": prompt,
-                "images": [b64],
-            }
-        ],
-        "stream": False,
-        "options": {"temperature": 0, "num_predict": num_predict},
-        "keep_alive": "30m",
-    }
+    prompts = [
+        "Read top-left first-line style code. Output only code ending with #. Else UNKNOWN#.",
+        "只返回左上角第一行款号，且必须以#结尾；无法识别返回UNKNOWN#。",
+        "Output one token only: <STYLE_CODE#> or UNKNOWN#.",
+    ]
     last_err: Optional[Exception] = None
-    for i in range(retries):
-        try:
-            resp = requests.post(f"{host.rstrip('/')}/api/chat", json=payload, timeout=timeout_sec)
-            resp.raise_for_status()
-            data = resp.json()
-            msg = data.get("message", {}) if isinstance(data, dict) else {}
-            return str(msg.get("content", "")).strip()
-        except Exception as e:
-            last_err = e
-            if i < retries - 1:
-                time.sleep(2 ** i)
-            continue
+    for prompt in prompts:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an OCR parser. Never explain.",
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [b64],
+                },
+            ],
+            "stream": False,
+            "options": {"temperature": 0, "num_predict": num_predict},
+            "keep_alive": "30m",
+        }
+        for i in range(retries):
+            try:
+                resp = requests.post(f"{host.rstrip('/')}/api/chat", json=payload, timeout=timeout_sec)
+                resp.raise_for_status()
+                data = resp.json()
+                msg = data.get("message", {}) if isinstance(data, dict) else {}
+                out = str(msg.get("content", "")).strip()
+                # reject obvious prompt-echo garbage and try next prompt
+                bad_markers = ("禁止换行", "返回格式必须", "[A-Za-z0-9_-]+#", "Never explain")
+                if any(m in out for m in bad_markers):
+                    raise RuntimeError(f"prompt echo detected: {out[:80]}")
+                return out
+            except Exception as e:
+                last_err = e
+                if i < retries - 1:
+                    time.sleep(2 ** i)
+                continue
     raise RuntimeError(f"chat request failed after retries: {last_err}")
 
 
