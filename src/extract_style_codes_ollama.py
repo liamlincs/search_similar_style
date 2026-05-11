@@ -98,8 +98,9 @@ def main() -> None:
     if not files:
         raise RuntimeError(f"no standard images found in {args.standard_dir}")
 
-    # 1) OCR -> style code
+    # 1) OCR -> style code (failed OCR will be skipped, not renamed)
     plan = []
+    skipped = []
     seq = defaultdict(int)
     for p in files:
         try:
@@ -107,8 +108,9 @@ def main() -> None:
             raw = call_ollama_ocr(header, args.model, args.host, args.timeout)
             code = normalize_code(raw, p.stem)
         except Exception as e:
-            code = f"UNKNOWN#{p.stem}"
             logging.warning("ocr failed: %s err=%s", p.name, e)
+            skipped.append(p.name)
+            continue
 
         prefix = code_to_filename_prefix(code)
         idx = seq[prefix]
@@ -120,6 +122,9 @@ def main() -> None:
     if args.dry_run:
         for old, new, code in plan:
             logging.info("DRY %s -> %s (code=%s)", old.name, new.name, code)
+        if skipped:
+            logging.info("DRY skipped (ocr failed): %s", ", ".join(skipped))
+        logging.info("DRY summary: success=%d skipped=%d", len(plan), len(skipped))
         return
 
     temp_paths = []
@@ -132,7 +137,9 @@ def main() -> None:
         tmp.rename(new)
         logging.info("%s -> %s (code=%s)", tmp.name, new.name, code)
 
-    logging.info("rename done. total=%d", len(plan))
+    if skipped:
+        logging.info("skipped (ocr failed): %s", ", ".join(skipped))
+    logging.info("rename done. success=%d skipped=%d", len(plan), len(skipped))
 
 
 if __name__ == "__main__":
