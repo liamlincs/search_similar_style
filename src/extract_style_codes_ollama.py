@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from io import BytesIO
 from pathlib import Path
+from typing import Optional
 
 import requests
 from PIL import Image, ImageEnhance, ImageOps
@@ -15,33 +16,47 @@ SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 DEFAULT_CONFIG = Path("config/search_config.json")
 
 
-def crop_header(img_path: Path) -> bytes:
+def crop_header_gray(img_path: Path) -> Image.Image:
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
-    crop = img.crop((0, 0, int(w * 0.65), int(h * 0.2)))
+    crop = img.crop((0, 0, int(w * 0.45), int(h * 0.12)))
     gray = ImageOps.grayscale(crop)
-    gray = ImageEnhance.Contrast(gray).enhance(2.0)
+    gray = ImageEnhance.Contrast(gray).enhance(2.8)
+    return gray
+
+
+def to_png_bytes(img: Image.Image) -> bytes:
     buf = BytesIO()
-    gray.save(buf, format="PNG")
+    img.save(buf, format="PNG")
     return buf.getvalue()
 
 
-def call_ollama_ocr(img_bytes: bytes, model: str, host: str, timeout_sec: int) -> str:
+def call_ollama_ocr_chat(img_bytes: bytes, model: str, host: str, timeout_sec: int) -> str:
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     prompt = (
-        "读取图片左上角第一行款号，只返回一个字符串。"
-        "如果识别到款号，应该以#结尾。不要返回解释。"
+        "只提取图片左上角第一行款号，并且只返回一个字符串。\n"
+        "返回格式必须匹配: [A-Za-z0-9_-]+#\n"
+        "如果无法识别，严格返回: UNKNOWN#\n"
+        "禁止输出解释、禁止换行、禁止其他字符。"
     )
     payload = {
         "model": model,
-        "prompt": prompt,
-        "images": [b64],
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [b64],
+            }
+        ],
         "stream": False,
         "options": {"temperature": 0},
+        "keep_alive": "30m",
     }
-    resp = requests.post(f"{host.rstrip('/')}/api/generate", json=payload, timeout=timeout_sec)
+    resp = requests.post(f"{host.rstrip('/')}/api/chat", json=payload, timeout=timeout_sec)
     resp.raise_for_status()
-    return str(resp.json().get("response", "")).strip()
+    data = resp.json()
+    msg = data.get("message", {}) if isinstance(data, dict) else {}
+    return str(msg.get("content", "")).strip()
 
 
 def normalize_code(text: str, fallback_stem: str) -> str:
@@ -57,6 +72,20 @@ def normalize_code(text: str, fallback_stem: str) -> str:
             if token:
                 return token
     return f"UNKNOWN#{fallback_stem}"
+
+
+def try_extract_code_from_image(gray: Image.Image, model: str, host: str, timeout_sec: int) -> Optional[str]:
+    # Multi-threshold retry; accept only strict code regex.
+    arr = ImageOps.autocontrast(gray)
+    for th in (140, 160, 180):
+        bw = arr.point(lambda p: 255 if p > th else 0, mode="1").convert("L")
+        raw = call_ollama_ocr_chat(to_png_bytes(bw), model, host, timeout_sec)
+        code = normalize_code(raw, "UNKNOWN")
+        if re.fullmatch(r"[A-Za-z0-9_-]+#", code):
+            return code
+        if code == "UNKNOWN#":
+            continue
+    return None
 
 
 def code_to_filename_prefix(code: str) -> str:
@@ -104,9 +133,10 @@ def main() -> None:
     seq = defaultdict(int)
     for p in files:
         try:
-            header = crop_header(p)
-            raw = call_ollama_ocr(header, args.model, args.host, args.timeout)
-            code = normalize_code(raw, p.stem)
+            gray = crop_header_gray(p)
+            code = try_extract_code_from_image(gray, args.model, args.host, args.timeout)
+            if code is None:
+                raise RuntimeError("no valid style code matched regex")
         except Exception as e:
             logging.warning("ocr failed: %s err=%s", p.name, e)
             skipped.append(p.name)
