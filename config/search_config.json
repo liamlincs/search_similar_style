@@ -4,7 +4,8 @@
   },
   "paths": {
     "standard_dir": "data/standard_samples",
-    "standard_pattern": "B*.png",
+    "standard_pattern": "*",
+    "image_exts": ["png", "jpg", "jpeg"],
     "test_dir": "data/test_samples"
   },
   "search": {

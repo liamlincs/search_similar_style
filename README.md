@@ -16,7 +16,8 @@
 关键项：
 - `ocr.backend`：当前为 `rapidocr`（本地OCR，不依赖 deepseek / tesseract）
 - `paths.standard_dir`：标样目录
-- `paths.standard_pattern`：标样匹配模式（如 `B*.png`）
+- `paths.standard_pattern`：标样匹配模式（建议 `*`）
+- `paths.image_exts`：支持的图片后缀（如 `["png","jpg","jpeg"]`）
 - `search.top_k`：返回前 K 个近似款号
 - `search.candidate_multiplier`：先召回更多图片再按款号去重
 - `search.feature_backend`：`clip` 或 `classic`（推荐 `clip`）
@@ -52,9 +53,11 @@ python src/extract_style_codes.py --dry-run
 
 ```bash
 python src/search_similar_return_code.py data/test_samples/T01.png
+# 或
+python src/search_similar_return_code.py data/test_samples/T01.jpg
 ```
 
-输出文件：`outputs/test_search_return_style_code.json`
+输出：标准输出 JSON（可自行重定向到文件）
 
 ## 图片近似检索原理
 

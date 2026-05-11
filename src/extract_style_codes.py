@@ -19,6 +19,21 @@ DEFAULT_CONFIG = Path("config/search_config.json")
 OCR_ENGINE = RapidOCR()
 
 
+def collect_images(base: Path, pattern: str, exts: list[str]) -> list[Path]:
+    files = sorted(base.glob(pattern))
+    if files:
+        return files
+    allow = {e.lower().lstrip(".") for e in exts}
+    out = []
+    for p in sorted(base.glob("*")):
+        if not p.is_file():
+            continue
+        ext = p.suffix.lower().lstrip(".")
+        if ext in allow:
+            out.append(p)
+    return out
+
+
 def build_header_crops(img_path: Path) -> list[Image.Image]:
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
@@ -149,12 +164,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="提取左上角款号并重命名为 款号_000.png（本地OCR）")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--standard-dir", type=Path, default=Path("data/standard_samples"))
-    parser.add_argument("--pattern", type=str, default="B*.png")
+    parser.add_argument("--pattern", type=str, default="*")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
+    cfg = {}
     if args.config.exists():
         cfg = json.loads(args.config.read_text(encoding="utf-8"))
         path_cfg = cfg.get("paths", {})
@@ -167,9 +183,8 @@ def main() -> None:
     else:
         logging.info("tesseract not found; using rapidocr only")
 
-    files = sorted(args.standard_dir.glob(args.pattern))
-    if not files:
-        files = sorted(args.standard_dir.glob("*.png"))
+    exts = cfg.get("paths", {}).get("image_exts", ["png", "jpg", "jpeg"]) if args.config.exists() else ["png", "jpg", "jpeg"]
+    files = collect_images(args.standard_dir, args.pattern, exts)
     if not files:
         raise RuntimeError(f"no standard images found in {args.standard_dir}")
 

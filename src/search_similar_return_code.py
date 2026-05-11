@@ -20,10 +20,22 @@ from features import extract_feature
 DEFAULT_CONFIG = Path("config/search_config.json")
 
 
-def build_feature_db(standard_dir: Path, pattern: str, backend: str) -> Tuple[List[str], np.ndarray]:
-    files = sorted(standard_dir.glob(pattern))
-    if not files:
-        files = sorted(standard_dir.glob("*.png"))
+def collect_images(base: Path, pattern: str, exts: List[str]) -> List[Path]:
+    files = sorted(base.glob(pattern))
+    if files:
+        return files
+    allow = {e.lower().lstrip(".") for e in exts}
+    out: List[Path] = []
+    for p in sorted(base.glob("*")):
+        if not p.is_file():
+            continue
+        if p.suffix.lower().lstrip(".") in allow:
+            out.append(p)
+    return out
+
+
+def build_feature_db(standard_dir: Path, pattern: str, backend: str, exts: List[str]) -> Tuple[List[str], np.ndarray]:
+    files = collect_images(standard_dir, pattern, exts)
     if not files:
         raise RuntimeError(f"no standard images found in {standard_dir}")
 
@@ -81,7 +93,7 @@ def topk_style_codes(ranked_images: List[Tuple[str, float]], top_k_codes: int) -
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="输入1张测试图，返回近似款号(JSON)")
-    parser.add_argument("query_png", type=Path, help="需要检索的png图片路径")
+    parser.add_argument("query_image", type=Path, help="需要检索的图片路径（支持 png/jpg/jpeg）")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     args = parser.parse_args()
 
@@ -95,13 +107,14 @@ def main() -> None:
 
     standard_dir = Path(path_cfg.get("standard_dir", "data/standard_samples"))
     standard_pattern = str(path_cfg.get("standard_pattern", "B*.png"))
+    image_exts = list(path_cfg.get("image_exts", ["png", "jpg", "jpeg"]))
     top_k = int(search_cfg.get("top_k", 5))
     candidate_multiplier = int(search_cfg.get("candidate_multiplier", 20))
     feature_backend = str(search_cfg.get("feature_backend", "clip"))
 
-    names, feats = build_feature_db(standard_dir, standard_pattern, feature_backend)
+    names, feats = build_feature_db(standard_dir, standard_pattern, feature_backend, image_exts)
 
-    query = args.query_png
+    query = args.query_image
     if not query.exists():
         raise FileNotFoundError(f"query image not found: {query}")
 
