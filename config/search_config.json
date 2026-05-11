@@ -1,0 +1,18 @@
+{
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "model": "deepseek-ocr",
+    "timeout_sec": 60
+  },
+  "paths": {
+    "standard_dir": "data/standard_samples",
+    "standard_pattern": "B*.png",
+    "test_dir": "data/test_samples",
+    "search_result": "outputs/test_search_return_style_code.json"
+  },
+  "search": {
+    "top_k": 5,
+    "candidate_multiplier": 20,
+    "feature_backend": "clip"
+  }
+}
