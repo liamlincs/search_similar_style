@@ -21,9 +21,10 @@ DEFAULT_CONFIG = Path("config/search_config.json")
 def crop_header_gray(img_path: Path) -> Image.Image:
     img = Image.open(img_path).convert("RGB")
     w, h = img.size
-    crop = img.crop((0, 0, int(w * 0.45), int(h * 0.12)))
+    crop = img.crop((0, 0, int(w * 0.65), int(h * 0.20)))
     gray = ImageOps.grayscale(crop)
-    gray = ImageEnhance.Contrast(gray).enhance(2.8)
+    gray = ImageEnhance.Contrast(gray).enhance(2.0)
+    gray = gray.resize((gray.width * 2, gray.height * 2), Image.BICUBIC)
     return gray
 
 
@@ -146,12 +147,16 @@ def extract_code_relaxed(text: str) -> Optional[str]:
 
 
 def try_extract_code_from_image(gray: Image.Image, model: str, host: str, timeout_sec: int) -> Optional[str]:
-    # Multi-threshold retry; accept only strict code regex.
+    # First try enhanced grayscale, then threshold variants.
     arr = ImageOps.autocontrast(gray)
-    for th in (140, 160, 180):
+    variants = [("gray", arr)]
+    for th in (130, 150, 170):
         bw = arr.point(lambda p: 255 if p > th else 0, mode="1").convert("L")
-        raw = call_ollama_ocr_chat(to_png_bytes(bw), model, host, timeout_sec, num_predict=16, retries=3)
-        logging.info("ocr raw(th=%d): %s", th, _clean_ocr_text(raw)[:200])
+        variants.append((f"bw{th}", bw))
+
+    for tag, img in variants:
+        raw = call_ollama_ocr_chat(to_png_bytes(img), model, host, timeout_sec, num_predict=64, retries=3)
+        logging.info("ocr raw(%s): %s", tag, _clean_ocr_text(raw)[:200])
         code = extract_code_relaxed(raw)
         if code and re.fullmatch(r"[A-Za-z0-9_-]+#", code):
             return code
