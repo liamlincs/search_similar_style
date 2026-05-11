@@ -14,8 +14,7 @@
 配置文件：`config/search_config.json`
 
 关键项：
-- `ollama.host`：默认 `http://127.0.0.1:11434`
-- `ollama.model`：默认 `deepseek-ocr`
+- `ocr.backend`：当前为 `rapidocr`（本地OCR，不依赖 deepseek / tesseract）
 - `paths.standard_dir`：标样目录
 - `paths.standard_pattern`：标样匹配模式（如 `B*.png`）
 - `search.top_k`：返回前 K 个近似款号
@@ -40,13 +39,13 @@ python scripts/download_clip_model.py
 ### 1) 提取款号并重命名标样
 
 ```bash
-python src/extract_style_codes_ollama.py
+python src/extract_style_codes.py
 ```
 
 可先预览：
 
 ```bash
-python src/extract_style_codes_ollama.py --dry-run
+python src/extract_style_codes.py --dry-run
 ```
 
 ### 2) 检索单张测试图并返回近似款号 JSON

@@ -1,11 +1,19 @@
 import argparse
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 from PIL import Image
+
+# Silence known transformers/torch deprecation warnings that do not affect runtime results.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*torch\.utils\._pytree\._register_pytree_node is deprecated.*",
+    category=UserWarning,
+)
 
 from clip_features import extract_feature_clip
 from features import extract_feature
@@ -87,7 +95,6 @@ def main() -> None:
 
     standard_dir = Path(path_cfg.get("standard_dir", "data/standard_samples"))
     standard_pattern = str(path_cfg.get("standard_pattern", "B*.png"))
-    out_path = Path(path_cfg.get("search_result", "outputs/test_search_return_style_code.json"))
     top_k = int(search_cfg.get("top_k", 5))
     candidate_multiplier = int(search_cfg.get("candidate_multiplier", 20))
     feature_backend = str(search_cfg.get("feature_backend", "clip"))
@@ -116,10 +123,7 @@ def main() -> None:
     else:
         logging.info("%s -> no result", query.name)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    logging.info("saved: %s", out_path)
 
 
 if __name__ == "__main__":
