@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from collections import defaultdict
 from io import BytesIO
 from pathlib import Path
@@ -102,17 +103,49 @@ def normalize_code(text: str, fallback_stem: str) -> str:
     return f"UNKNOWN#{fallback_stem}"
 
 
+def _clean_ocr_text(text: str) -> str:
+    t = unicodedata.normalize("NFKC", text)
+    # normalize common punctuations/spaces
+    t = t.replace("：", ":").replace("＃", "#")
+    t = t.replace("\n", " ").replace("\r", " ").strip()
+    t = re.sub(r"\s+", " ", t)
+    return t
+
+
+def extract_code_relaxed(text: str) -> Optional[str]:
+    t = _clean_ocr_text(text)
+    if not t:
+        return None
+
+    # Fast path: strict match in whole text
+    m = re.search(r"([A-Za-z0-9_-]+#)", t)
+    if m:
+        return m.group(1)
+
+    # If contains '#', keep left token-ish chars until '#'
+    if "#" in t:
+        left = t[: t.find("#")]
+        left = re.sub(r"[^A-Za-z0-9_-]", "", left)
+        if left:
+            return f"{left}#"
+
+    # Last chance: patterns like 'code: AB-12'
+    m2 = re.search(r"(?:code|款号|style)\s*[:：]?\s*([A-Za-z0-9_-]{2,})", t, flags=re.IGNORECASE)
+    if m2:
+        return f"{m2.group(1)}#"
+    return None
+
+
 def try_extract_code_from_image(gray: Image.Image, model: str, host: str, timeout_sec: int) -> Optional[str]:
     # Multi-threshold retry; accept only strict code regex.
     arr = ImageOps.autocontrast(gray)
     for th in (140, 160, 180):
         bw = arr.point(lambda p: 255 if p > th else 0, mode="1").convert("L")
         raw = call_ollama_ocr_chat(to_png_bytes(bw), model, host, timeout_sec, num_predict=16, retries=3)
-        code = normalize_code(raw, "UNKNOWN")
-        if re.fullmatch(r"[A-Za-z0-9_-]+#", code):
+        logging.info("ocr raw(th=%d): %s", th, _clean_ocr_text(raw)[:200])
+        code = extract_code_relaxed(raw)
+        if code and re.fullmatch(r"[A-Za-z0-9_-]+#", code):
             return code
-        if code == "UNKNOWN#":
-            continue
     return None
 
 
