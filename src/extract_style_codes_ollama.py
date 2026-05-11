@@ -126,23 +126,35 @@ def extract_code_relaxed(text: str) -> Optional[str]:
     t = _clean_ocr_text(text)
     if not t:
         return None
+    # Reject obvious prompt-echo / instruction leakage.
+    bad_markers = (
+        "Code ending with #",
+        "Else UNKNOWN#",
+        "[A-Za-z0-9_-]+#",
+        "UNKNOWN#.",
+    )
+    if any(m in t for m in bad_markers):
+        return None
 
     # Fast path: strict match in whole text
     m = re.search(r"([A-Za-z0-9_-]+#)", t)
     if m:
-        return m.group(1)
+        code = m.group(1)
+        return None if code == "UNKNOWN#" else code
 
     # If contains '#', keep left token-ish chars until '#'
     if "#" in t:
         left = t[: t.find("#")]
         left = re.sub(r"[^A-Za-z0-9_-]", "", left)
         if left:
-            return f"{left}#"
+            code = f"{left}#"
+            return None if code == "UNKNOWN#" else code
 
     # Last chance: patterns like 'code: AB-12'
     m2 = re.search(r"(?:code|款号|style)\s*[:：]?\s*([A-Za-z0-9_-]{2,})", t, flags=re.IGNORECASE)
     if m2:
-        return f"{m2.group(1)}#"
+        code = f"{m2.group(1)}#"
+        return None if code == "UNKNOWN#" else code
     return None
 
 
