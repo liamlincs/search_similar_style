@@ -3,7 +3,7 @@ Pillow>=10.0
 torch>=2.2
 transformers>=4.42
 rapidocr-onnxruntime>=1.4.4
-opencv-python==4.10.0.84
+opencv-python-headless==4.10.0.84
 fastapi>=0.111
 uvicorn>=0.30
 python-multipart>=0.0.9
