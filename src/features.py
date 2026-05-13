@@ -116,3 +116,43 @@ def extract_garment_color_feature(image: Image.Image, bins: Tuple[int, int, int]
     sel = rgb[mask]
     sel_img = sel.reshape(-1, 1, 3)
     return _hsv_hist(sel_img, bins=bins)
+
+
+def extract_stripe_feature(
+    image: Image.Image,
+    fft_keep: int = 24,
+    resize_hw: Tuple[int, int] = (192, 192),
+) -> np.ndarray:
+    rgb = np.asarray(image.convert("RGB").resize((resize_hw[1], resize_hw[0]), Image.BILINEAR), dtype=np.uint8)
+    gray = _rgb_to_gray(rgb)
+
+    # Keep foreground and suppress top banner noise.
+    fg = np.any(rgb < 240, axis=-1).astype(np.float32)
+    cut = min(24, fg.shape[0])
+    fg[:cut, :] = 0.0
+
+    if float(fg.sum()) < 64:
+        fg = np.ones_like(fg, dtype=np.float32)
+
+    denom_y = np.clip(fg.sum(axis=1), 1.0, None)
+    denom_x = np.clip(fg.sum(axis=0), 1.0, None)
+    proj_y = (gray * fg).sum(axis=1) / denom_y
+    proj_x = (gray * fg).sum(axis=0) / denom_x
+
+    def _fft_mag(sig: np.ndarray, k: int) -> np.ndarray:
+        s = sig.astype(np.float32)
+        s = s - s.mean()
+        spec = np.abs(np.fft.rfft(s))
+        # remove DC
+        spec = spec[1 : 1 + k]
+        if spec.shape[0] < k:
+            spec = np.pad(spec, (0, k - spec.shape[0]))
+        spec = spec.astype(np.float32)
+        spec /= (spec.sum() + 1e-8)
+        return spec
+
+    fy = _fft_mag(proj_y, fft_keep)
+    fx = _fft_mag(proj_x, fft_keep)
+    feat = np.concatenate([fy, fx]).astype(np.float32)
+    feat /= (np.linalg.norm(feat) + 1e-8)
+    return feat

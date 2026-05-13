@@ -59,6 +59,58 @@ python src/search_similar_return_code.py data/test_samples/T01.jpg
 
 输出：标准输出 JSON（可自行重定向到文件）
 
+### 3) FastAPI 对外服务（保持原命令行不变，新增 API）
+
+前置安装与激活：
+
+```bash
+cd /Users/tk/Workspace/search_similar_style
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
+启动：
+
+```bash
+uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+```
+
+健康检查：
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+上传图片检索：
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/search" \
+  -H "X-API-Key: replace-with-real-key-a" \
+  -F "file=@data/test_samples/T03.jpg"
+```
+
+返回 topk 并内嵌 base64 图片（示例：仅前2张）：
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/search?include_image_base64=true&base64_topn=2" \
+  -H "X-API-Key: replace-with-real-key-a" \
+  -F "file=@data/test_samples/T03.jpg"
+```
+
+返回字段：
+- `style_code`：命中款号
+- `best_standard_image`：命中的标样图片文件名
+- `best_standard_image_url`：可直接给其它系统展示的图片 URL
+- `best_standard_image_base64`：图片 base64（仅当 `include_image_base64=true`）
+- `best_standard_image_mime`：图片 MIME（如 `image/jpeg`）
+- `score`：分数
+
+鉴权配置：
+- `config/search_config.json` 的 `auth.enabled` 控制是否启用 API Key
+- `auth.api_keys` 可配置多个 `{user, key}`，用于给不同用户分配不同 key
+- 除 `/health` 外，其它接口都需要请求头 `X-API-Key`
+
 ## 图片近似检索原理
 
 当前检索采用“向量召回 + 款号去重”的方式：

@@ -1,0 +1,16 @@
+{
+  "labels": [
+    {
+      "query_image": "data/test_samples/T01.png",
+      "style_code": "GZ25-1177-1"
+    },
+    {
+      "query_image": "data/test_samples/T02.jpg",
+      "style_code": "GB26-0134-2"
+    },
+    {
+      "query_image": "data/test_samples/T03.jpg",
+      "style_code": "GB26-0203"
+    }
+  ]
+}
