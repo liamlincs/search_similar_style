@@ -3,6 +3,7 @@ import logging
 import sys
 import tempfile
 import base64
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -18,7 +19,9 @@ if str(THIS_DIR) not in sys.path:
 from search_similar_return_code import (
     DEFAULT_CONFIG,
     build_feature_db_with_cache,
-    build_label_memory_prior,
+    build_label_memory_prior_from_refs,
+    precompute_label_memory_refs,
+    precompute_rerank_candidate_cache,
     rerank_candidates_with_model,
     search_topk_images,
     topk_style_codes,
@@ -102,6 +105,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         use_cache=feature_cache_enabled,
     )
     logging.info("api preloaded db: %d items", len(names))
+    rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
+    if rerank_enabled:
+        t0 = time.perf_counter()
+        rerank_candidate_cache = precompute_rerank_candidate_cache(
+            standard_dir=standard_dir,
+            names=names,
+            candidate_views_max=rerank_candidate_views_max,
+        )
+        logging.info(
+            "api preloaded rerank candidate cache: %d files in %.2fs",
+            len(rerank_candidate_cache),
+            time.perf_counter() - t0,
+        )
+    label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
+    if label_memory_enabled:
+        logging.info("api preloaded label memory refs: %d", len(label_memory_refs))
 
     app = FastAPI(title="search-similar-style-api", version="1.0.0")
 
@@ -154,6 +173,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         include_image_base64: bool = False,
         base64_topn: int = 0,
     ) -> Dict[str, Any]:
+        t_all = time.perf_counter()
         if not file.filename:
             raise HTTPException(status_code=400, detail="missing file name")
         suffix = Path(file.filename).suffix.lower()
@@ -165,6 +185,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             tf.flush()
             query_path = Path(tf.name)
 
+            t0 = time.perf_counter()
             image_topk = min(len(names), max(top_k * max(candidate_multiplier, 1), top_k))
             ranked_images = search_topk_images(
                 query_path,
@@ -180,7 +201,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 query_crop_ratio=query_crop_ratio,
                 query_component_views=query_component_views,
             )
+            t_recall = time.perf_counter() - t0
             if rerank_enabled:
+                t1 = time.perf_counter()
                 ranked_images = rerank_candidates_with_model(
                     query_path,
                     ranked_images,
@@ -193,8 +216,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     query_component_views=query_component_views,
                     rerank_query_views_max=rerank_query_views_max,
                     rerank_candidate_views_max=rerank_candidate_views_max,
+                    candidate_feature_cache=rerank_candidate_cache,
                 )
+                t_rerank = time.perf_counter() - t1
+            else:
+                t_rerank = 0.0
 
+            t2 = time.perf_counter()
             rows = topk_style_codes(
                 ranked_images,
                 top_k,
@@ -203,15 +231,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 code_agg_alpha=code_agg_alpha,
                 query_hint_code=try_extract_query_style_code(query_path) if ocr_hint_enabled else "",
                 query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
-                code_prior_boost=build_label_memory_prior(
+                code_prior_boost=build_label_memory_prior_from_refs(
                     query_path,
-                    label_memory_path,
+                    label_memory_refs,
                     sim_threshold=label_memory_sim_threshold,
                     max_boost=label_memory_max_boost,
                 )
                 if label_memory_enabled
                 else {},
             )
+            t_post = time.perf_counter() - t2
 
         base_url = str(request.base_url).rstrip("/")
         for row in rows:
@@ -225,6 +254,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 b64, mime = _image_b64(img)
                 rows[i]["best_standard_image_base64"] = b64
                 rows[i]["best_standard_image_mime"] = mime
+
+        logging.info(
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs total=%.3fs",
+            getattr(request.state, "api_user", "unknown"),
+            file.filename,
+            t_recall,
+            t_rerank,
+            t_post,
+            time.perf_counter() - t_all,
+        )
 
         return {
             "query_image": file.filename,

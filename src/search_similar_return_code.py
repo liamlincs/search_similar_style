@@ -424,6 +424,73 @@ def build_label_memory_prior(
     return prior
 
 
+def precompute_label_memory_refs(labels_path: Path) -> List[Tuple[str, np.ndarray]]:
+    if not labels_path.exists():
+        return []
+    try:
+        data = json.loads(labels_path.read_text(encoding="utf-8"))
+        labels = data.get("labels", [])
+    except Exception:
+        return []
+    refs: List[Tuple[str, np.ndarray]] = []
+    for row in labels:
+        p = Path(str(row.get("query_image", "")))
+        code = _normalize_style_code(str(row.get("style_code", "")))
+        if not p.exists() or not code:
+            continue
+        try:
+            r = extract_feature_clip(Image.open(p).convert("RGB"))
+            refs.append((code, r))
+        except Exception:
+            continue
+    return refs
+
+
+def build_label_memory_prior_from_refs(
+    query_img: Path,
+    refs: List[Tuple[str, np.ndarray]],
+    sim_threshold: float = 0.90,
+    max_boost: float = 0.08,
+) -> Dict[str, float]:
+    if not refs:
+        return {}
+    try:
+        q = extract_feature_clip(Image.open(query_img).convert("RGB"))
+    except Exception:
+        return {}
+
+    prior: Dict[str, float] = {}
+    for code, r in refs:
+        sim = float(q @ r)
+        if sim >= sim_threshold:
+            t = min(1.0, (sim - sim_threshold) / max(1e-6, 1.0 - sim_threshold))
+            boost = max_boost * t
+            prior[code] = max(prior.get(code, 0.0), boost)
+    return prior
+
+
+def precompute_rerank_candidate_cache(
+    standard_dir: Path,
+    names: List[str],
+    candidate_views_max: int = 1,
+) -> Dict[str, List[Dict[str, np.ndarray]]]:
+    cache: Dict[str, List[Dict[str, np.ndarray]]] = {}
+    for name in names:
+        file_name = name.split("@", 1)[0]
+        if file_name in cache:
+            continue
+        fp = standard_dir / file_name
+        if not fp.exists() or not fp.is_file():
+            continue
+        try:
+            c_img = Image.open(fp).convert("RGB")
+            c_views = [c_img] + _multi_crop_views(c_img, crop_ratio=0.82)[: max(0, candidate_views_max - 1)]
+            cache[file_name] = [extract_modal_features(cv) for cv in c_views]
+        except Exception:
+            continue
+    return cache
+
+
 def rerank_candidates_with_model(
     query_img: Path,
     ranked_images: List[Tuple[str, float]],
@@ -436,6 +503,7 @@ def rerank_candidates_with_model(
     query_component_views: bool = True,
     rerank_query_views_max: int = 4,
     rerank_candidate_views_max: int = 2,
+    candidate_feature_cache: Dict[str, List[Dict[str, np.ndarray]]] | None = None,
 ) -> List[Tuple[str, float]]:
     if not reranker_model_path.exists():
         return ranked_images
@@ -458,7 +526,7 @@ def rerank_candidates_with_model(
     tail = ranked_images[topn:]
 
     rescored: List[Tuple[str, float, float]] = []
-    cand_cache: Dict[str, List[Dict[str, np.ndarray]]] = {}
+    cand_cache: Dict[str, List[Dict[str, np.ndarray]]] = candidate_feature_cache if candidate_feature_cache is not None else {}
     for name, base_score in head:
         file_name = name.split("@", 1)[0]
         c_path = standard_dir / file_name
