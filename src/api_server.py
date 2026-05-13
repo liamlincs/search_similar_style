@@ -4,6 +4,7 @@ import sys
 import tempfile
 import base64
 import time
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -288,4 +289,4 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     return app
 
 
-app = create_app()
+app = create_app(Path(os.getenv("SEARCH_CONFIG", str(DEFAULT_CONFIG))))

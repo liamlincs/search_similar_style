@@ -13,6 +13,10 @@
 
 配置文件：`config/search_config.json`
 
+预置两套可切换配置：
+- `config/search_config.fast.json`（速度优先）
+- `config/search_config.accurate.json`（精度优先）
+
 关键项：
 - `ocr.backend`：当前为 `rapidocr`（本地OCR，不依赖 deepseek / tesseract）
 - `paths.standard_dir`：标样目录
@@ -57,6 +61,13 @@ python src/search_similar_return_code.py data/test_samples/T01.png
 python src/search_similar_return_code.py data/test_samples/T01.jpg
 ```
 
+按配置文件切换：
+
+```bash
+python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.fast.json
+python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.accurate.json
+```
+
 输出：标准输出 JSON（可自行重定向到文件）
 
 ### 3) FastAPI 对外服务（保持原命令行不变，新增 API）
@@ -74,6 +85,16 @@ pip install -r requirements.txt
 
 ```bash
 uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+```
+
+按配置文件启动（推荐）：
+
+```bash
+# 速度优先
+SEARCH_CONFIG=config/search_config.fast.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+
+# 精度优先
+SEARCH_CONFIG=config/search_config.accurate.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 健康检查：
