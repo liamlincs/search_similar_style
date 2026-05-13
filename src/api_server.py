@@ -124,9 +124,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     app = FastAPI(title="search-similar-style-api", version="1.0.0")
 
+    app.state.ready = False
+    app.state.ready_detail = "initializing"
+
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in {"/health", "/ready"}:
             return await call_next(request)
         if api_key_enabled:
             key = request.headers.get("X-API-Key", "").strip()
@@ -157,6 +160,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/ready")
+    def ready() -> JSONResponse:
+        if bool(getattr(app.state, "ready", False)):
+            return JSONResponse(status_code=200, content={"status": "ready"})
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": str(getattr(app.state, "ready_detail", "initializing"))},
+        )
 
     @app.get("/images/{image_name}")
     def get_standard_image(image_name: str) -> FileResponse:
@@ -271,6 +283,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "api_user": getattr(request.state, "api_user", "unknown"),
         }
 
+    app.state.ready = True
+    app.state.ready_detail = "ready"
     return app
 
 

@@ -82,6 +82,12 @@ uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 curl -s http://127.0.0.1:8000/health
 ```
 
+就绪检查（建议业务调用前先探测，200 表示可检索）：
+
+```bash
+curl -i http://127.0.0.1:8000/ready
+```
+
 上传图片检索：
 
 ```bash
