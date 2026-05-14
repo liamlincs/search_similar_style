@@ -178,7 +178,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         allow_api = path in {"/search", "/image-url"} or path.startswith("/images/")
         if not (allow_public or allow_api):
             resp = JSONResponse(status_code=404, content={"detail": "not found"})
-            logging.info(
+            logging.debug(
                 'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
                 client_ip,
                 request.method,
