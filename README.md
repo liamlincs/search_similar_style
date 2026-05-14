@@ -138,6 +138,17 @@ curl -s -X POST "http://127.0.0.1:8000/search?include_image_base64=true&base64_t
 - `auth.api_keys` 可配置多个 `{user, key}`，用于给不同用户分配不同 key
 - 除 `/health` 外，其它接口都需要请求头 `X-API-Key`
 
+Cloudflare 回源防火墙（UFW）一键更新：
+
+```bash
+sudo bash scripts/update_ufw_cloudflare.sh
+```
+
+说明：
+- 会自动拉取 Cloudflare 官方 IPv4/IPv6 网段并更新 80/443 放行规则
+- 会保留 SSH（22/OpenSSH）放行，避免把自己锁在机器外
+- 会添加 80/443 的默认 deny 作为兜底
+
 ## 图片近似检索原理
 
 当前检索采用“向量召回 + 款号去重”的方式：

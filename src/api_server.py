@@ -41,6 +41,32 @@ def _load_cfg(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _setup_logging() -> None:
+    log_dir = Path("logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "api_server.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+
+    has_stream = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers)
+    has_file = any(isinstance(h, logging.FileHandler) and Path(getattr(h, "baseFilename", "")).name == log_path.name for h in root.handlers)
+
+    if not has_stream:
+        sh = logging.StreamHandler()
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
+    if not has_file:
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+
+
 def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     cfg = _load_cfg(config_path)
     path_cfg = cfg.get("paths", {})
@@ -91,7 +117,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if key:
             api_key_map[key] = user
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    _setup_logging()
     names, feats = build_feature_db_with_cache(
         standard_dir,
         standard_pattern,
@@ -130,17 +156,58 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
+        t0 = time.perf_counter()
+        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+            request.client.host if request.client else "-"
+        )
+        req_len = request.headers.get("content-length", "-")
+        ua = request.headers.get("user-agent", "-")
+
         if request.url.path in {"/health", "/ready"}:
-            return await call_next(request)
+            resp = await call_next(request)
+            logging.info(
+                'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                client_ip,
+                request.method,
+                request.url.path,
+                resp.status_code,
+                (time.perf_counter() - t0) * 1000.0,
+                req_len,
+                ua[:200],
+            )
+            return resp
         if api_key_enabled:
             key = request.headers.get("X-API-Key", "").strip()
             user = api_key_map.get(key, "")
             if not user:
-                return JSONResponse(status_code=401, content={"detail": "invalid api key"})
+                resp = JSONResponse(status_code=401, content={"detail": "invalid api key"})
+                logging.info(
+                    'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                    client_ip,
+                    request.method,
+                    request.url.path,
+                    resp.status_code,
+                    (time.perf_counter() - t0) * 1000.0,
+                    req_len,
+                    ua[:200],
+                )
+                return resp
             request.state.api_user = user
         else:
             request.state.api_user = "anonymous"
-        return await call_next(request)
+        resp = await call_next(request)
+        logging.info(
+            'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+            client_ip,
+            getattr(request.state, "api_user", "unknown"),
+            request.method,
+            request.url.path,
+            resp.status_code,
+            (time.perf_counter() - t0) * 1000.0,
+            req_len,
+            ua[:200],
+        )
+        return resp
 
     def _guess_mime(name: str) -> str:
         s = name.lower()
