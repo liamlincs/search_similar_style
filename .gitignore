@@ -8,3 +8,4 @@ logs/*
 !logs/.gitkeep
 
 models/
+miniprogram/project.private.config.json

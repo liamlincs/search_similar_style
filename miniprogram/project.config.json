@@ -32,7 +32,7 @@
   },
   "compileType": "miniprogram",
   "miniprogramRoot": "./",
-  "appid": "wx8deec06d900a04a4",
+  "appid": "touristappid",
   "projectname": "search-similar-style-miniprogram",
   "libVersion": "3.6.5",
   "simulatorPluginLibVersion": {},
