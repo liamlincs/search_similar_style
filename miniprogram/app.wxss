@@ -1,0 +1,14 @@
+page {
+  --bg: #f4f7fb;
+  --surface: #ffffff;
+  --text: #0f172a;
+  --subtle: #64748b;
+  --brand: #0ea5e9;
+  --brand-strong: #0284c7;
+  --line: #e2e8f0;
+  --success: #16a34a;
+  background: radial-gradient(circle at 0% 0%, #e0f2fe 0%, #f4f7fb 44%, #f8fafc 100%);
+  color: var(--text);
+  min-height: 100%;
+  font-family: "PingFang SC", "Helvetica Neue", sans-serif;
+}

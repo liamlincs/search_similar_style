@@ -1,0 +1,44 @@
+<view class="container">
+  <view class="hero">
+    <view class="title">以图搜款</view>
+    <view class="subtitle">上传图片或拍照，快速匹配相似款式</view>
+  </view>
+
+  <view class="panel">
+    <view wx:if="{{localImage}}" class="query-wrap">
+      <image class="query-image" src="{{localImage}}" mode="aspectFill" />
+    </view>
+    <view wx:else class="placeholder">
+      <view class="placeholder-icon">IMG</view>
+      <view class="placeholder-text">请选择一张查询图片</view>
+    </view>
+
+    <view class="actions">
+      <button class="btn btn-main" bindtap="chooseFromAlbum" loading="{{searching}}">从相册上传</button>
+      <button class="btn btn-sub" bindtap="takePhoto" loading="{{searching}}">拍照搜款</button>
+    </view>
+  </view>
+
+  <view wx:if="{{searching}}" class="loading-card">检索中，请稍候...</view>
+  <view wx:if="{{errorMessage}}" class="error-card">{{errorMessage}}</view>
+  <view wx:if="{{errorMessage && localImage}}" class="retry-wrap">
+    <button class="retry-btn" bindtap="retrySearch" loading="{{searching}}">手动重试</button>
+  </view>
+
+  <view wx:if="{{hasSearched && results.length}}" class="result-section">
+    <view class="section-title">匹配结果</view>
+    <view class="card-list">
+      <view wx:for="{{results}}" wx:key="rank" class="card" bindtap="previewResult" data-url="{{item.imageUrl}}">
+        <image class="card-image" src="{{item.imageUrl}}" mode="aspectFill" binderror="onResultImageError" data-index="{{index}}" />
+        <view class="card-body">
+          <view class="card-top">
+            <text class="rank">#{{item.rank}}</text>
+            <text class="score">{{item.scoreText}}</text>
+          </view>
+          <view class="style-code">{{item.styleCode}}</view>
+          <view class="hint">点击查看大图</view>
+        </view>
+      </view>
+    </view>
+  </view>
+</view>
