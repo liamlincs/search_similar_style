@@ -174,7 +174,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ua = request.headers.get("user-agent", "-")
 
         path = request.url.path
-        if path in {"/health", "/ready"}:
+        allow_public = path in {"/health", "/ready"}
+        allow_api = path in {"/search", "/image-url"} or path.startswith("/images/")
+        if not (allow_public or allow_api):
+            resp = JSONResponse(status_code=404, content={"detail": "not found"})
+            logging.info(
+                'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                client_ip,
+                request.method,
+                request.url.path,
+                resp.status_code,
+                (time.perf_counter() - t0) * 1000.0,
+                req_len,
+                ua[:200],
+            )
+            return resp
+
+        if allow_public:
             resp = await call_next(request)
             logging.info(
                 'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
