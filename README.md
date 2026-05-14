@@ -136,7 +136,13 @@ curl -s -X POST "http://127.0.0.1:8000/search?include_image_base64=true&base64_t
 鉴权配置：
 - `config/search_config.json` 的 `auth.enabled` 控制是否启用 API Key
 - `auth.api_keys` 可配置多个 `{user, key}`，用于给不同用户分配不同 key
-- 除 `/health` 外，其它接口都需要请求头 `X-API-Key`
+- `/search` 需要请求头 `X-API-Key`
+- `/images/{image_name}` 支持两种方式：
+- 方式1：请求头 `X-API-Key`
+- 方式2：签名 URL（`best_standard_image_url` 已自动附带 `exp` + `sig`，适合小程序 `image` 组件）
+- `/image-url?image_name=xxx`：返回新的签名图片 URL（用于签名过期后的刷新）
+- `auth.image_url_secret`：图片签名密钥（强烈建议改成高强度随机串）
+- `auth.image_url_ttl_sec`：签名 URL 过期时间（秒，默认 600）
 
 Cloudflare 回源防火墙（UFW）一键更新：
 
@@ -172,3 +178,28 @@ sudo bash scripts/update_ufw_cloudflare.sh
   - `style_code`
   - `best_standard_image`
   - `score`
+
+## 4) 微信小程序前端（上传/拍照以图搜款）
+
+小程序目录：`miniprogram/`
+
+### 功能
+- 从相册上传图片检索
+- 直接拍照检索
+- 卡片式展示 topk 结果（款号、分数、结果图）
+- 点击结果图可预览大图
+
+### 使用步骤
+1. 启动后端 API（默认 `http://127.0.0.1:8000`）
+2. 打开微信开发者工具，导入 `miniprogram` 目录
+3. 修改 `miniprogram/utils/config.js`：
+   - `baseUrl`：默认已配置为 `https://api.seekfire.cloud`
+   - `apiKey`：对应的 `X-API-Key`
+4. 运行后即可上传或拍照搜款
+
+### 说明
+- 当前接口调用：`POST /search`（`multipart/form-data`，字段名 `file`）
+- 渲染使用返回字段 `topk_style_codes[].best_standard_image_url`
+- 内置重试：默认最多重试 4 次（网络错误、408、429、5xx 会重试；4xx 一般不重试）
+- 重试参数可在 `miniprogram/utils/config.js` 的 `retry` 配置中调整
+- 若后端启用 HTTPS 域名，建议将 `baseUrl` 切到 HTTPS

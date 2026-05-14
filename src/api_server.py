@@ -5,6 +5,8 @@ import tempfile
 import base64
 import time
 import os
+import hmac
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -33,6 +35,12 @@ from search_similar_return_code import (
 class SearchResponse(BaseModel):
     query_image: str
     topk_style_codes: List[Dict[str, Any]]
+
+
+class ImageUrlResponse(BaseModel):
+    image_name: str
+    image_url: str
+    expires_at: int
 
 
 def _load_cfg(path: Path) -> Dict[str, Any]:
@@ -107,6 +115,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     feature_cache_enabled = bool(search_cfg.get("feature_cache_enabled", True))
     auth_cfg = cfg.get("auth", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
+    image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
+    image_url_ttl_sec = int(auth_cfg.get("image_url_ttl_sec", 600))
     api_keys_cfg = auth_cfg.get("api_keys", [])
     api_key_map: Dict[str, str] = {}
     for item in api_keys_cfg:
@@ -163,7 +173,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         req_len = request.headers.get("content-length", "-")
         ua = request.headers.get("user-agent", "-")
 
-        if request.url.path in {"/health", "/ready"}:
+        path = request.url.path
+        if path in {"/health", "/ready"}:
             resp = await call_next(request)
             logging.info(
                 'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
@@ -179,6 +190,51 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if api_key_enabled:
             key = request.headers.get("X-API-Key", "").strip()
             user = api_key_map.get(key, "")
+            if path.startswith("/images/"):
+                if user:
+                    request.state.api_user = user
+                    resp = await call_next(request)
+                    logging.info(
+                        'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                        client_ip,
+                        getattr(request.state, "api_user", "unknown"),
+                        request.method,
+                        request.url.path,
+                        resp.status_code,
+                        (time.perf_counter() - t0) * 1000.0,
+                        req_len,
+                        ua[:200],
+                    )
+                    return resp
+
+                exp = request.query_params.get("exp", "").strip()
+                sig = request.query_params.get("sig", "").strip()
+                image_name = Path(path.split("/images/", 1)[-1]).name
+                if image_url_secret and exp.isdigit() and sig and image_name:
+                    now_ts = int(time.time())
+                    exp_ts = int(exp)
+                    if exp_ts >= now_ts:
+                        msg = f"{image_name}:{exp_ts}".encode("utf-8")
+                        expected = hmac.new(
+                            image_url_secret.encode("utf-8"),
+                            msg,
+                            hashlib.sha256,
+                        ).hexdigest()
+                        if hmac.compare_digest(expected, sig):
+                            request.state.api_user = "signed-image-url"
+                            resp = await call_next(request)
+                            logging.info(
+                                'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                                client_ip,
+                                getattr(request.state, "api_user", "unknown"),
+                                request.method,
+                                request.url.path,
+                                resp.status_code,
+                                (time.perf_counter() - t0) * 1000.0,
+                                req_len,
+                                ua[:200],
+                            )
+                            return resp
             if not user:
                 resp = JSONResponse(status_code=401, content={"detail": "invalid api key"})
                 logging.info(
@@ -208,6 +264,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ua[:200],
         )
         return resp
+
+    def _build_image_url(base_url: str, image_name: str) -> str:
+        safe = Path(image_name).name
+        if not safe:
+            return f"{base_url}/images/"
+        if api_key_enabled and image_url_secret:
+            exp_ts = int(time.time()) + max(60, image_url_ttl_sec)
+            msg = f"{safe}:{exp_ts}".encode("utf-8")
+            sig = hmac.new(image_url_secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+            return f"{base_url}/images/{safe}?exp={exp_ts}&sig={sig}"
+        return f"{base_url}/images/{safe}"
+
+    def _build_image_url_with_exp(base_url: str, image_name: str) -> tuple[str, int]:
+        safe = Path(image_name).name
+        if not safe:
+            return f"{base_url}/images/", 0
+        if api_key_enabled and image_url_secret:
+            exp_ts = int(time.time()) + max(60, image_url_ttl_sec)
+            msg = f"{safe}:{exp_ts}".encode("utf-8")
+            sig = hmac.new(image_url_secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+            return f"{base_url}/images/{safe}?exp={exp_ts}&sig={sig}", exp_ts
+        return f"{base_url}/images/{safe}", 0
 
     def _guess_mime(name: str) -> str:
         s = name.lower()
@@ -245,6 +323,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not fp.exists() or not fp.is_file():
             raise HTTPException(status_code=404, detail="image not found")
         return FileResponse(path=str(fp))
+
+    @app.get("/image-url", response_model=ImageUrlResponse)
+    def refresh_image_url(request: Request, image_name: str) -> Dict[str, Any]:
+        safe = Path(image_name).name
+        fp = standard_dir / safe
+        if not fp.exists() or not fp.is_file():
+            raise HTTPException(status_code=404, detail="image not found")
+        base_url = str(request.base_url).rstrip("/")
+        image_url, exp_ts = _build_image_url_with_exp(base_url, safe)
+        return {"image_name": safe, "image_url": image_url, "expires_at": exp_ts}
 
     @app.post("/search", response_model=SearchResponse)
     async def search(
@@ -325,7 +413,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         base_url = str(request.base_url).rstrip("/")
         for row in rows:
             img = str(row.get("best_standard_image", "")).strip()
-            row["best_standard_image_url"] = f"{base_url}/images/{img}"
+            row["best_standard_image_url"] = _build_image_url(base_url, img)
 
         if include_image_base64:
             n = len(rows) if base64_topn <= 0 else min(len(rows), base64_topn)

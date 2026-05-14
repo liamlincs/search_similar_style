@@ -4,6 +4,8 @@
   },
   "auth": {
     "enabled": true,
+    "image_url_secret": "replace-with-image-url-secret",
+    "image_url_ttl_sec": 600,
     "api_keys": [
       {
         "user": "demo_user_a",
