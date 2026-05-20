@@ -263,6 +263,9 @@ def recolor_region_ai(
             result_bytes = img_resp.read()
         out_img = Image.open(BytesIO(result_bytes))
         out_img = ImageOps.exif_transpose(out_img).convert("RGB")
+        # 第三方模型可能返回与输入不同分辨率，后续融合需要与原图同尺寸。
+        if out_img.size != (w, h):
+            out_img = out_img.resize((w, h), resample=Image.BICUBIC)
     except Exception as exc:
         raise ValueError(f"下载 AI 改色结果失败: {exc}") from exc
 
