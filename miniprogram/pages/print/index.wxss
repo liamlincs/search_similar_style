@@ -38,6 +38,7 @@
 .controls {
   display: grid;
   gap: 10rpx;
+  margin-top: 14rpx;
 }
 
 .upload-print {

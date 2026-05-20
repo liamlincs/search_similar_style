@@ -10,7 +10,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 PaperSize = Literal["A4", "A5", "4R"]
-TemplateId = Literal["single_full", "two_vertical", "grid_2x2", "grid_3x3"]
+TemplateId = Literal["single_full", "two_vertical", "two_horizontal", "grid_2x2", "grid_3x3"]
 
 MM_TO_PT = 2.83464567
 MAX_IMAGE_EDGE = 2400
@@ -65,6 +65,7 @@ def template_slots(template_id: TemplateId) -> int:
     return {
         "single_full": 1,
         "two_vertical": 2,
+        "two_horizontal": 2,
         "grid_2x2": 4,
         "grid_3x3": 9,
     }[template_id]
@@ -81,6 +82,8 @@ def build_slots(page_w: float, page_h: float, template_id: TemplateId) -> list[R
 
     if template_id == "two_vertical":
         cols, rows = 1, 2
+    elif template_id == "two_horizontal":
+        cols, rows = 2, 1
     elif template_id == "grid_2x2":
         cols, rows = 2, 2
     else:
@@ -150,7 +153,7 @@ def render_layout(payload: dict) -> dict:
 
     if paper_size not in {"A4", "A5", "4R"}:
         raise ValueError("paper_size 仅支持 A4/A5/4R")
-    if template_id not in {"single_full", "two_vertical", "grid_2x2", "grid_3x3"}:
+    if template_id not in {"single_full", "two_vertical", "two_horizontal", "grid_2x2", "grid_3x3"}:
         raise ValueError("template_id 不合法")
     if not isinstance(placements, list) or not placements:
         raise ValueError("placements 不能为空")
@@ -230,6 +233,7 @@ def list_templates() -> list[dict]:
     return [
         {"template_id": "single_full", "name": "单图铺满", "description": "适合证件照/海报风", "slots": template_slots("single_full")},
         {"template_id": "two_vertical", "name": "两张竖排", "description": "一页上下两张，适合对比图或双联排版", "slots": template_slots("two_vertical")},
+        {"template_id": "two_horizontal", "name": "两张横排", "description": "一页左右两张，适合并排展示", "slots": template_slots("two_horizontal")},
         {"template_id": "grid_2x2", "name": "2x2 网格", "description": "一页四张，适合拼版", "slots": template_slots("grid_2x2")},
         {"template_id": "grid_3x3", "name": "3x3 网格", "description": "一页九张，适合小尺寸批量", "slots": template_slots("grid_3x3")},
     ]
