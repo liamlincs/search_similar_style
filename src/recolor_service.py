@@ -90,6 +90,22 @@ def _auto_subject_mask_from_image(img_rgb: Image.Image) -> np.ndarray:
     return np.array(m_img).astype(np.float32) / 255.0
 
 
+def _blend_with_original_background(
+    original_rgb: np.ndarray,
+    edited_rgb: np.ndarray,
+    subject_mask: np.ndarray,
+    edge_soften_px: int = 2,
+) -> np.ndarray:
+    mask_u8 = np.clip(subject_mask * 255.0, 0, 255).astype(np.uint8)
+    if edge_soften_px > 0:
+        m_img = Image.fromarray(mask_u8, mode="L").filter(ImageFilter.GaussianBlur(edge_soften_px))
+        alpha = np.array(m_img).astype(np.float32) / 255.0
+    else:
+        alpha = mask_u8.astype(np.float32) / 255.0
+    alpha = np.clip(alpha, 0.0, 1.0)[..., None]
+    return np.clip(edited_rgb * alpha + original_rgb * (1.0 - alpha), 0.0, 1.0)
+
+
 def recolor_region(
     file_bytes: bytes,
     suffix: str,
@@ -252,6 +268,7 @@ def recolor_region_ai(
 
     # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
     out_arr = np.array(out_img).astype(np.float32) / 255.0
+    src_arr = np.array(img).astype(np.float32) / 255.0
     if full_image_mode:
         post_mask = _auto_subject_mask_from_image(out_img)
     else:
@@ -270,6 +287,14 @@ def recolor_region_ai(
         mask=post_mask,
         strength=max(0.75, min(1.0, strength + 0.2)),
         sat_boost=0.05,
+    )
+
+    # 锁定背景：主体外区域回填原图，避免背景出现彩色噪点。
+    corrected = _blend_with_original_background(
+        original_rgb=src_arr,
+        edited_rgb=corrected,
+        subject_mask=post_mask if full_image_mode else (post_mask > 0.02).astype(np.float32),
+        edge_soften_px=2,
     )
     out_img = Image.fromarray(np.clip(corrected * 255.0, 0, 255).astype(np.uint8), mode="RGB")
 
