@@ -116,6 +116,7 @@ def recolor_region(
     h_ratio: float,
     strength: float = 0.8,
     feather_ratio: float = 0.02,
+    auto_mask: bool = False,
 ) -> dict:
     # load image from bytes safely
     from io import BytesIO
@@ -140,7 +141,15 @@ def recolor_region(
     y1 = min(h, y0 + bh)
     feather_px = int(round(min(w, h) * feather_ratio))
 
-    mask = _build_soft_mask(h, w, x0, y0, x1, y1, feather_px)
+    if auto_mask:
+        mask = _auto_subject_mask_from_image(img)
+        if feather_px > 0:
+            m_img = Image.fromarray(np.clip(mask * 255.0, 0, 255).astype(np.uint8), mode="L").filter(
+                ImageFilter.GaussianBlur(max(1, feather_px))
+            )
+            mask = np.array(m_img).astype(np.float32) / 255.0
+    else:
+        mask = _build_soft_mask(h, w, x0, y0, x1, y1, feather_px)
     rgb_new = _apply_hsv_retarget(arr, target_hex=target_hex, mask=mask, strength=strength, sat_boost=0.15)
     out = np.clip(rgb_new * 255.0, 0, 255).astype(np.uint8)
     out_img = Image.fromarray(out, mode="RGB")
@@ -153,6 +162,7 @@ def recolor_region(
         "job_id": out_id,
         "recolored_url": f"/recolor-static/outputs/{out_path.name}",
         "bbox": {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)},
+        "mask_mode": "auto_subject" if auto_mask else "manual_bbox",
     }
 
 

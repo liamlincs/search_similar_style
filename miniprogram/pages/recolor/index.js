@@ -360,13 +360,10 @@ Page({
       wx.showToast({ title: "请先选择图片", icon: "none" });
       return;
     }
-    if (!this.data.selRect || !this.data.imgRect) {
-      wx.showToast({ title: "请先框选换色区域", icon: "none" });
-      return;
-    }
     this.setData({ processing: true });
     try {
-      const payload = this.buildRecolorPayload();
+      const payload = this.buildRecolorPayload(true);
+      payload.auto_mask = true;
       const res = await recolorUpload(this.data.localImage, payload);
       const remoteUrl = toAbsolute(res.recolored_url);
       const localUrl = await downloadToLocal(`${remoteUrl}${remoteUrl.includes("?") ? "&" : "?"}t=${Date.now()}`);
@@ -415,10 +412,6 @@ Page({
     const current = this.data.recoloredLocalUrl || this.data.recoloredUrl;
     if (!current) return;
     wx.previewImage({ current, urls: [current] });
-  },
-
-  clearSelection() {
-    this.setData({ selRect: null });
   },
 
   onResultImageError(e) {

@@ -518,6 +518,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         h_ratio: float = Form(0.4),
         strength: float = Form(0.8),
         feather_ratio: float = Form(0.02),
+        auto_mask: int = Form(0),
     ) -> Dict[str, Any]:
         suffix = Path(file.filename or "").suffix.lower() or ".jpg"
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -536,6 +537,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 h_ratio=h_ratio,
                 strength=strength,
                 feather_ratio=feather_ratio,
+                auto_mask=bool(int(auto_mask)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1,28 +1,15 @@
 <view class="container">
   <view class="hero">
     <view class="title">局部换色</view>
-    <view class="subtitle">标准换色需框选区域，AI换色可直接整图处理</view>
+    <view class="subtitle">标准换色与AI换色都支持自动抠主体换色</view>
   </view>
 
   <view class="card">
     <button class="btn btn-primary" bindtap="chooseImage">选择图片</button>
-    <view
-      wx:if="{{localImage}}"
-      class="stage"
-      bindtouchstart="handleStageTouchStart"
-      bindtouchmove="handleStageTouchMove"
-      bindtouchend="handleStageTouchEnd"
-    >
+    <view wx:if="{{localImage}}" class="stage">
       <image class="stage-img" src="{{localImage}}" mode="aspectFit" />
-      <view
-        wx:if="{{selRect}}"
-        class="sel-rect"
-        style="left: {{selRect.x}}px; top: {{selRect.y}}px; width: {{selRect.w}}px; height: {{selRect.h}}px;"
-      >
-        <view class="sel-label">{{selRect.w}} x {{selRect.h}}</view>
-      </view>
     </view>
-    <view wx:if="{{localImage}}" class="hint">在图上拖动创建选区；拖动选区内部可移动</view>
+    <view wx:if="{{localImage}}" class="hint">自动识别主体区域进行换色</view>
   </view>
 
   <view class="card">
@@ -49,7 +36,6 @@
     </view>
 
     <view wx:if="{{mode === 'fast'}}">
-      <button class="btn btn-ghost" bindtap="clearSelection">清除选区</button>
       <view class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
       <view class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
       <button class="btn btn-primary run" loading="{{processing}}" disabled="{{processingAi}}" bindtap="runRecolor">开始标准换色</button>

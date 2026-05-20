@@ -192,6 +192,7 @@ function recolorUpload(filePath, options = {}) {
     strength: String(options.strength ?? 0.8),
     feather_ratio: String(options.feather_ratio ?? 0.02),
   };
+  if (options.auto_mask !== undefined && options.auto_mask !== null) formData.auto_mask = String(options.auto_mask ? 1 : 0);
   return new Promise((resolve, reject) => {
     wx.uploadFile({
       url: finalUrl,
