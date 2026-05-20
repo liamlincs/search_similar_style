@@ -83,10 +83,27 @@ def _auto_subject_mask_from_image(img_rgb: Image.Image) -> np.ndarray:
     val = hsv[:, :, 2]
 
     # 粗分离主体：优先保留有颜色/有明暗信息的区域，抑制低饱和背景。
-    m = ((sat > 0.12) & (val > 0.10)).astype(np.uint8) * 255
+    base = ((sat > 0.12) & (val > 0.10)).astype(np.float32)
+
+    # 中心先验：商品通常在画面中部，降低边缘背景误检概率。
+    h, w = base.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    cx = (w - 1) * 0.5
+    cy = (h - 1) * 0.5
+    nx = (xx - cx) / max(1.0, w * 0.55)
+    ny = (yy - cy) / max(1.0, h * 0.55)
+    center_prior = np.exp(-(nx * nx + ny * ny))
+    m = np.clip(base * (0.55 + 0.9 * center_prior), 0.0, 1.0)
+    m = (m > 0.22).astype(np.uint8) * 255
+
     m_img = Image.fromarray(m, mode="L")
     # 简单形态学平滑，降低噪点并连通主体。
-    m_img = m_img.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(2))
+    m_img = (
+        m_img
+        .filter(ImageFilter.MaxFilter(5))
+        .filter(ImageFilter.MinFilter(3))
+        .filter(ImageFilter.GaussianBlur(2))
+    )
     return np.array(m_img).astype(np.float32) / 255.0
 
 
@@ -151,6 +168,14 @@ def recolor_region(
     else:
         mask = _build_soft_mask(h, w, x0, y0, x1, y1, feather_px)
     rgb_new = _apply_hsv_retarget(arr, target_hex=target_hex, mask=mask, strength=strength, sat_boost=0.15)
+    if auto_mask:
+        # 自动模式锁背景：主体外回填原图，避免背景脏色/彩点。
+        rgb_new = _blend_with_original_background(
+            original_rgb=arr,
+            edited_rgb=rgb_new,
+            subject_mask=(mask > 0.18).astype(np.float32),
+            edge_soften_px=max(1, feather_px // 2),
+        )
     out = np.clip(rgb_new * 255.0, 0, 255).astype(np.uint8)
     out_img = Image.fromarray(out, mode="RGB")
 
