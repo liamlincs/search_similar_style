@@ -6,6 +6,7 @@ import json
 import uuid
 import urllib.request
 from pathlib import Path
+from collections import deque
 
 import numpy as np
 from PIL import Image, ImageOps, ImageFilter
@@ -76,34 +77,81 @@ def _apply_hsv_retarget(
 
 
 def _auto_subject_mask_from_image(img_rgb: Image.Image) -> np.ndarray:
-    arr = np.array(img_rgb).astype(np.float32) / 255.0
-    rgb_flat = arr.reshape(-1, 3)
-    hsv = np.array([colorsys.rgb_to_hsv(*px) for px in rgb_flat], dtype=np.float32).reshape(arr.shape[0], arr.shape[1], 3)
-    sat = hsv[:, :, 1]
-    val = hsv[:, :, 2]
+    # 更稳的自动主体分割：
+    # 1) 以边缘像素建模背景色；2) 计算“偏离背景”得分；3) 保留与中心连通的主体区域。
+    src = img_rgb.convert("RGB")
+    ow, oh = src.size
+    max_side = max(ow, oh)
+    if max_side > 512:
+        scale = 512.0 / max_side
+        sw, sh = max(64, int(round(ow * scale))), max(64, int(round(oh * scale)))
+        small = src.resize((sw, sh), resample=Image.BILINEAR)
+    else:
+        sw, sh = ow, oh
+        small = src
 
-    # 粗分离主体：优先保留有颜色/有明暗信息的区域，抑制低饱和背景。
-    base = ((sat > 0.12) & (val > 0.10)).astype(np.float32)
+    arr = np.array(small).astype(np.float32) / 255.0  # HxWx3
+    h, w, _ = arr.shape
 
-    # 中心先验：商品通常在画面中部，降低边缘背景误检概率。
-    h, w = base.shape
+    b = max(2, int(round(min(h, w) * 0.08)))
+    top = arr[:b, :, :]
+    bottom = arr[-b:, :, :]
+    left = arr[:, :b, :]
+    right = arr[:, -b:, :]
+    border = np.concatenate(
+        [top.reshape(-1, 3), bottom.reshape(-1, 3), left.reshape(-1, 3), right.reshape(-1, 3)],
+        axis=0,
+    )
+    bg_mu = border.mean(axis=0)
+    bg_sigma = border.std(axis=0) + 1e-4
+
+    z = (arr - bg_mu[None, None, :]) / bg_sigma[None, None, :]
+    color_dist = np.sqrt(np.sum(z * z, axis=2))
+
     yy, xx = np.mgrid[0:h, 0:w]
     cx = (w - 1) * 0.5
     cy = (h - 1) * 0.5
-    nx = (xx - cx) / max(1.0, w * 0.55)
-    ny = (yy - cy) / max(1.0, h * 0.55)
+    nx = (xx - cx) / max(1.0, w * 0.48)
+    ny = (yy - cy) / max(1.0, h * 0.48)
     center_prior = np.exp(-(nx * nx + ny * ny))
-    m = np.clip(base * (0.55 + 0.9 * center_prior), 0.0, 1.0)
-    m = (m > 0.22).astype(np.uint8) * 255
 
-    m_img = Image.fromarray(m, mode="L")
-    # 简单形态学平滑，降低噪点并连通主体。
-    m_img = (
-        m_img
-        .filter(ImageFilter.MaxFilter(5))
-        .filter(ImageFilter.MinFilter(3))
-        .filter(ImageFilter.GaussianBlur(2))
-    )
+    score = color_dist * (0.65 + 0.9 * center_prior)
+    score_t = float(np.percentile(score, 72))
+    binary = score > max(0.6, score_t)
+
+    # 仅保留与中心连通的前景，清除零散背景斑点。
+    sx, sy = int(round(cx)), int(round(cy))
+    if not binary[sy, sx]:
+        ys, xs = np.where(binary)
+        if len(xs) > 0:
+            d2 = (xs - cx) ** 2 + (ys - cy) ** 2
+            i = int(np.argmin(d2))
+            sx, sy = int(xs[i]), int(ys[i])
+        else:
+            sx, sy = int(round(w * 0.5)), int(round(h * 0.5))
+
+    visited = np.zeros((h, w), dtype=np.uint8)
+    fg = np.zeros((h, w), dtype=np.uint8)
+    q: deque[tuple[int, int]] = deque()
+    if binary[sy, sx]:
+        q.append((sy, sx))
+        visited[sy, sx] = 1
+    while q:
+        y, x = q.popleft()
+        fg[y, x] = 1
+        for ny_, nx_ in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if ny_ < 0 or ny_ >= h or nx_ < 0 or nx_ >= w:
+                continue
+            if visited[ny_, nx_] or not binary[ny_, nx_]:
+                continue
+            visited[ny_, nx_] = 1
+            q.append((ny_, nx_))
+
+    # 平滑边缘并回到原图大小
+    m_img = Image.fromarray((fg * 255).astype(np.uint8), mode="L")
+    m_img = m_img.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(2))
+    if (w, h) != (ow, oh):
+        m_img = m_img.resize((ow, oh), resample=Image.BILINEAR)
     return np.array(m_img).astype(np.float32) / 255.0
 
 
