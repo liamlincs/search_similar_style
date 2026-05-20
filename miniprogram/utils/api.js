@@ -239,6 +239,8 @@ function recolorAiUpload(filePath, options = {}) {
   if (options.prompt) formData.prompt = String(options.prompt);
   if (options.negative_prompt) formData.negative_prompt = String(options.negative_prompt);
   if (options.seed !== undefined && options.seed !== null) formData.seed = String(options.seed);
+  if (options.cfg_scale !== undefined && options.cfg_scale !== null) formData.cfg_scale = String(options.cfg_scale);
+  if (options.postprocess !== undefined && options.postprocess !== null) formData.postprocess = String(options.postprocess ? 1 : 0);
   if (options.num_inference_steps !== undefined && options.num_inference_steps !== null) formData.num_inference_steps = String(options.num_inference_steps);
   if (options.image2) formData.image2 = String(options.image2);
   if (options.image3) formData.image3 = String(options.image3);

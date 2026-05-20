@@ -553,7 +553,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         prompt: str = Form(""),
         negative_prompt: str = Form(""),
         seed: int | None = Form(None),
+        cfg_scale: float | None = Form(None),
         num_inference_steps: int | None = Form(None),
+        postprocess: int = Form(1),
         image2: str | None = Form(None),
         image3: str | None = Form(None),
     ) -> Dict[str, Any]:
@@ -578,7 +580,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 prompt=prompt,
                 negative_prompt=negative_prompt,
                 seed=seed,
+                cfg_scale=cfg_scale,
                 num_inference_steps=num_inference_steps,
+                postprocess=bool(int(postprocess)),
                 image2=image2,
                 image3=image3,
             )

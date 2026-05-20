@@ -64,6 +64,14 @@
         placeholder="例如：把织品颜色改成目标色，其它不变（系统会自动附加当前HEX）"
         bindinput="onAiPromptInput"
       />
+      <view class="field-title sm">Seed（固定可复现）</view>
+      <input class="mini-input" type="number" value="{{aiSeed}}" bindinput="onAiSeedInput" placeholder="例如 42" />
+      <view class="field-title sm">CFG（建议与网页一致，如 4.0）</view>
+      <input class="mini-input" type="digit" value="{{aiCfgScale}}" bindinput="onAiCfgInput" placeholder="例如 4.0" />
+      <label class="switch-row">
+        <text>原生AI模式（关闭后处理，尽量贴近硅基流动网页）</text>
+        <switch checked="{{aiRawMode}}" bindchange="onAiRawModeChange" />
+      </label>
       <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI换色</button>
     </view>
   </view>

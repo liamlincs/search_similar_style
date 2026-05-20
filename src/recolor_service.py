@@ -170,7 +170,9 @@ def recolor_region_ai(
     prompt: str = "",
     negative_prompt: str = "",
     seed: int | None = None,
+    cfg_scale: float | None = None,
     num_inference_steps: int | None = None,
+    postprocess: bool = True,
     image2: str | None = None,
     image3: str | None = None,
 ) -> dict:
@@ -197,7 +199,7 @@ def recolor_region_ai(
     y1 = min(h, y0 + bh)
 
     full_image_mode = x_ratio <= 0.001 and y_ratio <= 0.001 and w_ratio >= 0.999 and h_ratio >= 0.999
-    if full_image_mode:
+    if full_image_mode and postprocess:
         auto_mask = _auto_subject_mask_from_image(img)
         mask = (auto_mask > 0.25).astype(np.uint8)
     else:
@@ -224,12 +226,16 @@ def recolor_region_ai(
         "model": model,
         "prompt": final_prompt,
         "image": f"data:image/png;base64,{src_b64}",
-        "image2": f"data:image/png;base64,{mask_b64}",
     }
+    # 原生模式(关闭后处理)下，整图不传蒙版，更贴近 playground 的直出行为。
+    if not (full_image_mode and not postprocess):
+        payload["image2"] = f"data:image/png;base64,{mask_b64}"
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
     if seed is not None:
         payload["seed"] = int(seed)
+    if cfg_scale is not None:
+        payload["cfg_scale"] = float(np.clip(cfg_scale, 1.0, 32.0))
     if num_inference_steps is not None:
         payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
     if image2:
@@ -269,37 +275,37 @@ def recolor_region_ai(
     except Exception as exc:
         raise ValueError(f"下载 AI 改色结果失败: {exc}") from exc
 
-    # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
-    out_arr = np.array(out_img).astype(np.float32) / 255.0
-    src_arr = np.array(img).astype(np.float32) / 255.0
-    if full_image_mode:
-        post_mask = _auto_subject_mask_from_image(out_img)
-    else:
-        post_mask = _build_soft_mask(
-            h=out_arr.shape[0],
-            w=out_arr.shape[1],
-            x0=int(round(x_ratio * out_arr.shape[1])),
-            y0=int(round(y_ratio * out_arr.shape[0])),
-            x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
-            y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
-            feather_px=int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.01)),
+    if postprocess:
+        # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
+        out_arr = np.array(out_img).astype(np.float32) / 255.0
+        src_arr = np.array(img).astype(np.float32) / 255.0
+        if full_image_mode:
+            post_mask = _auto_subject_mask_from_image(out_img)
+        else:
+            post_mask = _build_soft_mask(
+                h=out_arr.shape[0],
+                w=out_arr.shape[1],
+                x0=int(round(x_ratio * out_arr.shape[1])),
+                y0=int(round(y_ratio * out_arr.shape[0])),
+                x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
+                y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
+                feather_px=int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.01)),
+            )
+        corrected = _apply_hsv_retarget(
+            out_arr,
+            target_hex=target_hex,
+            mask=post_mask,
+            strength=max(0.75, min(1.0, strength + 0.2)),
+            sat_boost=0.05,
         )
-    corrected = _apply_hsv_retarget(
-        out_arr,
-        target_hex=target_hex,
-        mask=post_mask,
-        strength=max(0.75, min(1.0, strength + 0.2)),
-        sat_boost=0.05,
-    )
-
-    # 锁定背景：主体外区域回填原图，避免背景出现彩色噪点。
-    corrected = _blend_with_original_background(
-        original_rgb=src_arr,
-        edited_rgb=corrected,
-        subject_mask=post_mask if full_image_mode else (post_mask > 0.02).astype(np.float32),
-        edge_soften_px=2,
-    )
-    out_img = Image.fromarray(np.clip(corrected * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+        # 锁定背景：主体外区域回填原图，避免背景出现彩色噪点。
+        corrected = _blend_with_original_background(
+            original_rgb=src_arr,
+            edited_rgb=corrected,
+            subject_mask=post_mask if full_image_mode else (post_mask > 0.02).astype(np.float32),
+            edge_soften_px=2,
+        )
+        out_img = Image.fromarray(np.clip(corrected * 255.0, 0, 255).astype(np.uint8), mode="RGB")
 
     out_id = uuid.uuid4().hex
     out_path = RECOLOR_OUTPUT_DIR / f"{out_id}.jpg"
@@ -314,9 +320,11 @@ def recolor_region_ai(
             "provider": "siliconflow",
             "model": model,
             "prompt": final_prompt,
-            "mask_mode": "auto_subject" if full_image_mode else "manual_bbox",
+            "mask_mode": ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox")),
+            "postprocess": bool(postprocess),
             "negative_prompt": negative_prompt,
             "seed": seed,
+            "cfg_scale": payload.get("cfg_scale"),
             "num_inference_steps": payload.get("num_inference_steps"),
             "strength_hint": strength,
         },
