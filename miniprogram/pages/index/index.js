@@ -24,6 +24,12 @@ Page({
     this.search(filePath);
   },
 
+  goPrintPage() {
+    wx.navigateTo({ url: "/pages/print/index" });
+  },
+
+  goSearchPage() {},
+
   pickImage(sourceType) {
     wx.chooseMedia({
       count: 1,

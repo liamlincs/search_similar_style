@@ -16,6 +16,7 @@
 预置两套可切换配置：
 - `config/search_config.fast.json`（速度优先）
 - `config/search_config.accurate.json`（精度优先）
+- `config/search_config.10k_12g.json`（10k数据量 + 12G GPU / 32G内存主力档位）
 
 关键项：
 - `ocr.backend`：当前为 `rapidocr`（本地OCR，不依赖 deepseek / tesseract）
@@ -66,6 +67,7 @@ python src/search_similar_return_code.py data/test_samples/T01.jpg
 ```bash
 python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.fast.json
 python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.accurate.json
+python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.10k_12g.json
 ```
 
 输出：标准输出 JSON（可自行重定向到文件）
@@ -95,6 +97,9 @@ SEARCH_CONFIG=config/search_config.fast.json uvicorn src.api_server:app --host 0
 
 # 精度优先
 SEARCH_CONFIG=config/search_config.accurate.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+
+# 10k主力档（12G GPU / 32G RAM）
+SEARCH_CONFIG=config/search_config.10k_12g.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 健康检查：
@@ -195,6 +200,8 @@ sudo bash scripts/update_ufw_cloudflare.sh
 3. 修改 `miniprogram/utils/config.js`：
    - `baseUrl`：默认已配置为 `https://api.seekfire.cloud`
    - `apiKey`：对应的 `X-API-Key`
+   - `printBaseUrl`：拼图打印服务地址（可与 `baseUrl` 相同）
+   - `printPaths`：拼图打印接口 URI（默认使用 `/api/v1/...`）
 4. 运行后即可上传或拍照搜款
 
 ### 说明
@@ -203,3 +210,111 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - 内置重试：默认最多重试 4 次（网络错误、408、429、5xx 会重试；4xx 一般不重试）
 - 重试参数可在 `miniprogram/utils/config.js` 的 `retry` 配置中调整
 - 若后端启用 HTTPS 域名，建议将 `baseUrl` 切到 HTTPS
+- 拼图打印页面不再在界面配置地址，统一读取 `miniprogram/utils/config.js`
+
+### Nginx 反向代理（按 URI 区分搜款与打印）
+
+示例：统一后端都在 `127.0.0.1:8000`（搜款 + 拼图打印同一服务）。
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name api.seekfire.cloud;
+
+    # 搜款接口
+    location /search {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /image-url {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /images/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 拼图打印接口（已整合进同一个后端）
+    location /api/v1/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 拼图打印静态资源（预览图和PDF）
+    location /print-static/ {
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    location /print-storage/ {
+        proxy_pass http://127.0.0.1:8000;
+    }
+}
+```
+
+对应小程序配置示例：
+
+```js
+baseUrl: "https://api.seekfire.cloud",
+printBaseUrl: "https://api.seekfire.cloud",
+printPaths: {
+  templates: "/api/v1/templates",
+  upload: "/api/v1/images/upload",
+  render: "/api/v1/render"
+}
+```
+
+### Cloudflare 规则模板（小程序 API）
+
+如果你在小程序里看到 `Sorry, you have been blocked` 或 `Please enable cookies`，通常是 Cloudflare 对 API 路径启用了挑战页（JS/Cookie Challenge），小程序无法完成挑战。
+
+推荐规则顺序如下（从上到下）：
+
+1. `Skip` 规则（优先，放在最前）
+- 作用：对 API 路径跳过 WAF/Bot 挑战
+- 表达式：
+
+```txt
+(http.request.uri.path starts_with "/api/")
+or (http.request.uri.path eq "/search")
+or (http.request.uri.path eq "/image-url")
+or (http.request.uri.path starts_with "/images/")
+or (http.request.uri.path starts_with "/print-static/")
+or (http.request.uri.path starts_with "/print-storage/")
+```
+
+- Action：`Skip`
+- Skip components：`Managed WAF`、`Super Bot Fight Mode`、`Bot Fight Mode`（按你账号里可选项勾选）
+
+2. 可选 `Allow` 规则（更严格）
+- 作用：仅对带有效 `X-API-Key` 的请求放行 API
+- 表达式示例（把 `replace-with-real-key-a` 换成真实 key）：
+
+```txt
+(
+  (http.request.uri.path starts_with "/api/")
+  or (http.request.uri.path eq "/search")
+  or (http.request.uri.path eq "/image-url")
+)
+and (http.request.headers["x-api-key"][0] eq "replace-with-real-key-a")
+```
+
+- Action：`Allow`
+
+3. 避免对 API 路径使用 Challenge
+- 不要给上述 API 路径配置 `Managed Challenge` / `JS Challenge` / `Interactive Challenge`。
+- 这些挑战适合浏览器页面，不适合小程序接口。

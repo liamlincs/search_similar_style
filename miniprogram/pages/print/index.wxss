@@ -1,0 +1,140 @@
+.container {
+  padding: 24rpx;
+  padding-bottom: 150rpx;
+  background: #f4f7f9;
+}
+
+.hero {
+  margin-bottom: 16rpx;
+}
+
+.title {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.subtitle {
+  margin-top: 10rpx;
+  color: #64748b;
+  font-size: 26rpx;
+}
+
+.subtitle2 {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #0f172a;
+  margin-bottom: 16rpx;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 20rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 10rpx 24rpx rgba(17, 94, 89, 0.08);
+}
+
+.controls {
+  display: grid;
+  gap: 10rpx;
+}
+
+.upload-print {
+  margin-top: 16rpx;
+  background: #0f766e !important;
+  color: #ffffff !important;
+}
+
+.picker {
+  padding: 16rpx;
+  border-radius: 12rpx;
+  border: 1px solid #d0dbe4;
+  color: #334155;
+  font-size: 28rpx;
+}
+
+.render-print {
+  margin-top: 16rpx;
+  background: #1d4ed8 !important;
+  color: #ffffff !important;
+}
+
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10rpx;
+}
+
+.thumb-wrap {
+  position: relative;
+}
+
+.thumb {
+  width: 100%;
+  height: 210rpx;
+  border-radius: 10rpx;
+}
+
+.remove {
+  margin-top: 6rpx;
+  color: #b91c1c;
+  font-size: 24rpx;
+  text-align: center;
+}
+
+.preview {
+  width: 100%;
+  height: 900rpx;
+  border-radius: 10rpx;
+  border: 1px solid #dbe6eb;
+  background: #fff;
+}
+
+.action-row {
+  margin-top: 12rpx;
+  display: flex;
+  gap: 10rpx;
+}
+
+.action {
+  flex: 1;
+  background: #0b7a45 !important;
+  color: #fff !important;
+}
+
+.action.ghost {
+  background: #ffffff !important;
+  color: #1d4ed8 !important;
+  border: 1px solid #b9cdfb;
+}
+
+.bottom-nav {
+  position: fixed;
+  left: 24rpx;
+  right: 24rpx;
+  bottom: 24rpx;
+  background: #ffffff;
+  border-radius: 18rpx;
+  box-shadow: 0 12rpx 32rpx rgba(15, 23, 42, 0.14);
+  padding: 10rpx;
+  display: flex;
+  gap: 10rpx;
+}
+
+.nav-item {
+  flex: 1;
+  text-align: center;
+  height: 72rpx;
+  line-height: 72rpx;
+  border-radius: 12rpx;
+  font-size: 27rpx;
+  color: #334155;
+  background: #f1f5f9;
+}
+
+.nav-item.active {
+  background: #0f172a;
+  color: #ffffff;
+  font-weight: 600;
+}

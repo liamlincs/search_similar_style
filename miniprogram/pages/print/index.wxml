@@ -1,0 +1,55 @@
+<view class="container">
+  <view class="hero">
+    <view class="title">拼图打印</view>
+    <view class="subtitle">上传多张图片，套用模板，生成打印预览和 PDF</view>
+  </view>
+
+  <view class="card">
+    <button class="upload-print" loading="{{printUploading}}" disabled="{{printUploading}}" bindtap="pickPrintImages">
+      {{printUploading ? '上传中...' : '选择拼图图片并上传'}}
+    </button>
+
+    <view class="controls">
+      <picker mode="selector" range="{{paperOptions}}" value="{{paperIndex}}" bindchange="onPaperChange">
+        <view class="picker">纸张：{{paperOptions[paperIndex]}}</view>
+      </picker>
+
+      <picker mode="selector" range="{{templateNames}}" value="{{templateIndex}}" bindchange="onTemplateChange">
+        <view class="picker">模板：{{templateNames[templateIndex] || '加载中...'}}</view>
+      </picker>
+    </view>
+
+    <button
+      class="render-print"
+      loading="{{printRendering}}"
+      disabled="{{printUploading || printRendering || printImageIds.length === 0}}"
+      bindtap="renderPrintCollage"
+    >
+      {{printRendering ? '拼图生成中...' : '生成拼图预览和 PDF'}}
+    </button>
+  </view>
+
+  <view class="card" wx:if="{{printUploadedImages.length}}">
+    <view class="subtitle2">拼图素材（{{printUploadedImages.length}}）</view>
+    <view class="gallery">
+      <view class="thumb-wrap" wx:for="{{printUploadedImages}}" wx:key="image_id">
+        <image class="thumb" mode="aspectFill" src="{{item.display_url || item.processed_url}}" />
+        <view class="remove" data-id="{{item.image_id}}" bindtap="removePrintImage">移除</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{printPreviewUrl}}">
+    <view class="subtitle2">拼图打印预览</view>
+    <image class="preview" mode="aspectFit" src="{{printPreviewLocalUrl || printPreviewUrl}}" binderror="onPrintPreviewError" />
+    <view class="action-row">
+      <button class="action" bindtap="openPrintPdf">直接打印（打开PDF）</button>
+      <button class="action ghost" bindtap="copyPrintPdfLink">复制链接（Safari打印）</button>
+    </view>
+  </view>
+
+  <view class="bottom-nav">
+    <view class="nav-item" bindtap="goSearchPage">搜款</view>
+    <view class="nav-item active" bindtap="goPrintPage">拼图打印</view>
+  </view>
+</view>

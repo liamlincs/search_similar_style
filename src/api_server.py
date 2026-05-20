@@ -10,9 +10,10 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 THIS_DIR = Path(__file__).resolve().parent
@@ -30,6 +31,7 @@ from search_similar_return_code import (
     topk_style_codes,
     try_extract_query_style_code,
 )
+from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
 
 
 class SearchResponse(BaseModel):
@@ -113,6 +115,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     w_color = float(hybrid_weights.get("color", 0.15))
     w_stripe = float(hybrid_weights.get("stripe", 0.10))
     feature_cache_enabled = bool(search_cfg.get("feature_cache_enabled", True))
+    db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
+    recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
+    preload_rerank_candidate_cache = bool(search_cfg.get("preload_rerank_candidate_cache", False))
+    rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
     auth_cfg = cfg.get("auth", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
@@ -140,10 +146,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         standard_multicrop=standard_multicrop,
         standard_crop_ratio=standard_crop_ratio,
         use_cache=feature_cache_enabled,
+        db_feature_dtype=db_feature_dtype,
     )
     logging.info("api preloaded db: %d items", len(names))
     rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
-    if rerank_enabled:
+    if rerank_enabled and preload_rerank_candidate_cache:
         t0 = time.perf_counter()
         rerank_candidate_cache = precompute_rerank_candidate_cache(
             standard_dir=standard_dir,
@@ -155,11 +162,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             len(rerank_candidate_cache),
             time.perf_counter() - t0,
         )
+    elif rerank_enabled:
+        logging.info("api rerank candidate cache preload disabled; using lazy cache on requests")
     label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
     if label_memory_enabled:
         logging.info("api preloaded label memory refs: %d", len(label_memory_refs))
 
     app = FastAPI(title="search-similar-style-api", version="1.0.0")
+    app.mount("/print-static", StaticFiles(directory=str(PRINT_STATIC_DIR)), name="print-static")
+    app.mount("/print-storage", StaticFiles(directory=str(PRINT_STORAGE_DIR)), name="print-storage")
 
     app.state.ready = False
     app.state.ready_detail = "initializing"
@@ -174,8 +185,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ua = request.headers.get("user-agent", "-")
 
         path = request.url.path
-        allow_public = path in {"/health", "/ready"}
-        allow_api = path in {"/search", "/image-url"} or path.startswith("/images/")
+        allow_public = path in {"/health", "/ready"} or path.startswith("/print-static/") or path.startswith("/print-storage/")
+        allow_api = (
+            path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload"}
+            or path.startswith("/images/")
+            or path.startswith("/print-static/")
+            or path.startswith("/print-storage/")
+        )
         if not (allow_public or allow_api):
             resp = JSONResponse(status_code=404, content={"detail": "not found"})
             logging.debug(
@@ -371,6 +387,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             t0 = time.perf_counter()
             image_topk = min(len(names), max(top_k * max(candidate_multiplier, 1), top_k))
+            if recall_topn_cap > 0:
+                image_topk = min(image_topk, recall_topn_cap)
             ranked_images = search_topk_images(
                 query_path,
                 names,
@@ -401,6 +419,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     rerank_query_views_max=rerank_query_views_max,
                     rerank_candidate_views_max=rerank_candidate_views_max,
                     candidate_feature_cache=rerank_candidate_cache,
+                    max_unique_codes=rerank_max_unique_codes,
                 )
                 t_rerank = time.perf_counter() - t1
             else:
@@ -454,6 +473,32 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "topk_style_codes": rows,
             "api_user": getattr(request.state, "api_user", "unknown"),
         }
+
+    @app.get("/api/v1/templates")
+    def api_list_templates() -> List[Dict[str, Any]]:
+        return list_templates()
+
+    @app.post("/api/v1/images/upload")
+    async def api_upload_image(file: UploadFile = File(...)) -> Dict[str, Any]:
+        suffix = Path(file.filename or "").suffix.lower() or ".jpg"
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise HTTPException(status_code=400, detail="仅支持 jpg/jpeg/png/webp")
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="空文件")
+
+        try:
+            return process_upload(content, suffix=suffix)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"处理图片失败: {exc}") from exc
+
+    @app.post("/api/v1/render")
+    def api_render_layout(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+        try:
+            return render_layout(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     app.state.ready = True
     app.state.ready_detail = "ready"

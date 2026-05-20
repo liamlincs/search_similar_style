@@ -122,6 +122,7 @@ def build_feature_db_with_cache(
     standard_multicrop: bool = True,
     standard_crop_ratio: float = 0.72,
     use_cache: bool = True,
+    db_feature_dtype: str = "float32",
 ) -> Tuple[List[str], np.ndarray]:
     files = collect_images(standard_dir, pattern, exts)
     if not files:
@@ -136,6 +137,7 @@ def build_feature_db_with_cache(
             "standard_crop_ratio": float(standard_crop_ratio),
             "pattern": pattern,
             "exts": list(exts),
+            "db_feature_dtype": str(db_feature_dtype),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -148,7 +150,10 @@ def build_feature_db_with_cache(
                 and list(arr["file_sigs"]) == sigs
             ):
                 names = [str(x) for x in arr["names"]]
-                feats = arr["feats"].astype(np.float32)
+                if str(db_feature_dtype).lower() == "float16":
+                    feats = arr["feats"].astype(np.float16)
+                else:
+                    feats = arr["feats"].astype(np.float32)
                 logging.info("feature cache hit: %s (%d items)", cache_path, len(names))
                 return names, feats
         except Exception:
@@ -167,6 +172,11 @@ def build_feature_db_with_cache(
         standard_multicrop=standard_multicrop,
         standard_crop_ratio=standard_crop_ratio,
     )
+    if str(db_feature_dtype).lower() == "float16":
+        feats = feats.astype(np.float16)
+    else:
+        feats = feats.astype(np.float32)
+
     if use_cache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
@@ -174,7 +184,7 @@ def build_feature_db_with_cache(
             cache_key=np.array([cache_key], dtype=object),
             file_sigs=np.array(sigs, dtype=object),
             names=np.array(names, dtype=object),
-            feats=feats.astype(np.float32),
+            feats=feats,
         )
         logging.info("feature cache write: %s", cache_path)
     logging.info("build feature db done: %d items in %.2fs", len(names), time.perf_counter() - t0)
@@ -294,7 +304,7 @@ def search_topk_images(
         extract_embedding(v, backend, w_clip, w_shape, w_color, w_stripe)
         for v in q_views
     ]
-    sims_stack = np.vstack([feats @ q for q in q_feats])
+    sims_stack = np.vstack([(feats @ q).astype(np.float32) for q in q_feats])
     sims = sims_stack.max(axis=0)
     k = min(top_k, len(names))
     idx = np.argpartition(-sims, k - 1)[:k]
@@ -504,6 +514,7 @@ def rerank_candidates_with_model(
     rerank_query_views_max: int = 4,
     rerank_candidate_views_max: int = 2,
     candidate_feature_cache: Dict[str, List[Dict[str, np.ndarray]]] | None = None,
+    max_unique_codes: int = 0,
 ) -> List[Tuple[str, float]]:
     if not reranker_model_path.exists():
         return ranked_images
@@ -523,6 +534,19 @@ def rerank_candidates_with_model(
     q_feats = [extract_modal_features(v) for v in q_views]
     topn = min(len(ranked_images), max(1, rerank_topn))
     head = ranked_images[:topn]
+    if max_unique_codes > 0:
+        filtered: List[Tuple[str, float]] = []
+        code_seen = set()
+        for item in head:
+            code = filename_to_style_code(item[0])
+            if code in code_seen:
+                continue
+            code_seen.add(code)
+            filtered.append(item)
+            if len(code_seen) >= max_unique_codes:
+                break
+        if filtered:
+            head = filtered
     tail = ranked_images[topn:]
 
     rescored: List[Tuple[str, float, float]] = []
@@ -603,6 +627,9 @@ def main() -> None:
     label_memory_sim_threshold = float(search_cfg.get("label_memory_sim_threshold", 0.90))
     label_memory_max_boost = float(search_cfg.get("label_memory_max_boost", 0.08))
     feature_cache_enabled = bool(search_cfg.get("feature_cache_enabled", True))
+    db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
+    recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
+    rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
 
     names, feats = build_feature_db_with_cache(
         standard_dir,
@@ -616,6 +643,7 @@ def main() -> None:
         standard_multicrop=standard_multicrop,
         standard_crop_ratio=standard_crop_ratio,
         use_cache=feature_cache_enabled,
+        db_feature_dtype=db_feature_dtype,
     )
 
     query = args.query_image
@@ -623,6 +651,8 @@ def main() -> None:
         raise FileNotFoundError(f"query image not found: {query}")
 
     image_topk = min(len(names), max(top_k * max(candidate_multiplier, 1), top_k))
+    if recall_topn_cap > 0:
+        image_topk = min(image_topk, recall_topn_cap)
     ranked_images = search_topk_images(
         query,
         names,
@@ -650,6 +680,7 @@ def main() -> None:
             query_component_views=query_component_views,
             rerank_query_views_max=rerank_query_views_max,
             rerank_candidate_views_max=rerank_candidate_views_max,
+            max_unique_codes=rerank_max_unique_codes,
         )
     rows = topk_style_codes(
         ranked_images,

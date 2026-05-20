@@ -1,5 +1,6 @@
 .container {
   padding: 28rpx;
+  padding-bottom: 150rpx;
 }
 
 .hero {
@@ -24,6 +25,7 @@
   border-radius: 24rpx;
   padding: 22rpx;
   box-shadow: 0 12rpx 30rpx rgba(15, 23, 42, 0.08);
+  margin-bottom: 20rpx;
 }
 
 .query-wrap {
@@ -87,7 +89,8 @@
   text-align: center;
 }
 
-.actions button::after {
+.actions button::after,
+.retry-btn::after {
   border: none;
 }
 
@@ -134,10 +137,6 @@
   font-size: 27rpx;
 }
 
-.retry-btn::after {
-  border: none;
-}
-
 .result-section {
   margin-top: 26rpx;
 }
@@ -146,6 +145,7 @@
   font-size: 31rpx;
   font-weight: 600;
   margin-bottom: 14rpx;
+  color: #0f172a;
 }
 
 .card-list {
@@ -202,4 +202,34 @@
   margin-top: 8rpx;
   font-size: 22rpx;
   color: #64748b;
+}
+
+.bottom-nav {
+  position: fixed;
+  left: 24rpx;
+  right: 24rpx;
+  bottom: 24rpx;
+  background: #ffffff;
+  border-radius: 18rpx;
+  box-shadow: 0 12rpx 32rpx rgba(15, 23, 42, 0.14);
+  padding: 10rpx;
+  display: flex;
+  gap: 10rpx;
+}
+
+.nav-item {
+  flex: 1;
+  text-align: center;
+  height: 72rpx;
+  line-height: 72rpx;
+  border-radius: 12rpx;
+  font-size: 27rpx;
+  color: #334155;
+  background: #f1f5f9;
+}
+
+.nav-item.active {
+  background: #0f172a;
+  color: #ffffff;
+  font-weight: 600;
 }

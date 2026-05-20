@@ -7,3 +7,4 @@ opencv-python-headless==4.10.0.84
 fastapi>=0.111
 uvicorn>=0.30
 python-multipart>=0.0.9
+reportlab>=4.2

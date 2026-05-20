@@ -1,6 +1,7 @@
 {
   "pages": [
-    "pages/index/index"
+    "pages/index/index",
+    "pages/print/index"
   ],
   "window": {
     "navigationBarTitleText": "以图搜款",
