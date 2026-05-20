@@ -1,12 +1,18 @@
 <view class="container">
   <view class="hero">
-    <view class="title">局部改色</view>
-    <view class="subtitle">选择图片，指定矩形区域与目标色，快速预览</view>
+    <view class="title">局部换色</view>
+    <view class="subtitle">标准换色需框选区域，AI换色可直接整图处理</view>
   </view>
 
   <view class="card">
-    <button class="pick" bindtap="chooseImage">选择图片</button>
-    <view wx:if="{{localImage}}" class="stage" bindtouchstart="handleStageTouchStart" bindtouchmove="handleStageTouchMove" bindtouchend="handleStageTouchEnd">
+    <button class="btn btn-primary" bindtap="chooseImage">选择图片</button>
+    <view
+      wx:if="{{localImage}}"
+      class="stage"
+      bindtouchstart="handleStageTouchStart"
+      bindtouchmove="handleStageTouchMove"
+      bindtouchend="handleStageTouchEnd"
+    >
       <image class="stage-img" src="{{localImage}}" mode="aspectFit" />
       <view
         wx:if="{{selRect}}"
@@ -16,39 +22,61 @@
         <view class="sel-label">{{selRect.w}} x {{selRect.h}}</view>
       </view>
     </view>
-    <view wx:if="{{localImage}}" class="hint">在图片上拖动可创建选区，拖动已选区域可移动</view>
+    <view wx:if="{{localImage}}" class="hint">在图上拖动创建选区；拖动选区内部可移动</view>
+  </view>
 
-    <view class="field">
-      <text>目标色（调色板）</text>
-      <view class="palette">
-        <view
-          wx:for="{{palette}}"
-          wx:key="hex"
-          class="swatch {{selectedColorIndex === index ? 'active' : ''}}"
-          style="background: #{{item.hex}};"
-          data-index="{{index}}"
-          bindtap="selectColor"
-        ></view>
-      </view>
-      <view class="picked">当前：{{palette[selectedColorIndex].name}} #{{palette[selectedColorIndex].hex}}</view>
+  <view class="card">
+    <view class="mode-switch">
+      <view class="mode-item {{mode === 'fast' ? 'active' : ''}}" data-mode="fast" bindtap="switchMode">标准换色</view>
+      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">AI换色（整图）</view>
     </view>
 
-    <button class="clear" bindtap="clearSelection">清除选区</button>
-    <view class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
-    <view class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
+    <view class="field">
+      <view class="field-title">目标色（自选）</view>
+      <view class="wheel-wrap">
+        <view class="wheel-touch" bindtouchstart="onWheelTouchStart" bindtouchmove="onWheelTouchMove">
+          <view class="color-wheel"></view>
+          <view class="wheel-fade"></view>
+        </view>
+        <view class="picker-dot" style="left: {{pickX}}px; top: {{pickY}}px;"></view>
+      </view>
+      <view class="field-title sm">明度</view>
+      <slider min="0" max="100" value="{{hsvV * 100}}" bindchange="onValueChange" />
+      <view class="picked-row">
+        <view class="color-chip" style="background:#{{targetHex}};"></view>
+        <view class="picked">当前颜色：#{{targetHex}}</view>
+      </view>
+    </view>
 
-    <button class="run" loading="{{processing}}" bindtap="runRecolor">开始改色</button>
+    <view wx:if="{{mode === 'fast'}}">
+      <button class="btn btn-ghost" bindtap="clearSelection">清除选区</button>
+      <view class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
+      <view class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
+      <button class="btn btn-primary run" loading="{{processing}}" disabled="{{processingAi}}" bindtap="runRecolor">开始标准换色</button>
+    </view>
+
+    <view wx:if="{{mode === 'ai'}}">
+      <view class="field-title">AI换色提示词</view>
+      <textarea
+        class="prompt-input"
+        maxlength="300"
+        value="{{aiPrompt}}"
+        placeholder="例如：将画面主色调改为目标色，保留文字清晰和光影层次"
+        bindinput="onAiPromptInput"
+      />
+      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI换色</button>
+    </view>
   </view>
 
   <view class="card" wx:if="{{recoloredUrl}}">
-    <view class="subtitle2">改色结果（点击放大）</view>
+    <view class="subtitle2">换色结果（点击放大）</view>
     <image class="result-img" src="{{recoloredLocalUrl || recoloredUrl}}" mode="aspectFit" bindtap="previewResult" binderror="onResultImageError" />
     <view class="url-tip">结果地址：{{recoloredUrl}}</view>
   </view>
 
   <view class="bottom-nav">
-    <view class="nav-item" bindtap="goSearchPage">搜款</view>
+    <view class="nav-item" bindtap="goSearchPage">以图搜款</view>
+    <view class="nav-item active" bindtap="goRecolorPage">局部换色</view>
     <view class="nav-item" bindtap="goPrintPage">拼图打印</view>
-    <view class="nav-item active" bindtap="goRecolorPage">局部改色</view>
   </view>
 </view>

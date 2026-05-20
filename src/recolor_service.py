@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import colorsys
+import base64
+import json
 import uuid
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent
 RECOLOR_DIR = BASE_DIR / "recolor_runtime"
 RECOLOR_OUTPUT_DIR = RECOLOR_DIR / "outputs"
 RECOLOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/images/generations"
 
 
 def _parse_hex_color(hex_color: str) -> tuple[float, float, float]:
@@ -107,4 +112,129 @@ def recolor_region(
         "job_id": out_id,
         "recolored_url": f"/recolor-static/outputs/{out_path.name}",
         "bbox": {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)},
+    }
+
+
+def recolor_region_ai(
+    file_bytes: bytes,
+    suffix: str,
+    api_key: str,
+    model: str,
+    target_hex: str,
+    x_ratio: float,
+    y_ratio: float,
+    w_ratio: float,
+    h_ratio: float,
+    strength: float = 0.7,
+    prompt: str = "",
+    negative_prompt: str = "",
+    seed: int | None = None,
+    num_inference_steps: int | None = None,
+    image2: str | None = None,
+    image3: str | None = None,
+) -> dict:
+    if not api_key:
+        raise ValueError("缺少 SILICONFLOW_API_KEY，无法调用 AI 改色")
+
+    from io import BytesIO
+
+    img = Image.open(BytesIO(file_bytes))
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    w, h = img.size
+
+    x_ratio = float(np.clip(x_ratio, 0.0, 1.0))
+    y_ratio = float(np.clip(y_ratio, 0.0, 1.0))
+    w_ratio = float(np.clip(w_ratio, 0.01, 1.0))
+    h_ratio = float(np.clip(h_ratio, 0.01, 1.0))
+    strength = float(np.clip(strength, 0.0, 1.0))
+
+    x0 = int(round(x_ratio * w))
+    y0 = int(round(y_ratio * h))
+    bw = int(round(w_ratio * w))
+    bh = int(round(h_ratio * h))
+    x1 = min(w, x0 + bw)
+    y1 = min(h, y0 + bh)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if x1 > x0 and y1 > y0:
+        mask[y0:y1, x0:x1] = 1
+
+    # 生成可视蒙版图（白色=需要改色，黑色=保留）
+    mask_img = Image.fromarray((mask * 255).astype(np.uint8), mode="L")
+    mask_buf = BytesIO()
+    mask_img.save(mask_buf, format="PNG")
+    mask_b64 = base64.b64encode(mask_buf.getvalue()).decode("ascii")
+
+    src_buf = BytesIO()
+    img.save(src_buf, format="PNG")
+    src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
+
+    final_prompt = (
+        prompt.strip()
+        or f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
+    )
+
+    payload: dict = {
+        "model": model,
+        "prompt": final_prompt,
+        "image": f"data:image/png;base64,{src_b64}",
+        "image2": f"data:image/png;base64,{mask_b64}",
+    }
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
+    if seed is not None:
+        payload["seed"] = int(seed)
+    if num_inference_steps is not None:
+        payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
+    if image2:
+        payload["image2"] = image2
+    if image3:
+        payload["image3"] = image3
+
+    req = urllib.request.Request(
+        SILICONFLOW_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = resp.read().decode("utf-8")
+            data = json.loads(body)
+    except Exception as exc:
+        raise ValueError(f"调用 SiliconFlow 失败: {exc}") from exc
+
+    images = data.get("images") or []
+    if not images or not isinstance(images[0], dict) or not images[0].get("url"):
+        raise ValueError(f"SiliconFlow 未返回图片链接: {data}")
+    result_url = str(images[0]["url"])
+
+    try:
+        with urllib.request.urlopen(result_url, timeout=120) as img_resp:
+            result_bytes = img_resp.read()
+        out_img = Image.open(BytesIO(result_bytes)).convert("RGB")
+    except Exception as exc:
+        raise ValueError(f"下载 AI 改色结果失败: {exc}") from exc
+
+    out_id = uuid.uuid4().hex
+    out_path = RECOLOR_OUTPUT_DIR / f"{out_id}.jpg"
+    out_img.save(out_path, format="JPEG", quality=92)
+
+    return {
+        "job_id": out_id,
+        "recolored_url": f"/recolor-static/outputs/{out_path.name}",
+        "bbox": {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)},
+        "mode": "ai",
+        "used_params": {
+            "provider": "siliconflow",
+            "model": model,
+            "prompt": final_prompt,
+            "negative_prompt": negative_prompt,
+            "seed": seed,
+            "num_inference_steps": payload.get("num_inference_steps"),
+            "strength_hint": strength,
+        },
     }

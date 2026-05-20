@@ -32,7 +32,7 @@ from search_similar_return_code import (
     try_extract_query_style_code,
 )
 from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
-from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region
+from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
 
 
 class SearchResponse(BaseModel):
@@ -194,7 +194,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             or path.startswith("/recolor-static/")
         )
         allow_api = (
-            path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor"}
+            path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
             or path.startswith("/images/")
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
@@ -536,6 +536,51 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 h_ratio=h_ratio,
                 strength=strength,
                 feather_ratio=feather_ratio,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/recolor-ai")
+    async def api_recolor_ai(
+        file: UploadFile = File(...),
+        model: str = Form("Qwen/Qwen-Image-Edit-2509"),
+        target_hex: str = Form("FF5500"),
+        x_ratio: float = Form(0.2),
+        y_ratio: float = Form(0.2),
+        w_ratio: float = Form(0.4),
+        h_ratio: float = Form(0.4),
+        strength: float = Form(0.7),
+        prompt: str = Form(""),
+        negative_prompt: str = Form(""),
+        seed: int | None = Form(None),
+        num_inference_steps: int | None = Form(None),
+        image2: str | None = Form(None),
+        image3: str | None = Form(None),
+    ) -> Dict[str, Any]:
+        suffix = Path(file.filename or "").suffix.lower() or ".jpg"
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise HTTPException(status_code=400, detail="仅支持 jpg/jpeg/png/webp")
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="空文件")
+        try:
+            return recolor_region_ai(
+                file_bytes=content,
+                suffix=suffix,
+                api_key=os.getenv("SILICONFLOW_API_KEY", "").strip(),
+                model=model,
+                target_hex=target_hex,
+                x_ratio=x_ratio,
+                y_ratio=y_ratio,
+                w_ratio=w_ratio,
+                h_ratio=h_ratio,
+                strength=strength,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                seed=seed,
+                num_inference_steps=num_inference_steps,
+                image2=image2,
+                image3=image3,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

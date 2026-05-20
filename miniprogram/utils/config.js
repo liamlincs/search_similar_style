@@ -12,6 +12,7 @@ const config = {
     render: "/api/v1/render"
   },
   recolorPath: "/recolor",
+  recolorAiPath: "/recolor-ai",
   includeImageBase64: false,
   timeout: 60000,
   retry: {

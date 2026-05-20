@@ -237,6 +237,32 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - `pages/recolor/index`
 - 底部导航可从“搜款/拼图打印”跳转到“局部改色”
 
+### AI改色（SiliconFlow / Qwen-Image-Edit-2509）
+
+配置环境变量（服务端）：
+
+```bash
+export SILICONFLOW_API_KEY="你的_siliconflow_api_key"
+```
+
+新增接口：`POST /recolor-ai`（`multipart/form-data`）
+- 必填：`file`
+- 基础参数：
+  - `model`（默认：`Qwen/Qwen-Image-Edit-2509`）
+  - `target_hex`
+  - `x_ratio` / `y_ratio` / `w_ratio` / `h_ratio`
+  - `strength`
+- 可选参数：
+  - `negative_prompt`
+  - `seed`
+  - `num_inference_steps`
+  - `image2`
+  - `image3`
+
+说明：
+- 后端调用 SiliconFlow `POST /v1/images/generations`，并将框选区域转为蒙版图（作为 `image2`）辅助编辑。
+- 返回字段 `used_params` 会给出本次实际生效的参数。
+
 ### Nginx 反向代理（按 URI 区分搜款与打印）
 
 示例：统一后端都在 `127.0.0.1:8000`（搜款 + 拼图打印同一服务）。
@@ -288,6 +314,29 @@ server {
     location /print-storage/ {
         proxy_pass http://127.0.0.1:8000;
     }
+
+    # 局部改色接口
+    location = /recolor {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # AI改色接口
+    location = /recolor-ai {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 改色结果图
+    location /recolor-static/ {
+        proxy_pass http://127.0.0.1:8000;
+    }
 }
 ```
 
@@ -314,12 +363,15 @@ printPaths: {
 - 表达式：
 
 ```txt
-(http.request.uri.path starts_with "/api/")
-or (http.request.uri.path eq "/search")
-or (http.request.uri.path eq "/image-url")
-or (http.request.uri.path starts_with "/images/")
-or (http.request.uri.path starts_with "/print-static/")
-or (http.request.uri.path starts_with "/print-storage/")
+starts_with(http.request.uri.path, "/api/")
+or http.request.uri.path eq "/search"
+or http.request.uri.path eq "/image-url"
+or starts_with(http.request.uri.path, "/images/")
+or starts_with(http.request.uri.path, "/print-static/")
+or starts_with(http.request.uri.path, "/print-storage/")
+or http.request.uri.path eq "/recolor"
+or http.request.uri.path eq "/recolor-ai"
+or starts_with(http.request.uri.path, "/recolor-static/")
 ```
 
 - Action：`Skip`
