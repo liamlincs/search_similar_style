@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -511,13 +511,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.post("/recolor")
     async def api_recolor(
         file: UploadFile = File(...),
-        target_hex: str = "FF5500",
-        x_ratio: float = 0.2,
-        y_ratio: float = 0.2,
-        w_ratio: float = 0.4,
-        h_ratio: float = 0.4,
-        strength: float = 0.8,
-        feather_ratio: float = 0.02,
+        target_hex: str = Form("FF5500"),
+        x_ratio: float = Form(0.2),
+        y_ratio: float = Form(0.2),
+        w_ratio: float = Form(0.4),
+        h_ratio: float = Form(0.4),
+        strength: float = Form(0.8),
+        feather_ratio: float = Form(0.02),
     ) -> Dict[str, Any]:
         suffix = Path(file.filename or "").suffix.lower() or ".jpg"
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:

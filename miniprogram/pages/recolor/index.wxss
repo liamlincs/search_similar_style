@@ -5,10 +5,20 @@
 .subtitle2 { font-size: 28rpx; font-weight: 600; color: #0f172a; }
 .card { background: #fff; border-radius: 18rpx; padding: 20rpx; margin-bottom: 18rpx; box-shadow: 0 8rpx 20rpx rgba(15,23,42,.08); }
 .pick { background: #0f766e !important; color: #fff !important; }
-.img { width: 100%; height: 520rpx; margin-top: 12rpx; border-radius: 12rpx; background: #f1f5f9; }
+.stage { position: relative; width: 100%; height: 520rpx; margin-top: 12rpx; border-radius: 12rpx; background: #f1f5f9; overflow: hidden; }
+.stage-img { width: 100%; height: 100%; }
+.result-img { width: 100%; height: 520rpx; margin-top: 12rpx; border-radius: 12rpx; background: #f1f5f9; }
+.sel-rect { position: absolute; border: 2px solid #22c55e; background: rgba(34, 197, 94, 0.18); box-sizing: border-box; }
+.sel-label { position: absolute; left: 0; top: 0; background: rgba(15, 23, 42, 0.8); color: #fff; font-size: 18rpx; padding: 2rpx 8rpx; }
+.hint { margin-top: 8rpx; color: #64748b; font-size: 22rpx; }
 .field { margin-top: 10rpx; }
-.hex { margin-top: 6rpx; min-height: 68rpx; border: 1px solid #d1dbe6; border-radius: 10rpx; padding: 0 16rpx; }
+.palette { margin-top: 8rpx; display: flex; flex-wrap: wrap; gap: 12rpx; }
+.swatch { width: 56rpx; height: 56rpx; border-radius: 999rpx; border: 2rpx solid #cbd5e1; }
+.swatch.active { border: 4rpx solid #0f172a; transform: scale(1.06); }
+.picked { margin-top: 8rpx; color: #475569; font-size: 22rpx; }
+.clear { margin-top: 12rpx; background: #e2e8f0 !important; color: #334155 !important; }
 .run { margin-top: 14rpx; background: #1d4ed8 !important; color: #fff !important; }
+.url-tip { margin-top: 8rpx; font-size: 20rpx; color: #64748b; word-break: break-all; }
 .bottom-nav { position: fixed; left: 24rpx; right: 24rpx; bottom: 24rpx; background: #fff; border-radius: 18rpx; box-shadow: 0 12rpx 32rpx rgba(15,23,42,.14); padding: 10rpx; display: flex; gap: 10rpx; }
 .nav-item { flex: 1; text-align: center; height: 72rpx; line-height: 72rpx; border-radius: 12rpx; font-size: 25rpx; color: #334155; background: #f1f5f9; }
 .nav-item.active { background: #0f172a; color: #fff; font-weight: 600; }

@@ -6,17 +6,34 @@
 
   <view class="card">
     <button class="pick" bindtap="chooseImage">选择图片</button>
-    <image wx:if="{{localImage}}" class="img" src="{{localImage}}" mode="aspectFit" />
+    <view wx:if="{{localImage}}" class="stage" bindtouchstart="handleStageTouchStart" bindtouchmove="handleStageTouchMove" bindtouchend="handleStageTouchEnd">
+      <image class="stage-img" src="{{localImage}}" mode="aspectFit" />
+      <view
+        wx:if="{{selRect}}"
+        class="sel-rect"
+        style="left: {{selRect.x}}px; top: {{selRect.y}}px; width: {{selRect.w}}px; height: {{selRect.h}}px;"
+      >
+        <view class="sel-label">{{selRect.w}} x {{selRect.h}}</view>
+      </view>
+    </view>
+    <view wx:if="{{localImage}}" class="hint">在图片上拖动可创建选区，拖动已选区域可移动</view>
 
     <view class="field">
-      <text>目标色（HEX）</text>
-      <input class="hex" value="{{targetHex}}" bindinput="onHexInput" placeholder="FF5500" />
+      <text>目标色（调色板）</text>
+      <view class="palette">
+        <view
+          wx:for="{{palette}}"
+          wx:key="hex"
+          class="swatch {{selectedColorIndex === index ? 'active' : ''}}"
+          style="background: #{{item.hex}};"
+          data-index="{{index}}"
+          bindtap="selectColor"
+        ></view>
+      </view>
+      <view class="picked">当前：{{palette[selectedColorIndex].name}} #{{palette[selectedColorIndex].hex}}</view>
     </view>
 
-    <view class="field"><text>X 起点：{{xRatio}}%</text><slider min="0" max="95" value="{{xRatio}}" bindchange="onXChange" /></view>
-    <view class="field"><text>Y 起点：{{yRatio}}%</text><slider min="0" max="95" value="{{yRatio}}" bindchange="onYChange" /></view>
-    <view class="field"><text>宽度：{{wRatio}}%</text><slider min="5" max="100" value="{{wRatio}}" bindchange="onWChange" /></view>
-    <view class="field"><text>高度：{{hRatio}}%</text><slider min="5" max="100" value="{{hRatio}}" bindchange="onHChange" /></view>
+    <button class="clear" bindtap="clearSelection">清除选区</button>
     <view class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
     <view class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
 
@@ -25,7 +42,8 @@
 
   <view class="card" wx:if="{{recoloredUrl}}">
     <view class="subtitle2">改色结果（点击放大）</view>
-    <image class="img" src="{{recoloredUrl}}" mode="aspectFit" bindtap="previewResult" />
+    <image class="result-img" src="{{recoloredLocalUrl || recoloredUrl}}" mode="aspectFit" bindtap="previewResult" binderror="onResultImageError" />
+    <view class="url-tip">结果地址：{{recoloredUrl}}</view>
   </view>
 
   <view class="bottom-nav">
