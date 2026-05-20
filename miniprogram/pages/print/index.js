@@ -44,6 +44,10 @@ Page({
 
   goPrintPage() {},
 
+  goRecolorPage() {
+    wx.navigateTo({ url: "/pages/recolor/index" });
+  },
+
   async loadPrintTemplates() {
     try {
       const templates = await fetchPrintTemplates();
@@ -55,6 +59,7 @@ Page({
         templateIndex: defaultIdx >= 0 ? defaultIdx : 0
       });
     } catch (err) {
+      console.error("[loadPrintTemplates:error]", err);
       wx.showToast({ title: err.message || "加载模板失败", icon: "none" });
     }
   },
@@ -104,6 +109,7 @@ Page({
       });
       wx.showToast({ title: `已上传 ${uploadedBatch.length} 张`, icon: "none" });
     } catch (err) {
+      console.error("[uploadPrintTempFiles:error]", err);
       wx.showToast({ title: err.message || "上传失败", icon: "none" });
     } finally {
       this.setData({ printUploading: false });
@@ -145,6 +151,7 @@ Page({
       });
       wx.showToast({ title: "已生成拼图预览", icon: "none" });
     } catch (err) {
+      console.error("[renderPrintCollage:error]", err);
       wx.showToast({ title: err.message || "生成失败", icon: "none" });
     } finally {
       this.setData({ printRendering: false });

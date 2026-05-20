@@ -11,8 +11,9 @@ const config = {
     upload: "/api/v1/images/upload",
     render: "/api/v1/render"
   },
+  recolorPath: "/recolor",
   includeImageBase64: false,
-  timeout: 30000,
+  timeout: 60000,
   retry: {
     maxRetries: 4,
     baseDelayMs: 800,

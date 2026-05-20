@@ -28,6 +28,10 @@ Page({
     wx.navigateTo({ url: "/pages/print/index" });
   },
 
+  goRecolorPage() {
+    wx.navigateTo({ url: "/pages/recolor/index" });
+  },
+
   goSearchPage() {},
 
   pickImage(sourceType) {

@@ -32,6 +32,7 @@ from search_similar_return_code import (
     try_extract_query_style_code,
 )
 from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
+from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region
 
 
 class SearchResponse(BaseModel):
@@ -171,6 +172,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app = FastAPI(title="search-similar-style-api", version="1.0.0")
     app.mount("/print-static", StaticFiles(directory=str(PRINT_STATIC_DIR)), name="print-static")
     app.mount("/print-storage", StaticFiles(directory=str(PRINT_STORAGE_DIR)), name="print-storage")
+    app.mount("/recolor-static", StaticFiles(directory=str(RECOLOR_OUTPUT_DIR.parent)), name="recolor-static")
 
     app.state.ready = False
     app.state.ready_detail = "initializing"
@@ -185,12 +187,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ua = request.headers.get("user-agent", "-")
 
         path = request.url.path
-        allow_public = path in {"/health", "/ready"} or path.startswith("/print-static/") or path.startswith("/print-storage/")
+        allow_public = (
+            path in {"/health", "/ready"}
+            or path.startswith("/print-static/")
+            or path.startswith("/print-storage/")
+            or path.startswith("/recolor-static/")
+        )
         allow_api = (
-            path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload"}
+            path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor"}
             or path.startswith("/images/")
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
+            or path.startswith("/recolor-static/")
         )
         if not (allow_public or allow_api):
             resp = JSONResponse(status_code=404, content={"detail": "not found"})
@@ -497,6 +505,38 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def api_render_layout(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         try:
             return render_layout(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/recolor")
+    async def api_recolor(
+        file: UploadFile = File(...),
+        target_hex: str = "FF5500",
+        x_ratio: float = 0.2,
+        y_ratio: float = 0.2,
+        w_ratio: float = 0.4,
+        h_ratio: float = 0.4,
+        strength: float = 0.8,
+        feather_ratio: float = 0.02,
+    ) -> Dict[str, Any]:
+        suffix = Path(file.filename or "").suffix.lower() or ".jpg"
+        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+            raise HTTPException(status_code=400, detail="仅支持 jpg/jpeg/png/webp")
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="空文件")
+        try:
+            return recolor_region(
+                file_bytes=content,
+                suffix=suffix,
+                target_hex=target_hex,
+                x_ratio=x_ratio,
+                y_ratio=y_ratio,
+                w_ratio=w_ratio,
+                h_ratio=h_ratio,
+                strength=strength,
+                feather_ratio=feather_ratio,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

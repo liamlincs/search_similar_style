@@ -83,6 +83,13 @@ python3 -m venv .venv
 pip install -r requirements.txt
 ```
 
+若在 Ubuntu 启动时报错 `ImportError: libGL.so.1: cannot open shared object file`，先安装系统依赖：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libgl1 libglib2.0-0
+```
+
 启动：
 
 ```bash
@@ -211,6 +218,24 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - 重试参数可在 `miniprogram/utils/config.js` 的 `retry` 配置中调整
 - 若后端启用 HTTPS 域名，建议将 `baseUrl` 切到 HTTPS
 - 拼图打印页面不再在界面配置地址，统一读取 `miniprogram/utils/config.js`
+
+### 局部改色（MVP）
+
+新增接口：`POST /recolor`（`multipart/form-data`）
+- `file`：原图
+- `target_hex`：目标颜色（如 `FF5500`）
+- `x_ratio` / `y_ratio`：矩形区域起点（0~1）
+- `w_ratio` / `h_ratio`：矩形区域宽高比例（0~1）
+- `strength`：改色强度（0~1）
+- `feather_ratio`：边缘羽化比例（0~0.25）
+
+返回：
+- `recolored_url`：改色结果图地址（`/recolor-static/outputs/...`）
+- `bbox`：服务端实际使用的像素矩形
+
+小程序原型页：
+- `pages/recolor/index`
+- 底部导航可从“搜款/拼图打印”跳转到“局部改色”
 
 ### Nginx 反向代理（按 URI 区分搜款与打印）
 

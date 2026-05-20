@@ -1,0 +1,36 @@
+<view class="container">
+  <view class="hero">
+    <view class="title">局部改色</view>
+    <view class="subtitle">选择图片，指定矩形区域与目标色，快速预览</view>
+  </view>
+
+  <view class="card">
+    <button class="pick" bindtap="chooseImage">选择图片</button>
+    <image wx:if="{{localImage}}" class="img" src="{{localImage}}" mode="aspectFit" />
+
+    <view class="field">
+      <text>目标色（HEX）</text>
+      <input class="hex" value="{{targetHex}}" bindinput="onHexInput" placeholder="FF5500" />
+    </view>
+
+    <view class="field"><text>X 起点：{{xRatio}}%</text><slider min="0" max="95" value="{{xRatio}}" bindchange="onXChange" /></view>
+    <view class="field"><text>Y 起点：{{yRatio}}%</text><slider min="0" max="95" value="{{yRatio}}" bindchange="onYChange" /></view>
+    <view class="field"><text>宽度：{{wRatio}}%</text><slider min="5" max="100" value="{{wRatio}}" bindchange="onWChange" /></view>
+    <view class="field"><text>高度：{{hRatio}}%</text><slider min="5" max="100" value="{{hRatio}}" bindchange="onHChange" /></view>
+    <view class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
+    <view class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
+
+    <button class="run" loading="{{processing}}" bindtap="runRecolor">开始改色</button>
+  </view>
+
+  <view class="card" wx:if="{{recoloredUrl}}">
+    <view class="subtitle2">改色结果（点击放大）</view>
+    <image class="img" src="{{recoloredUrl}}" mode="aspectFit" bindtap="previewResult" />
+  </view>
+
+  <view class="bottom-nav">
+    <view class="nav-item" bindtap="goSearchPage">搜款</view>
+    <view class="nav-item" bindtap="goPrintPage">拼图打印</view>
+    <view class="nav-item active" bindtap="goRecolorPage">局部改色</view>
+  </view>
+</view>

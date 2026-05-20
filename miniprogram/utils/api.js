@@ -104,9 +104,10 @@ function parseErrorMessage(res) {
 }
 
 function printRequest(path, method, data) {
+  const finalUrl = buildPrintUrl(path);
   return new Promise((resolve, reject) => {
     wx.request({
-      url: buildPrintUrl(path),
+      url: finalUrl,
       method: method || "GET",
       data: data || null,
       timeout: config.timeout,
@@ -121,7 +122,10 @@ function printRequest(path, method, data) {
         }
         reject(new Error(parseErrorMessage(res)));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "网络错误"))
+      fail: (err) => {
+        console.error("[printRequest:fail]", method || "GET", finalUrl, err);
+        reject(new Error((err && err.errMsg) || "网络错误"));
+      }
     });
   });
 }
@@ -129,9 +133,10 @@ function printRequest(path, method, data) {
 function printUpload(filePath) {
   const paths = config.printPaths || {};
   const uploadPath = paths.upload || "/api/v1/images/upload";
+  const finalUrl = buildPrintUrl(uploadPath);
   return new Promise((resolve, reject) => {
     wx.uploadFile({
-      url: buildPrintUrl(uploadPath),
+      url: finalUrl,
       filePath,
       name: "file",
       timeout: config.timeout,
@@ -149,7 +154,10 @@ function printUpload(filePath) {
         }
         reject(new Error(res.data || "上传失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "上传失败"))
+      fail: (err) => {
+        console.error("[printUpload:fail]", finalUrl, err);
+        reject(new Error((err && err.errMsg) || "上传失败"));
+      }
     });
   });
 }
@@ -170,6 +178,44 @@ function toPrintAbsoluteUrl(pathOrUrl) {
   if (!pathOrUrl) return "";
   if (/^https?:\/\//.test(pathOrUrl)) return pathOrUrl;
   return `${getPrintBaseUrl()}${pathOrUrl}`;
+}
+
+function recolorUpload(filePath, options = {}) {
+  const recolorPath = config.recolorPath || "/recolor";
+  const finalUrl = `${config.baseUrl}${recolorPath}`;
+  const formData = {
+    target_hex: options.target_hex || "FF5500",
+    x_ratio: String(options.x_ratio ?? 0.2),
+    y_ratio: String(options.y_ratio ?? 0.2),
+    w_ratio: String(options.w_ratio ?? 0.4),
+    h_ratio: String(options.h_ratio ?? 0.4),
+    strength: String(options.strength ?? 0.8),
+    feather_ratio: String(options.feather_ratio ?? 0.02),
+  };
+  return new Promise((resolve, reject) => {
+    wx.uploadFile({
+      url: finalUrl,
+      filePath,
+      name: "file",
+      timeout: config.timeout,
+      formData,
+      header: {
+        "X-API-Key": config.apiKey
+      },
+      success: (res) => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(res.data || "{}"));
+          } catch (_err) {
+            reject(new Error("改色返回解析失败"));
+          }
+          return;
+        }
+        reject(new Error(res.data || "改色失败"));
+      },
+      fail: (err) => reject(new Error((err && err.errMsg) || "改色失败"))
+    });
+  });
 }
 
 async function uploadAndSearch(filePath) {
@@ -204,5 +250,6 @@ module.exports = {
   fetchPrintTemplates,
   printUpload,
   renderPrintLayout,
-  toPrintAbsoluteUrl
+  toPrintAbsoluteUrl,
+  recolorUpload
 };
