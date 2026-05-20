@@ -123,6 +123,31 @@ def _blend_with_original_background(
     return np.clip(edited_rgb * alpha + original_rgb * (1.0 - alpha), 0.0, 1.0)
 
 
+def _apply_luma_tint(
+    arr: np.ndarray,
+    target_hex: str,
+    mask: np.ndarray,
+    strength: float,
+) -> np.ndarray:
+    # 对低饱和主体更稳定：保持原图明暗，仅把色相/色调锚定到目标色，避免 HSV 路径发粉发脏。
+    c = (target_hex or "").strip().lstrip("#")
+    tr = int(c[0:2], 16) / 255.0
+    tg = int(c[2:4], 16) / 255.0
+    tb = int(c[4:6], 16) / 255.0
+    t = np.array([tr, tg, tb], dtype=np.float32)
+    y_w = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    t_luma = float(np.dot(t, y_w))
+    t_luma = max(t_luma, 1e-5)
+
+    luma = np.tensordot(arr, y_w, axes=([2], [0]))  # HxW
+    recolored = (luma[..., None] / t_luma) * t[None, None, :]
+    recolored = np.clip(recolored, 0.0, 1.0)
+
+    alpha = np.clip(mask.astype(np.float32), 0.0, 1.0) * float(np.clip(strength, 0.0, 1.0))
+    out = arr * (1.0 - alpha[..., None]) + recolored * alpha[..., None]
+    return np.clip(out, 0.0, 1.0)
+
+
 def recolor_region(
     file_bytes: bytes,
     suffix: str,
@@ -167,7 +192,10 @@ def recolor_region(
             mask = np.array(m_img).astype(np.float32) / 255.0
     else:
         mask = _build_soft_mask(h, w, x0, y0, x1, y1, feather_px)
-    rgb_new = _apply_hsv_retarget(arr, target_hex=target_hex, mask=mask, strength=strength, sat_boost=0.15)
+    if auto_mask:
+        rgb_new = _apply_luma_tint(arr, target_hex=target_hex, mask=mask, strength=strength)
+    else:
+        rgb_new = _apply_hsv_retarget(arr, target_hex=target_hex, mask=mask, strength=strength, sat_boost=0.15)
     if auto_mask:
         # 自动模式锁背景：主体外回填原图，避免背景脏色/彩点。
         rgb_new = _blend_with_original_background(
