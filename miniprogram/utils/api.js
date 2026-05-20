@@ -203,6 +203,12 @@ function recolorUpload(filePath, options = {}) {
         "X-API-Key": config.apiKey
       },
       success: (res) => {
+        const raw = typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+        const blockedByCf = /Attention Required!|Sorry, you have been blocked|Cloudflare|Please enable cookies/i.test(raw);
+        if (blockedByCf) {
+          reject(new Error("请求被 Cloudflare 拦截：请放行 /recolor 与 /recolor-static 路径"));
+          return;
+        }
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
             resolve(JSON.parse(res.data || "{}"));
@@ -211,9 +217,9 @@ function recolorUpload(filePath, options = {}) {
           }
           return;
         }
-        reject(new Error(res.data || "改色失败"));
+        reject(new Error(raw || "换色失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "改色失败"))
+      fail: (err) => reject(new Error((err && err.errMsg) || "换色失败"))
     });
   });
 }
@@ -247,6 +253,12 @@ function recolorAiUpload(filePath, options = {}) {
         "X-API-Key": config.apiKey
       },
       success: (res) => {
+        const raw = typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
+        const blockedByCf = /Attention Required!|Sorry, you have been blocked|Cloudflare|Please enable cookies/i.test(raw);
+        if (blockedByCf) {
+          reject(new Error("请求被 Cloudflare 拦截：请放行 /recolor-ai 与 /recolor-static 路径"));
+          return;
+        }
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
             resolve(JSON.parse(res.data || "{}"));
@@ -255,9 +267,9 @@ function recolorAiUpload(filePath, options = {}) {
           }
           return;
         }
-        reject(new Error(res.data || "AI改色失败"));
+        reject(new Error(raw || "AI换色失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "AI改色失败"))
+      fail: (err) => reject(new Error((err && err.errMsg) || "AI换色失败"))
     });
   });
 }

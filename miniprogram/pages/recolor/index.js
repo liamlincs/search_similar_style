@@ -372,12 +372,13 @@ Page({
     this.setData({ processingAi: true });
     try {
       const payload = this.buildRecolorPayload(true);
-      payload.prompt = (this.data.aiPrompt || "").trim();
+      const userPrompt = (this.data.aiPrompt || "").trim();
+      const colorHint = `目标色必须为 #${this.data.targetHex}。`;
+      payload.prompt = userPrompt
+        ? `${userPrompt}\n${colorHint}\n请严格按照目标色调整，不要改成其他颜色。`
+        : `将整张图主色调调整为 #${this.data.targetHex}。请严格按目标色处理，保持文字清晰和纹理自然。`;
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.num_inference_steps = 20;
-      if (!payload.prompt) {
-        payload.prompt = `将整张图主色调调整为 #${this.data.targetHex}，保持文字清晰和纹理自然`;
-      }
       const res = await recolorAiUpload(this.data.localImage, payload);
       const remoteUrl = toAbsolute(res.recolored_url);
       const localUrl = await downloadToLocal(`${remoteUrl}${remoteUrl.includes("?") ? "&" : "?"}t=${Date.now()}`);

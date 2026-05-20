@@ -48,6 +48,33 @@ def _build_soft_mask(h: int, w: int, x0: int, y0: int, x1: int, y1: int, feather
     return np.maximum(mask, outer)
 
 
+def _apply_hsv_retarget(
+    arr: np.ndarray,
+    target_hex: str,
+    mask: np.ndarray,
+    strength: float,
+    sat_boost: float = 0.15,
+) -> np.ndarray:
+    target_h, target_s, _ = _parse_hex_color(target_hex)
+    alpha = np.clip(mask.astype(np.float32), 0.0, 1.0) * float(np.clip(strength, 0.0, 1.0))
+
+    h, w, _ = arr.shape
+    rgb_flat = arr.reshape(-1, 3)
+    hsv = np.array([colorsys.rgb_to_hsv(*px) for px in rgb_flat], dtype=np.float32).reshape(h, w, 3)
+
+    hue = hsv[:, :, 0]
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+
+    hue_diff = ((target_h - hue + 0.5) % 1.0) - 0.5
+    new_hue = (hue + hue_diff * alpha) % 1.0
+    new_sat = np.clip(sat * (1.0 - alpha) + (target_s + (1.0 - target_s) * sat_boost) * alpha, 0.0, 1.0)
+
+    hsv_new = np.stack([new_hue, new_sat, val], axis=-1).reshape(-1, 3)
+    rgb_new = np.array([colorsys.hsv_to_rgb(*px) for px in hsv_new], dtype=np.float32).reshape(h, w, 3)
+    return np.clip(rgb_new, 0.0, 1.0)
+
+
 def recolor_region(
     file_bytes: bytes,
     suffix: str,
@@ -59,8 +86,6 @@ def recolor_region(
     strength: float = 0.8,
     feather_ratio: float = 0.02,
 ) -> dict:
-    target_h, target_s, _ = _parse_hex_color(target_hex)
-
     # load image from bytes safely
     from io import BytesIO
 
@@ -85,22 +110,7 @@ def recolor_region(
     feather_px = int(round(min(w, h) * feather_ratio))
 
     mask = _build_soft_mask(h, w, x0, y0, x1, y1, feather_px)
-    alpha = mask * strength
-
-    rgb_flat = arr.reshape(-1, 3)
-    hsv = np.array([colorsys.rgb_to_hsv(*px) for px in rgb_flat], dtype=np.float32).reshape(h, w, 3)
-
-    hue = hsv[:, :, 0]
-    sat = hsv[:, :, 1]
-    val = hsv[:, :, 2]
-
-    hue_diff = ((target_h - hue + 0.5) % 1.0) - 0.5
-    new_hue = (hue + hue_diff * alpha) % 1.0
-    new_sat = np.clip(sat * (1.0 - alpha) + (target_s + (1.0 - target_s) * 0.15) * alpha, 0.0, 1.0)
-
-    hsv_new = np.stack([new_hue, new_sat, val], axis=-1).reshape(-1, 3)
-    rgb_new = np.array([colorsys.hsv_to_rgb(*px) for px in hsv_new], dtype=np.float32).reshape(h, w, 3)
-
+    rgb_new = _apply_hsv_retarget(arr, target_hex=target_hex, mask=mask, strength=strength, sat_boost=0.15)
     out = np.clip(rgb_new * 255.0, 0, 255).astype(np.uint8)
     out_img = Image.fromarray(out, mode="RGB")
 
@@ -215,9 +225,30 @@ def recolor_region_ai(
     try:
         with urllib.request.urlopen(result_url, timeout=120) as img_resp:
             result_bytes = img_resp.read()
-        out_img = Image.open(BytesIO(result_bytes)).convert("RGB")
+        out_img = Image.open(BytesIO(result_bytes))
+        out_img = ImageOps.exif_transpose(out_img).convert("RGB")
     except Exception as exc:
         raise ValueError(f"下载 AI 改色结果失败: {exc}") from exc
+
+    # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
+    out_arr = np.array(out_img).astype(np.float32) / 255.0
+    post_mask = _build_soft_mask(
+        h=out_arr.shape[0],
+        w=out_arr.shape[1],
+        x0=int(round(x_ratio * out_arr.shape[1])),
+        y0=int(round(y_ratio * out_arr.shape[0])),
+        x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
+        y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
+        feather_px=int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.01)),
+    )
+    corrected = _apply_hsv_retarget(
+        out_arr,
+        target_hex=target_hex,
+        mask=post_mask,
+        strength=max(0.75, min(1.0, strength + 0.2)),
+        sat_boost=0.05,
+    )
+    out_img = Image.fromarray(np.clip(corrected * 255.0, 0, 255).astype(np.uint8), mode="RGB")
 
     out_id = uuid.uuid4().hex
     out_path = RECOLOR_OUTPUT_DIR / f"{out_id}.jpg"

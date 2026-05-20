@@ -14,7 +14,7 @@ const config = {
   recolorPath: "/recolor",
   recolorAiPath: "/recolor-ai",
   includeImageBase64: false,
-  timeout: 60000,
+  timeout: 300000,
   retry: {
     maxRetries: 4,
     baseDelayMs: 800,

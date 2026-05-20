@@ -61,7 +61,7 @@
         class="prompt-input"
         maxlength="300"
         value="{{aiPrompt}}"
-        placeholder="例如：将画面主色调改为目标色，保留文字清晰和光影层次"
+        placeholder="例如：把织品颜色改成目标色，其它不变（系统会自动附加当前HEX）"
         bindinput="onAiPromptInput"
       />
       <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI换色</button>
