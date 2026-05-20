@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageFilter
 
 BASE_DIR = Path(__file__).resolve().parent
 RECOLOR_DIR = BASE_DIR / "recolor_runtime"
@@ -73,6 +73,21 @@ def _apply_hsv_retarget(
     hsv_new = np.stack([new_hue, new_sat, val], axis=-1).reshape(-1, 3)
     rgb_new = np.array([colorsys.hsv_to_rgb(*px) for px in hsv_new], dtype=np.float32).reshape(h, w, 3)
     return np.clip(rgb_new, 0.0, 1.0)
+
+
+def _auto_subject_mask_from_image(img_rgb: Image.Image) -> np.ndarray:
+    arr = np.array(img_rgb).astype(np.float32) / 255.0
+    rgb_flat = arr.reshape(-1, 3)
+    hsv = np.array([colorsys.rgb_to_hsv(*px) for px in rgb_flat], dtype=np.float32).reshape(arr.shape[0], arr.shape[1], 3)
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+
+    # 粗分离主体：优先保留有颜色/有明暗信息的区域，抑制低饱和背景。
+    m = ((sat > 0.12) & (val > 0.10)).astype(np.uint8) * 255
+    m_img = Image.fromarray(m, mode="L")
+    # 简单形态学平滑，降低噪点并连通主体。
+    m_img = m_img.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(2))
+    return np.array(m_img).astype(np.float32) / 255.0
 
 
 def recolor_region(
@@ -165,9 +180,14 @@ def recolor_region_ai(
     x1 = min(w, x0 + bw)
     y1 = min(h, y0 + bh)
 
-    mask = np.zeros((h, w), dtype=np.uint8)
-    if x1 > x0 and y1 > y0:
-        mask[y0:y1, x0:x1] = 1
+    full_image_mode = x_ratio <= 0.001 and y_ratio <= 0.001 and w_ratio >= 0.999 and h_ratio >= 0.999
+    if full_image_mode:
+        auto_mask = _auto_subject_mask_from_image(img)
+        mask = (auto_mask > 0.25).astype(np.uint8)
+    else:
+        mask = np.zeros((h, w), dtype=np.uint8)
+        if x1 > x0 and y1 > y0:
+            mask[y0:y1, x0:x1] = 1
 
     # 生成可视蒙版图（白色=需要改色，黑色=保留）
     mask_img = Image.fromarray((mask * 255).astype(np.uint8), mode="L")
@@ -232,15 +252,18 @@ def recolor_region_ai(
 
     # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
     out_arr = np.array(out_img).astype(np.float32) / 255.0
-    post_mask = _build_soft_mask(
-        h=out_arr.shape[0],
-        w=out_arr.shape[1],
-        x0=int(round(x_ratio * out_arr.shape[1])),
-        y0=int(round(y_ratio * out_arr.shape[0])),
-        x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
-        y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
-        feather_px=int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.01)),
-    )
+    if full_image_mode:
+        post_mask = _auto_subject_mask_from_image(out_img)
+    else:
+        post_mask = _build_soft_mask(
+            h=out_arr.shape[0],
+            w=out_arr.shape[1],
+            x0=int(round(x_ratio * out_arr.shape[1])),
+            y0=int(round(y_ratio * out_arr.shape[0])),
+            x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
+            y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
+            feather_px=int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.01)),
+        )
     corrected = _apply_hsv_retarget(
         out_arr,
         target_hex=target_hex,
@@ -263,6 +286,7 @@ def recolor_region_ai(
             "provider": "siliconflow",
             "model": model,
             "prompt": final_prompt,
+            "mask_mode": "auto_subject" if full_image_mode else "manual_bbox",
             "negative_prompt": negative_prompt,
             "seed": seed,
             "num_inference_steps": payload.get("num_inference_steps"),

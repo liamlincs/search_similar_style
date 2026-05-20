@@ -259,7 +259,8 @@ Page({
       const dy = localY - cy;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const sat = clamp(dist / r, 0, 1);
-      const hue = (Math.atan2(dy, dx) * 180) / Math.PI;
+      // CSS conic-gradient 默认 0deg 在正上方；atan2 计算的 0deg 在正右方，需 +90 对齐。
+      const hue = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
       const v = this.data.hsvV;
       const rgb = hsvToRgb(hue, sat, v);
       let px = localX;
