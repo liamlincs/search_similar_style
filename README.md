@@ -238,6 +238,7 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - 标准换色优先使用 `rembg(U2Net)` 生成主体蒙版（分割更稳定）
 - 若未安装 `rembg` 或模型加载失败，自动回退到规则分割
 - `rembg` 首次运行会下载 U2Net 模型文件，请确保服务器可联网
+- 服务器内存较小时，建议使用轻量模型：`export REMBG_MODEL=u2netp`（默认已是 `u2netp`）；如机器资源充足可改为 `u2net`
 
 小程序原型页：
 - `pages/recolor/index`

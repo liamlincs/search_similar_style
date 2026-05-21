@@ -5,6 +5,7 @@ import base64
 import json
 import uuid
 import urllib.request
+import os
 from pathlib import Path
 from collections import deque
 
@@ -18,6 +19,7 @@ RECOLOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/images/generations"
 _REMBG_SESSION = None
+_REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp").strip() or "u2netp"
 
 
 def _parse_hex_color(hex_color: str) -> tuple[float, float, float]:
@@ -83,7 +85,7 @@ def _auto_subject_mask_from_image(img_rgb: Image.Image) -> tuple[np.ndarray, str
     try:
         if _REMBG_SESSION is None:
             from rembg import new_session
-            _REMBG_SESSION = new_session("u2net")
+            _REMBG_SESSION = new_session(_REMBG_MODEL)
         from rembg import remove
         m_img = remove(
             img_rgb.convert("RGB"),
