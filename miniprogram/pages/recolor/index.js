@@ -94,10 +94,9 @@ Page({
 
     strength: 80,
     feather: 2,
+    fastParamsOpen: false,
     aiPrompt: "",
-    aiSeed: "42",
-    aiCfgScale: "4.0",
-    aiRawMode: false,
+    aiRawMode: true,
   },
 
   goSearchPage() {
@@ -318,12 +317,8 @@ Page({
     this.setData({ aiPrompt: e.detail.value || "" });
   },
 
-  onAiSeedInput(e) {
-    this.setData({ aiSeed: String(e.detail.value || "").trim() });
-  },
-
-  onAiCfgInput(e) {
-    this.setData({ aiCfgScale: String(e.detail.value || "").trim() });
+  toggleFastParams() {
+    this.setData({ fastParamsOpen: !this.data.fastParamsOpen });
   },
 
   onAiRawModeChange(e) {
@@ -399,8 +394,6 @@ Page({
         : `将整张图主色调调整为 #${this.data.targetHex}。请严格按目标色处理，保持文字清晰和纹理自然。`;
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.num_inference_steps = 20;
-      if (this.data.aiSeed !== "") payload.seed = Number(this.data.aiSeed);
-      if (this.data.aiCfgScale !== "") payload.cfg_scale = Number(this.data.aiCfgScale);
       payload.postprocess = !this.data.aiRawMode;
       const res = await recolorAiUpload(this.data.localImage, payload);
       const remoteUrl = toAbsolute(res.recolored_url);

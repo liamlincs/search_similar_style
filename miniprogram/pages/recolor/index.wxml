@@ -15,7 +15,7 @@
   <view class="card">
     <view class="mode-switch">
       <view class="mode-item {{mode === 'fast' ? 'active' : ''}}" data-mode="fast" bindtap="switchMode">标准换色</view>
-      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">AI换色（整图）</view>
+      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">AI换色</view>
     </view>
 
     <view class="field">
@@ -32,12 +32,19 @@
       <view class="picked-row">
         <view class="color-chip" style="background:#{{targetHex}};"></view>
         <view class="picked">当前颜色：#{{targetHex}}</view>
+        <view wx:if="{{mode === 'fast'}}" class="inline-action" bindtap="toggleFastParams">
+          高级参数 {{fastParamsOpen ? '⌃' : '›'}}
+        </view>
+        <view wx:if="{{mode === 'ai'}}" class="inline-ai-toggle">
+          <text>原生AI（关闭后处理）</text>
+          <switch class="small-switch" checked="{{aiRawMode}}" bindchange="onAiRawModeChange" />
+        </view>
       </view>
     </view>
 
     <view wx:if="{{mode === 'fast'}}">
-      <view class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
-      <view class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
+      <view wx:if="{{fastParamsOpen}}" class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
+      <view wx:if="{{fastParamsOpen}}" class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
       <button class="btn btn-primary run" loading="{{processing}}" disabled="{{processingAi}}" bindtap="runRecolor">开始标准换色</button>
     </view>
 
@@ -50,14 +57,6 @@
         placeholder="例如：把织品颜色改成目标色，其它不变（系统会自动附加当前HEX）"
         bindinput="onAiPromptInput"
       />
-      <view class="field-title sm">Seed（固定可复现）</view>
-      <input class="mini-input" type="number" value="{{aiSeed}}" bindinput="onAiSeedInput" placeholder="例如 42" />
-      <view class="field-title sm">CFG（建议与网页一致，如 4.0）</view>
-      <input class="mini-input" type="digit" value="{{aiCfgScale}}" bindinput="onAiCfgInput" placeholder="例如 4.0" />
-      <label class="switch-row">
-        <text>原生AI模式（关闭后处理，尽量贴近硅基流动网页）</text>
-        <switch checked="{{aiRawMode}}" bindchange="onAiRawModeChange" />
-      </label>
       <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI换色</button>
     </view>
   </view>
