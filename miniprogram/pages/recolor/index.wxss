@@ -71,6 +71,7 @@
 
 .run { margin-top: 14rpx; }
 
+.mode-tip { margin-top: 8rpx; font-size: 21rpx; color: #334155; background: #f1f5f9; padding: 8rpx 10rpx; border-radius: 10rpx; }
 .url-tip { margin-top: 8rpx; font-size: 20rpx; color: #64748b; word-break: break-all; }
 
 .bottom-nav { position: fixed; left: 24rpx; right: 24rpx; bottom: 24rpx; background: #fff; border-radius: 18rpx; box-shadow: 0 12rpx 32rpx rgba(15,23,42,.14); padding: 10rpx; display: flex; gap: 10rpx; }

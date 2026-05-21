@@ -65,6 +65,9 @@
   <view class="card" wx:if="{{recoloredUrl}}">
     <view class="subtitle2">换色结果（点击放大）</view>
     <image class="result-img" src="{{recoloredLocalUrl || recoloredUrl}}" mode="aspectFit" bindtap="previewResult" binderror="onResultImageError" />
+    <view wx:if="{{mode === 'fast' && recolorMaskBackend}}" class="mode-tip">
+      抠图后端：{{recolorMaskBackend}}（{{recolorMaskMode || 'auto'}}）
+    </view>
     <view class="url-tip">结果地址：{{recoloredUrl}}</view>
   </view>
 

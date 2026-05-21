@@ -67,6 +67,8 @@ Page({
     localImage: "",
     recoloredUrl: "",
     recoloredLocalUrl: "",
+    recolorMaskBackend: "",
+    recolorMaskMode: "",
     processing: false,
     processingAi: false,
 
@@ -367,7 +369,12 @@ Page({
       const res = await recolorUpload(this.data.localImage, payload);
       const remoteUrl = toAbsolute(res.recolored_url);
       const localUrl = await downloadToLocal(`${remoteUrl}${remoteUrl.includes("?") ? "&" : "?"}t=${Date.now()}`);
-      this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl });
+      this.setData({
+        recoloredUrl: remoteUrl,
+        recoloredLocalUrl: localUrl,
+        recolorMaskBackend: String(res.mask_backend || ""),
+        recolorMaskMode: String(res.mask_mode || ""),
+      });
       wx.showToast({ title: "标准换色完成", icon: "none" });
     } catch (err) {
       console.error("[recolor:error]", err);
@@ -398,7 +405,7 @@ Page({
       const res = await recolorAiUpload(this.data.localImage, payload);
       const remoteUrl = toAbsolute(res.recolored_url);
       const localUrl = await downloadToLocal(`${remoteUrl}${remoteUrl.includes("?") ? "&" : "?"}t=${Date.now()}`);
-      this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl });
+      this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl, recolorMaskBackend: "", recolorMaskMode: "" });
       wx.showToast({ title: "AI换色完成", icon: "none" });
     } catch (err) {
       console.error("[recolor:ai:error]", err);

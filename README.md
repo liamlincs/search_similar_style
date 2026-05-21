@@ -228,10 +228,16 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - `w_ratio` / `h_ratio`：矩形区域宽高比例（0~1）
 - `strength`：改色强度（0~1）
 - `feather_ratio`：边缘羽化比例（0~0.25）
+- `auto_mask`：`1` 时自动抠主体换色（推荐），`0` 时按矩形参数换色
 
 返回：
 - `recolored_url`：改色结果图地址（`/recolor-static/outputs/...`）
 - `bbox`：服务端实际使用的像素矩形
+
+主体抠图说明：
+- 标准换色优先使用 `rembg(U2Net)` 生成主体蒙版（分割更稳定）
+- 若未安装 `rembg` 或模型加载失败，自动回退到规则分割
+- `rembg` 首次运行会下载 U2Net 模型文件，请确保服务器可联网
 
 小程序原型页：
 - `pages/recolor/index`

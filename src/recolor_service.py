@@ -17,6 +17,7 @@ RECOLOR_OUTPUT_DIR = RECOLOR_DIR / "outputs"
 RECOLOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/images/generations"
+_REMBG_SESSION = None
 
 
 def _parse_hex_color(hex_color: str) -> tuple[float, float, float]:
@@ -76,7 +77,27 @@ def _apply_hsv_retarget(
     return np.clip(rgb_new, 0.0, 1.0)
 
 
-def _auto_subject_mask_from_image(img_rgb: Image.Image) -> np.ndarray:
+def _auto_subject_mask_from_image(img_rgb: Image.Image) -> tuple[np.ndarray, str]:
+    global _REMBG_SESSION
+    # 优先使用 rembg(U2Net) 抠图；无依赖时再回退到规则分割。
+    try:
+        if _REMBG_SESSION is None:
+            from rembg import new_session
+            _REMBG_SESSION = new_session("u2net")
+        from rembg import remove
+        m_img = remove(
+            img_rgb.convert("RGB"),
+            session=_REMBG_SESSION,
+            only_mask=True,
+            post_process_mask=True,
+        )
+        if not isinstance(m_img, Image.Image):
+            m_img = Image.fromarray(np.array(m_img).astype(np.uint8), mode="L")
+        m_img = m_img.convert("L").filter(ImageFilter.GaussianBlur(1.5))
+        return np.array(m_img).astype(np.float32) / 255.0, "rembg_u2net"
+    except Exception:
+        pass
+
     # 更稳的自动主体分割：
     # 1) 以边缘像素建模背景色；2) 计算“偏离背景”得分；3) 保留与中心连通的主体区域。
     src = img_rgb.convert("RGB")
@@ -152,7 +173,7 @@ def _auto_subject_mask_from_image(img_rgb: Image.Image) -> np.ndarray:
     m_img = m_img.filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(2))
     if (w, h) != (ow, oh):
         m_img = m_img.resize((ow, oh), resample=Image.BILINEAR)
-    return np.array(m_img).astype(np.float32) / 255.0
+    return np.array(m_img).astype(np.float32) / 255.0, "fallback_rule"
 
 
 def _blend_with_original_background(
@@ -231,8 +252,9 @@ def recolor_region(
     y1 = min(h, y0 + bh)
     feather_px = int(round(min(w, h) * feather_ratio))
 
+    mask_backend = "manual_bbox"
     if auto_mask:
-        mask = _auto_subject_mask_from_image(img)
+        mask, mask_backend = _auto_subject_mask_from_image(img)
         if feather_px > 0:
             m_img = Image.fromarray(np.clip(mask * 255.0, 0, 255).astype(np.uint8), mode="L").filter(
                 ImageFilter.GaussianBlur(max(1, feather_px))
@@ -264,6 +286,7 @@ def recolor_region(
         "recolored_url": f"/recolor-static/outputs/{out_path.name}",
         "bbox": {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)},
         "mask_mode": "auto_subject" if auto_mask else "manual_bbox",
+        "mask_backend": mask_backend,
     }
 
 
@@ -310,8 +333,9 @@ def recolor_region_ai(
     y1 = min(h, y0 + bh)
 
     full_image_mode = x_ratio <= 0.001 and y_ratio <= 0.001 and w_ratio >= 0.999 and h_ratio >= 0.999
+    mask_backend = "manual_bbox"
     if full_image_mode and postprocess:
-        auto_mask = _auto_subject_mask_from_image(img)
+        auto_mask, mask_backend = _auto_subject_mask_from_image(img)
         mask = (auto_mask > 0.25).astype(np.uint8)
     else:
         mask = np.zeros((h, w), dtype=np.uint8)
@@ -391,7 +415,7 @@ def recolor_region_ai(
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
         if full_image_mode:
-            post_mask = _auto_subject_mask_from_image(out_img)
+            post_mask, _post_backend = _auto_subject_mask_from_image(out_img)
         else:
             post_mask = _build_soft_mask(
                 h=out_arr.shape[0],
@@ -432,6 +456,7 @@ def recolor_region_ai(
             "model": model,
             "prompt": final_prompt,
             "mask_mode": ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox")),
+            "mask_backend": mask_backend,
             "postprocess": bool(postprocess),
             "negative_prompt": negative_prompt,
             "seed": seed,
