@@ -194,27 +194,43 @@ def _blend_with_original_background(
     return np.clip(edited_rgb * alpha + original_rgb * (1.0 - alpha), 0.0, 1.0)
 
 
-def _apply_luma_tint(
+def _apply_fabric_recolor(
     arr: np.ndarray,
     target_hex: str,
     mask: np.ndarray,
     strength: float,
 ) -> np.ndarray:
-    # 对低饱和主体更稳定：保持原图明暗，仅把色相/色调锚定到目标色，避免 HSV 路径发粉发脏。
-    c = (target_hex or "").strip().lstrip("#")
-    tr = int(c[0:2], 16) / 255.0
-    tg = int(c[2:4], 16) / 255.0
-    tb = int(c[4:6], 16) / 255.0
-    t = np.array([tr, tg, tb], dtype=np.float32)
-    y_w = np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    t_luma = float(np.dot(t, y_w))
-    t_luma = max(t_luma, 1e-5)
+    # 布料场景更自然的换色：
+    # 1) 锁定目标 hue；2) 保留原明暗纹理；3) 在高亮区压饱和，避免荧光感。
+    target_h, target_s, _target_v = _parse_hex_color(target_hex)
+    h, w, _ = arr.shape
+    rgb_flat = arr.reshape(-1, 3)
+    hsv = np.array([colorsys.rgb_to_hsv(*px) for px in rgb_flat], dtype=np.float32).reshape(h, w, 3)
+    orig_h = hsv[:, :, 0]
+    orig_s = hsv[:, :, 1]
+    orig_v = hsv[:, :, 2]
 
-    luma = np.tensordot(arr, y_w, axes=([2], [0]))  # HxW
-    recolored = (luma[..., None] / t_luma) * t[None, None, :]
-    recolored = np.clip(recolored, 0.0, 1.0)
+    # 高亮区域（接近白）降低目标饱和度，防止“荧光塑料感”。
+    bright_dampen = 1.0 - 0.55 * np.clip((orig_v - 0.7) / 0.3, 0.0, 1.0)
+    # 保留部分原始饱和度，避免颜色完全“涂平”。
+    tgt_s_local = np.clip((0.32 * orig_s + 0.68 * target_s) * bright_dampen, 0.0, 0.92)
+
+    # 仅轻微拉亮/压暗，主要沿用原 V 保纹理。
+    tgt_v_local = np.clip(orig_v * 0.96 + 0.04, 0.0, 1.0)
+
+    recolor_hsv = np.stack(
+        [
+            np.full_like(orig_h, target_h, dtype=np.float32),
+            tgt_s_local.astype(np.float32),
+            tgt_v_local.astype(np.float32),
+        ],
+        axis=-1,
+    ).reshape(-1, 3)
+    recolored = np.array([colorsys.hsv_to_rgb(*px) for px in recolor_hsv], dtype=np.float32).reshape(h, w, 3)
 
     alpha = np.clip(mask.astype(np.float32), 0.0, 1.0) * float(np.clip(strength, 0.0, 1.0))
+    # 额外保留一点原色，避免过度染色。
+    alpha = np.clip(alpha * 0.9, 0.0, 1.0)
     out = arr * (1.0 - alpha[..., None]) + recolored * alpha[..., None]
     return np.clip(out, 0.0, 1.0)
 
@@ -265,7 +281,7 @@ def recolor_region(
     else:
         mask = _build_soft_mask(h, w, x0, y0, x1, y1, feather_px)
     if auto_mask:
-        rgb_new = _apply_luma_tint(arr, target_hex=target_hex, mask=mask, strength=strength)
+        rgb_new = _apply_fabric_recolor(arr, target_hex=target_hex, mask=mask, strength=strength)
     else:
         rgb_new = _apply_hsv_retarget(arr, target_hex=target_hex, mask=mask, strength=strength, sat_boost=0.15)
     if auto_mask:
