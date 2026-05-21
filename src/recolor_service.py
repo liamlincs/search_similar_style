@@ -210,13 +210,19 @@ def _apply_fabric_recolor(
     orig_s = hsv[:, :, 1]
     orig_v = hsv[:, :, 2]
 
+    s = float(np.clip(strength, 0.0, 1.0))
+
     # 高亮区域（接近白）降低目标饱和度，防止“荧光塑料感”。
     bright_dampen = 1.0 - 0.55 * np.clip((orig_v - 0.7) / 0.3, 0.0, 1.0)
-    # 保留部分原始饱和度，避免颜色完全“涂平”。
-    tgt_s_local = np.clip((0.32 * orig_s + 0.68 * target_s) * bright_dampen, 0.0, 0.92)
+    # 强度越高，目标色在饱和度中的权重越大；强度低时更偏保守。
+    target_s_weight = 0.45 + 0.55 * s
+    tgt_s_local = ((1.0 - target_s_weight) * orig_s + target_s_weight * target_s) * bright_dampen
+    # 适度给高强度增加色彩浓度，但限制上限避免荧光。
+    chroma_gain = 0.85 + 0.35 * s
+    tgt_s_local = np.clip(tgt_s_local * chroma_gain, 0.0, 0.96)
 
     # 仅轻微拉亮/压暗，主要沿用原 V 保纹理。
-    tgt_v_local = np.clip(orig_v * 0.96 + 0.04, 0.0, 1.0)
+    tgt_v_local = np.clip(orig_v * (0.97 - 0.02 * s) + (0.03 + 0.02 * s), 0.0, 1.0)
 
     recolor_hsv = np.stack(
         [
@@ -228,9 +234,9 @@ def _apply_fabric_recolor(
     ).reshape(-1, 3)
     recolored = np.array([colorsys.hsv_to_rgb(*px) for px in recolor_hsv], dtype=np.float32).reshape(h, w, 3)
 
-    alpha = np.clip(mask.astype(np.float32), 0.0, 1.0) * float(np.clip(strength, 0.0, 1.0))
-    # 额外保留一点原色，避免过度染色。
-    alpha = np.clip(alpha * 0.9, 0.0, 1.0)
+    alpha = np.clip(mask.astype(np.float32), 0.0, 1.0) * s
+    # 感知增强：高强度时更明显，低强度时更柔和。
+    alpha = np.clip(np.power(alpha, 0.85) * (0.88 + 0.12 * s), 0.0, 1.0)
     out = arr * (1.0 - alpha[..., None]) + recolored * alpha[..., None]
     return np.clip(out, 0.0, 1.0)
 
