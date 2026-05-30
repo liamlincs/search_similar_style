@@ -74,6 +74,7 @@
     "phash_apply_topn": 120,
     "low_confidence_enabled": true,
     "low_confidence_margin_threshold": 0.03,
+    "low_confidence_top1_threshold": 0.78,
     "similar_images_topn": 3,
     "confidence_high_threshold": 0.08,
     "confidence_medium_threshold": 0.03,

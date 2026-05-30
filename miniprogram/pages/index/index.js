@@ -84,11 +84,7 @@ Page({
       const list = srcList.map((row, idx) => {
         const imageName = row.image_name || row.best_standard_image || "";
         const meta = byImage[imageName] || null;
-        const scoreNum = Number(
-          (meta && meta.item && meta.item.score) ||
-          row.score ||
-          0
-        );
+        const scoreNum = Number(row.score || 0);
         return {
           rank: idx + 1,
           styleCode:
@@ -102,7 +98,8 @@ Page({
           scoreText: `${(scoreNum * 100).toFixed(2)}%`,
           rankScore: Number(row.rank_score || 0)
         };
-      });
+      }).sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
+        .map((item, idx) => ({ ...item, rank: idx + 1 }));
 
       this.setData({
         hasSearched: true,

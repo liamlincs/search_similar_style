@@ -154,6 +154,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     stripe_consistency_apply_topn = int(search_cfg.get("stripe_consistency_apply_topn", 256))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
+    low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
     similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
     confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
     confidence_medium_threshold = float(search_cfg.get("confidence_medium_threshold", 0.03))
@@ -975,14 +976,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         top1_rank = float(rows[0].get("rank_score", 0.0)) if rows else 0.0
         top2_rank = float(rows[1].get("rank_score", 0.0)) if len(rows) > 1 else 0.0
+        top1_disp = float(rows[0].get("score", 0.0)) if rows else 0.0
+        top2_disp = float(rows[1].get("score", 0.0)) if len(rows) > 1 else 0.0
         rank_gap = top1_rank - top2_rank
-        is_ambiguous = len(rows) > 1 and rank_gap < low_confidence_margin_threshold
+        disp_gap = top1_disp - top2_disp
+        is_ambiguous = (len(rows) > 1 and rank_gap < low_confidence_margin_threshold) or (top1_disp < low_confidence_top1_threshold)
         if rank_gap >= confidence_high_threshold:
             confidence_band = "high"
         elif rank_gap >= confidence_medium_threshold:
             confidence_band = "medium"
         else:
             confidence_band = "low"
+        if top1_disp < low_confidence_top1_threshold:
+            confidence_band = "low"
+        logging.info(
+            "search confidence user=%s top1_rank=%.4f top2_rank=%.4f rank_gap=%.4f top1_score=%.4f top2_score=%.4f score_gap=%.4f ambiguous=%s band=%s",
+            getattr(request.state, "api_user", "unknown"),
+            top1_rank,
+            top2_rank,
+            rank_gap,
+            top1_disp,
+            top2_disp,
+            disp_gap,
+            is_ambiguous,
+            confidence_band,
+        )
 
         return {
             "query_image": file.filename,
