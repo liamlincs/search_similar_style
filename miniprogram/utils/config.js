@@ -1,8 +1,8 @@
 const config = {
   // 与 curl 保持一致
-  baseUrl: "https://api.seekfire.cloud",
+  baseUrl: "https://api.openfire.cloud",
   // 拼图打印服务地址；不填则复用 baseUrl
-  printBaseUrl: "https://api.seekfire.cloud",
+  printBaseUrl: "https://api.openfire.cloud",
   apiKey: "replace-with-real-key-a",
   searchPath: "/search",
   imageUrlPath: "/image-url",
@@ -15,6 +15,10 @@ const config = {
   recolorAiPath: "/recolor-ai",
   includeImageBase64: false,
   timeout: 300000,
+  recolorUpload: {
+    maxSide: 1600,
+    quality: 82
+  },
   retry: {
     maxRetries: 4,
     baseDelayMs: 800,

@@ -20,6 +20,7 @@ RECOLOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/images/generations"
 _REMBG_SESSION = None
 _REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp").strip() or "u2netp"
+_RECOLOR_MAX_SIDE = int(os.getenv("RECOLOR_MAX_SIDE", "1600"))
 
 
 def _parse_hex_color(hex_color: str) -> tuple[float, float, float]:
@@ -194,6 +195,19 @@ def _blend_with_original_background(
     return np.clip(edited_rgb * alpha + original_rgb * (1.0 - alpha), 0.0, 1.0)
 
 
+def _downscale_if_needed(img: Image.Image, max_side: int) -> Image.Image:
+    if max_side <= 0:
+        return img
+    w, h = img.size
+    m = max(w, h)
+    if m <= max_side:
+        return img
+    scale = float(max_side) / float(m)
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+    return img.resize((nw, nh), resample=Image.LANCZOS)
+
+
 def _apply_fabric_recolor(
     arr: np.ndarray,
     target_hex: str,
@@ -258,6 +272,7 @@ def recolor_region(
 
     img = Image.open(BytesIO(file_bytes))
     img = ImageOps.exif_transpose(img).convert("RGB")
+    img = _downscale_if_needed(img, _RECOLOR_MAX_SIDE)
     arr = np.array(img).astype(np.float32) / 255.0
     h, w, _ = arr.shape
 
@@ -341,6 +356,7 @@ def recolor_region_ai(
 
     img = Image.open(BytesIO(file_bytes))
     img = ImageOps.exif_transpose(img).convert("RGB")
+    img = _downscale_if_needed(img, _RECOLOR_MAX_SIDE)
     w, h = img.size
 
     x_ratio = float(np.clip(x_ratio, 0.0, 1.0))

@@ -61,6 +61,41 @@ function downloadToLocal(url) {
   });
 }
 
+function compressForUpload(filePath) {
+  return new Promise((resolve) => {
+    if (!filePath) return resolve(filePath);
+    wx.getImageInfo({
+      src: filePath,
+      success: (info) => {
+        const cfg = config.recolorUpload || {};
+        const maxSide = Number(cfg.maxSide || 1600);
+        const quality = Number(cfg.quality || 82);
+        const w = Number(info.width || 0);
+        const h = Number(info.height || 0);
+        if (!w || !h || Math.max(w, h) <= maxSide) {
+          resolve(filePath);
+          return;
+        }
+        const scale = maxSide / Math.max(w, h);
+        const targetW = Math.max(1, Math.round(w * scale));
+        const targetH = Math.max(1, Math.round(h * scale));
+        const ext = filePath.toLowerCase().split(".").pop() || "";
+        const forceJpg = ext !== "jpg" && ext !== "jpeg";
+        wx.compressImage({
+          src: filePath,
+          quality: clamp(quality, 30, 100),
+          compressedWidth: targetW,
+          compressedHeight: targetH,
+          compressedFormat: forceJpg ? "jpg" : "none",
+          success: (res) => resolve(res.tempFilePath || filePath),
+          fail: () => resolve(filePath),
+        });
+      },
+      fail: () => resolve(filePath),
+    });
+  });
+}
+
 Page({
   data: {
     mode: "fast", // fast | ai
@@ -119,12 +154,13 @@ Page({
     wx.chooseMedia({
       count: 1,
       mediaType: ["image"],
-      success: (res) => {
+      success: async (res) => {
         const file = (res.tempFiles || [])[0];
         if (!file || !file.tempFilePath) return;
+        const uploadPath = await compressForUpload(file.tempFilePath);
         this.setData(
           {
-            localImage: file.tempFilePath,
+            localImage: uploadPath,
             recoloredUrl: "",
             recoloredLocalUrl: "",
             selRect: null,
