@@ -29,12 +29,12 @@
   },
   "search": {
     "top_k": 5,
-    "candidate_multiplier": 20,
-    "recall_topn_cap": 2000,
+    "candidate_multiplier": 12,
+    "recall_topn_cap": 800,
     "min_score": 0.64,
     "code_agg_top_n": 2,
     "code_agg_alpha": 0.75,
-    "query_multicrop": true,
+    "query_multicrop": false,
     "query_crop_ratio": 0.72,
     "query_component_views": false,
     "query_view_consensus_weight": 0.2,
@@ -62,16 +62,16 @@
     "shape_consistency_enabled": true,
     "shape_consistency_aspect_weight": 0.08,
     "shape_consistency_fill_weight": 0.02,
-    "shape_consistency_apply_topn": 256,
+    "shape_consistency_apply_topn": 120,
     "mask_consistency_enabled": true,
     "mask_consistency_weight": 0.05,
-    "mask_consistency_apply_topn": 256,
+    "mask_consistency_apply_topn": 120,
     "stripe_consistency_enabled": true,
     "stripe_consistency_weight": 0.06,
-    "stripe_consistency_apply_topn": 256,
+    "stripe_consistency_apply_topn": 120,
     "phash_enabled": true,
     "phash_boost_weight": 0.06,
-    "phash_apply_topn": 256,
+    "phash_apply_topn": 120,
     "low_confidence_enabled": true,
     "low_confidence_margin_threshold": 0.03,
     "similar_images_topn": 3,
@@ -101,6 +101,7 @@
       "shape": 0.3,
       "color": 0.15,
       "stripe": 0.1
-    }
+    },
+    "query_max_edge": 768
   }
 }

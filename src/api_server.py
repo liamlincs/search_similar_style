@@ -104,6 +104,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     query_multicrop = bool(search_cfg.get("query_multicrop", True))
     query_crop_ratio = float(search_cfg.get("query_crop_ratio", 0.72))
     query_component_views = bool(search_cfg.get("query_component_views", False))
+    query_max_edge = int(search_cfg.get("query_max_edge", 0))
     standard_multicrop = bool(search_cfg.get("standard_multicrop", False))
     standard_crop_ratio = float(search_cfg.get("standard_crop_ratio", 0.72))
     ocr_hint_enabled = bool(search_cfg.get("ocr_hint_enabled", False))
@@ -701,6 +702,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             tf.write(await file.read())
             tf.flush()
             query_path = Path(tf.name)
+            if query_max_edge > 0:
+                try:
+                    with Image.open(query_path) as qim0:
+                        qim = qim0.convert("RGB")
+                        w, h = qim.size
+                        mx = max(w, h)
+                        limit = max(320, int(query_max_edge))
+                        if mx > limit:
+                            scale = float(limit) / float(mx)
+                            nw = max(1, int(round(w * scale)))
+                            nh = max(1, int(round(h * scale)))
+                            q2 = qim.resize((nw, nh), Image.Resampling.BILINEAR)
+                            q2.save(query_path, format="JPEG", quality=90)
+                except Exception:
+                    pass
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             code_prior_boost = (
