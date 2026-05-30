@@ -7,7 +7,9 @@ Page({
     searching: false,
     hasSearched: false,
     errorMessage: "",
-    results: []
+    results: [],
+    isAmbiguous: false,
+    confidenceBand: "low"
   },
 
   chooseFromAlbum() {
@@ -49,7 +51,9 @@ Page({
           localImage: file.tempFilePath,
           hasSearched: false,
           errorMessage: "",
-          results: []
+          results: [],
+          isAmbiguous: false,
+          confidenceBand: "low"
         });
         this.search(file.tempFilePath);
       },
@@ -63,28 +67,49 @@ Page({
     this.setData({ searching: true, errorMessage: "" });
     try {
       const resp = await uploadAndSearch(filePath);
-      const list = (resp.topk_style_codes || []).map((item, idx) => {
-        const scoreNum = Number(item.score || 0);
+      const topCodes = resp.topk_style_codes || [];
+      const byImage = {};
+      topCodes.forEach((item, idx) => {
+        const key = item.best_standard_image || "";
+        if (key) byImage[key] = { item, idx };
+      });
+      const srcList = (resp.similar_images && resp.similar_images.length)
+        ? resp.similar_images
+        : topCodes.map((item) => ({
+            image_name: item.best_standard_image || "",
+            image_url: item.best_standard_image_url || "",
+            rank_score: Number(item.rank_score || 0)
+          }));
+
+      const list = srcList.map((row, idx) => {
+        const imageName = row.image_name || row.best_standard_image || "";
+        const meta = byImage[imageName] || null;
+        const scoreNum = Number((meta && meta.item && meta.item.score) || 0);
         return {
           rank: idx + 1,
-          styleCode: item.style_code || "-",
-          imageName: item.best_standard_image || "",
-          imageUrl: item.best_standard_image_url || "",
+          styleCode: (meta && meta.item && meta.item.style_code) || "-",
+          imageName,
+          imageUrl: row.image_url || row.best_standard_image_url || "",
           imageRetryCount: 0,
           score: scoreNum,
-          scoreText: `${(scoreNum * 100).toFixed(2)}%`
+          scoreText: `${(scoreNum * 100).toFixed(2)}%`,
+          rankScore: Number(row.rank_score || 0)
         };
       });
 
       this.setData({
         hasSearched: true,
         results: list,
+        isAmbiguous: !!resp.is_ambiguous,
+        confidenceBand: resp.confidence_band || "low",
         errorMessage: list.length ? "" : "没有找到相似款，请更换图片重试。"
       });
     } catch (err) {
       this.setData({
         hasSearched: true,
         results: [],
+        isAmbiguous: false,
+        confidenceBand: "low",
         errorMessage: err.message || "检索失败，请稍后重试"
       });
     } finally {

@@ -27,6 +27,8 @@
 
   <view wx:if="{{hasSearched && results.length}}" class="result-section">
     <view class="section-title">匹配结果</view>
+    <view wx:if="{{isAmbiguous}}" class="ambiguous-tip">结果接近，已按相似候选展示，建议人工复核。</view>
+    <view wx:elif="{{confidenceBand === 'medium'}}" class="medium-tip">匹配置信度中等，建议对比前几项。</view>
     <view class="card-list">
       <view wx:for="{{results}}" wx:key="rank" class="card" bindtap="previewResult" data-url="{{item.imageUrl}}">
         <image class="card-image" src="{{item.imageUrl}}" mode="aspectFill" binderror="onResultImageError" data-index="{{index}}" />

@@ -42,6 +42,9 @@ from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_a
 class SearchResponse(BaseModel):
     query_image: str
     topk_style_codes: List[Dict[str, Any]]
+    similar_images: List[Dict[str, Any]] = []
+    is_ambiguous: bool = False
+    confidence_band: str = "low"
 
 
 class ImageUrlResponse(BaseModel):
@@ -149,6 +152,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     stripe_consistency_apply_topn = int(search_cfg.get("stripe_consistency_apply_topn", 256))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
+    similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
+    confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
+    confidence_medium_threshold = float(search_cfg.get("confidence_medium_threshold", 0.03))
     display_score_scale = float(search_cfg.get("display_score_scale", 8.0))
     display_score_bias = float(search_cfg.get("display_score_bias", 0.72))
     phash_enabled = bool(search_cfg.get("phash_enabled", True))
@@ -907,6 +913,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             img = str(row.get("best_standard_image", "")).strip()
             row["best_standard_image_url"] = _build_image_url(base_url, img)
 
+        similar_images: List[Dict[str, Any]] = []
+        seen = set()
+        max_n = max(1, similar_images_topn)
+        for name, score in ranked_images:
+            file_name = name.split("@", 1)[0]
+            if file_name in seen:
+                continue
+            seen.add(file_name)
+            similar_images.append(
+                {
+                    "image_name": file_name,
+                    "image_url": _build_image_url(base_url, file_name),
+                    "rank_score": round(float(score), 6),
+                }
+            )
+            if len(similar_images) >= max_n:
+                break
+
         if include_image_base64:
             n = len(rows) if base64_topn <= 0 else min(len(rows), base64_topn)
             for i in range(n):
@@ -927,9 +951,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             time.perf_counter() - t_all,
         )
 
+        top1_rank = float(rows[0].get("rank_score", 0.0)) if rows else 0.0
+        top2_rank = float(rows[1].get("rank_score", 0.0)) if len(rows) > 1 else 0.0
+        rank_gap = top1_rank - top2_rank
+        is_ambiguous = len(rows) > 1 and rank_gap < low_confidence_margin_threshold
+        if rank_gap >= confidence_high_threshold:
+            confidence_band = "high"
+        elif rank_gap >= confidence_medium_threshold:
+            confidence_band = "medium"
+        else:
+            confidence_band = "low"
+
         return {
             "query_image": file.filename,
             "topk_style_codes": rows,
+            "similar_images": similar_images,
+            "is_ambiguous": is_ambiguous,
+            "confidence_band": confidence_band,
             "api_user": getattr(request.state, "api_user", "unknown"),
         }
 

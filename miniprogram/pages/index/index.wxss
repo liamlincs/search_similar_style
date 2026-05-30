@@ -154,6 +154,24 @@
   color: #0f172a;
 }
 
+.ambiguous-tip,
+.medium-tip {
+  border-radius: 12rpx;
+  padding: 12rpx 14rpx;
+  margin-bottom: 12rpx;
+  font-size: 23rpx;
+}
+
+.ambiguous-tip {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.medium-tip {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .card-list {
   display: flex;
   flex-direction: column;
