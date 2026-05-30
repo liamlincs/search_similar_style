@@ -149,6 +149,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     stripe_consistency_apply_topn = int(search_cfg.get("stripe_consistency_apply_topn", 256))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
+    display_score_scale = float(search_cfg.get("display_score_scale", 8.0))
+    display_score_bias = float(search_cfg.get("display_score_bias", 0.72))
     phash_enabled = bool(search_cfg.get("phash_enabled", True))
     phash_boost_weight = float(search_cfg.get("phash_boost_weight", 0.18))
     phash_apply_topn = int(search_cfg.get("phash_apply_topn", 256))
@@ -768,6 +770,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     query_hint_code=query_hint_code,
                     query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
                     code_prior_boost=code_prior_boost,
+                    display_score_scale=display_score_scale,
+                    display_score_bias=display_score_bias,
                 )
                 t_post_local = time.perf_counter() - t2
                 return ranked, rows_local, t_recall_local, t_rerank_local, t_post_local
@@ -835,6 +839,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_hint_code=query_hint_code,
                         query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
                         code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
                     )
             if mask_consistency_enabled:
                 q_mask_vec = _extract_fg_mask_vec(query_path, size=64)
@@ -849,6 +855,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_hint_code=query_hint_code,
                         query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
                         code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
                     )
             if stripe_consistency_enabled:
                 q_stripe_sig = _extract_stripe_sig(query_path, keep=24)
@@ -863,6 +871,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_hint_code=query_hint_code,
                         query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
                         code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
                     )
             if phash_enabled:
                 q_bits = _extract_phash_bits(query_path, size=32, keep=8)
@@ -877,6 +887,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_hint_code=query_hint_code,
                         query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
                         code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
                     )
 
             if low_confidence_enabled and rows:

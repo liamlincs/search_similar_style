@@ -370,6 +370,8 @@ def topk_style_codes(
     query_hint_code: str = "",
     query_hint_boost: float = 0.0,
     code_prior_boost: Dict[str, float] | None = None,
+    display_score_scale: float = 8.0,
+    display_score_bias: float = 0.72,
 ) -> List[Dict[str, object]]:
     by_code: Dict[str, List[Tuple[str, float]]] = {}
     for img_name, score in ranked_images:
@@ -389,20 +391,21 @@ def topk_style_codes(
         if code_prior_boost:
             agg_score += float(code_prior_boost.get(code_norm, 0.0))
         raw_score = float(agg_score)
-        # Final score may include multiple heuristic boosts; clamp display score to [0, 0.9999]
-        # so client-side percentage stays within [0%, 99.99%].
-        score = min(0.9999, max(0.0, raw_score))
+        # Use rank score for ordering, and map to a bounded display score for UI.
+        z = float(display_score_scale) * (raw_score - float(display_score_bias))
+        prob = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+        score = min(0.9999, max(0.0, prob))
         rows.append(
             {
                 "style_code": code,
                 "best_standard_image": display_image_name(best_img),
                 "score": round(score, 4),
-                "raw_score": round(raw_score, 4),
+                "rank_score": round(raw_score, 6),
             }
         )
 
-    rows.sort(key=lambda x: float(x["score"]), reverse=True)
-    filtered = [x for x in rows if float(x["score"]) >= min_score]
+    rows.sort(key=lambda x: float(x["rank_score"]), reverse=True)
+    filtered = [x for x in rows if float(x["rank_score"]) >= min_score]
     return filtered[:top_k_codes]
 
 
@@ -642,6 +645,8 @@ def main() -> None:
     db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
     recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
+    display_score_scale = float(search_cfg.get("display_score_scale", 8.0))
+    display_score_bias = float(search_cfg.get("display_score_bias", 0.72))
     query_view_consensus_weight = float(search_cfg.get("query_view_consensus_weight", 0.0))
 
     names, feats = build_feature_db_with_cache(
@@ -712,6 +717,8 @@ def main() -> None:
         )
         if label_memory_enabled
         else {},
+        display_score_scale=display_score_scale,
+        display_score_bias=display_score_bias,
     )
     result = {
         "query_image": str(query),
