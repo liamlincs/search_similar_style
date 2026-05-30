@@ -1,0 +1,106 @@
+{
+  "ocr": {
+    "backend": "rapidocr"
+  },
+  "auth": {
+    "enabled": true,
+    "image_url_secret": "replace-with-image-url-secret",
+    "image_url_ttl_sec": 600,
+    "api_keys": [
+      {
+        "user": "demo_user_a",
+        "key": "replace-with-real-key-a"
+      },
+      {
+        "user": "demo_user_b",
+        "key": "replace-with-real-key-b"
+      }
+    ]
+  },
+  "paths": {
+    "standard_dir": "data/standard_samples",
+    "standard_pattern": "*",
+    "image_exts": [
+      "png",
+      "jpg",
+      "jpeg"
+    ],
+    "test_dir": "data/test_samples"
+  },
+  "search": {
+    "top_k": 5,
+    "candidate_multiplier": 20,
+    "recall_topn_cap": 2000,
+    "min_score": 0.64,
+    "code_agg_top_n": 2,
+    "code_agg_alpha": 0.75,
+    "query_multicrop": true,
+    "query_crop_ratio": 0.72,
+    "query_component_views": false,
+    "query_view_consensus_weight": 0.2,
+    "standard_multicrop": false,
+    "standard_crop_ratio": 0.72,
+    "ocr_hint_enabled": false,
+    "ocr_hint_boost": 0.08,
+    "rerank_enabled": false,
+    "reranker_model": "models/reranker_v1.npz",
+    "rerank_topn": 20,
+    "rerank_weight": 0.4,
+    "rerank_query_views_max": 1,
+    "rerank_candidate_views_max": 1,
+    "rerank_max_unique_codes": 12,
+    "adaptive_second_pass_enabled": false,
+    "adaptive_trigger_top1_below": 0.72,
+    "adaptive_trigger_margin_below": 0.02,
+    "adaptive_recall_topn_cap": 1024,
+    "adaptive_candidate_multiplier": 14,
+    "adaptive_query_component_views": true,
+    "adaptive_query_view_consensus_weight": 0.45,
+    "adaptive_rerank_topn": 40,
+    "adaptive_rerank_query_views_max": 2,
+    "adaptive_rerank_max_unique_codes": 24,
+    "shape_consistency_enabled": true,
+    "shape_consistency_aspect_weight": 0.08,
+    "shape_consistency_fill_weight": 0.02,
+    "shape_consistency_apply_topn": 256,
+    "mask_consistency_enabled": true,
+    "mask_consistency_weight": 0.05,
+    "mask_consistency_apply_topn": 256,
+    "stripe_consistency_enabled": true,
+    "stripe_consistency_weight": 0.06,
+    "stripe_consistency_apply_topn": 256,
+    "phash_enabled": true,
+    "phash_boost_weight": 0.06,
+    "phash_apply_topn": 256,
+    "low_confidence_enabled": true,
+    "low_confidence_margin_threshold": 0.03,
+    "similar_images_topn": 3,
+    "confidence_high_threshold": 0.08,
+    "confidence_medium_threshold": 0.03,
+    "display_score_scale": 6.0,
+    "display_score_bias": 0.78,
+    "strip_mode_enabled": true,
+    "strip_aspect_threshold": 2.2,
+    "strip_fill_threshold": 0.44,
+    "strip_w_clip": 0.3,
+    "strip_w_shape": 0.3,
+    "strip_w_color": 0.1,
+    "strip_w_stripe": 0.3,
+    "preload_rerank_candidate_cache": false,
+    "label_memory_enabled": true,
+    "label_memory_path": "data/query_labels.json",
+    "label_memory_sim_threshold": 0.9,
+    "label_memory_max_boost": 0.09,
+    "feature_cache_enabled": true,
+    "db_feature_dtype": "float16",
+    "result_image_max_edge": 640,
+    "result_image_quality": 80,
+    "feature_backend": "hybrid",
+    "hybrid_weights": {
+      "clip": 0.55,
+      "shape": 0.3,
+      "color": 0.15,
+      "stripe": 0.1
+    }
+  }
+}

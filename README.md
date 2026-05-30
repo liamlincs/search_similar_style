@@ -112,6 +112,9 @@ SEARCH_CONFIG=config/search_config.10k_12g.json uvicorn src.api_server:app --hos
 
 # 10k主力档极速版（速度优先）
 SEARCH_CONFIG=config/search_config.10k_12g_speed.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+
+# 10k候选列表版（快 + 近似候选3个）
+SEARCH_CONFIG=config/search_config.10k_12g_candidates.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 说明：
