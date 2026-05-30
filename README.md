@@ -114,6 +114,9 @@ SEARCH_CONFIG=config/search_config.10k_12g.json uvicorn src.api_server:app --hos
 SEARCH_CONFIG=config/search_config.10k_12g_speed.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 ```
 
+说明：
+- `10k_12g_speed` 已内置“自适应二次检索”：默认先走极速参数；当 top1 分偏低或 top1/top2 过于接近时，自动触发一次高精度复检，改善误匹配。
+
 健康检查：
 
 ```bash

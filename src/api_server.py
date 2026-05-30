@@ -124,6 +124,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
     result_image_max_edge = int(search_cfg.get("result_image_max_edge", 0))
     result_image_quality = int(search_cfg.get("result_image_quality", 82))
+    adaptive_second_pass_enabled = bool(search_cfg.get("adaptive_second_pass_enabled", False))
+    adaptive_trigger_top1_below = float(search_cfg.get("adaptive_trigger_top1_below", 0.72))
+    adaptive_trigger_margin_below = float(search_cfg.get("adaptive_trigger_margin_below", 0.02))
+    adaptive_recall_topn_cap = int(search_cfg.get("adaptive_recall_topn_cap", 1024))
+    adaptive_candidate_multiplier = int(search_cfg.get("adaptive_candidate_multiplier", 12))
+    adaptive_query_component_views = bool(search_cfg.get("adaptive_query_component_views", True))
+    adaptive_rerank_topn = int(search_cfg.get("adaptive_rerank_topn", 36))
+    adaptive_rerank_query_views_max = int(search_cfg.get("adaptive_rerank_query_views_max", 2))
+    adaptive_rerank_max_unique_codes = int(search_cfg.get("adaptive_rerank_max_unique_codes", 24))
     auth_cfg = cfg.get("auth", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
@@ -438,65 +447,105 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             tf.flush()
             query_path = Path(tf.name)
 
-            t0 = time.perf_counter()
-            image_topk = min(len(names), max(top_k * max(candidate_multiplier, 1), top_k))
-            if recall_topn_cap > 0:
-                image_topk = min(image_topk, recall_topn_cap)
-            ranked_images = search_topk_images(
-                query_path,
-                names,
-                feats,
-                image_topk,
-                feature_backend,
-                w_clip,
-                w_shape,
-                w_color,
-                w_stripe,
-                query_multicrop=query_multicrop,
-                query_crop_ratio=query_crop_ratio,
-                query_component_views=query_component_views,
-            )
-            t_recall = time.perf_counter() - t0
-            if rerank_enabled:
-                t1 = time.perf_counter()
-                ranked_images = rerank_candidates_with_model(
-                    query_path,
-                    ranked_images,
-                    standard_dir=standard_dir,
-                    reranker_model_path=reranker_model,
-                    rerank_topn=rerank_topn,
-                    rerank_weight=rerank_weight,
-                    query_multicrop=query_multicrop,
-                    query_crop_ratio=query_crop_ratio,
-                    query_component_views=query_component_views,
-                    rerank_query_views_max=rerank_query_views_max,
-                    rerank_candidate_views_max=rerank_candidate_views_max,
-                    candidate_feature_cache=rerank_candidate_cache,
-                    max_unique_codes=rerank_max_unique_codes,
-                )
-                t_rerank = time.perf_counter() - t1
-            else:
-                t_rerank = 0.0
-
-            t2 = time.perf_counter()
-            rows = topk_style_codes(
-                ranked_images,
-                top_k,
-                min_score=min_score,
-                code_agg_top_n=code_agg_top_n,
-                code_agg_alpha=code_agg_alpha,
-                query_hint_code=try_extract_query_style_code(query_path) if ocr_hint_enabled else "",
-                query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
-                code_prior_boost=build_label_memory_prior_from_refs(
+            query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
+            code_prior_boost = (
+                build_label_memory_prior_from_refs(
                     query_path,
                     label_memory_refs,
                     sim_threshold=label_memory_sim_threshold,
                     max_boost=label_memory_max_boost,
                 )
                 if label_memory_enabled
-                else {},
+                else {}
             )
-            t_post = time.perf_counter() - t2
+
+            def _run_search_pass(
+                cand_multiplier: int,
+                recall_cap: int,
+                pass_query_component_views: bool,
+                pass_rerank_topn: int,
+                pass_rerank_query_views_max: int,
+                pass_rerank_max_unique_codes: int,
+            ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
+                t0 = time.perf_counter()
+                image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
+                if recall_cap > 0:
+                    image_topk = min(image_topk, recall_cap)
+                ranked = search_topk_images(
+                    query_path,
+                    names,
+                    feats,
+                    image_topk,
+                    feature_backend,
+                    w_clip,
+                    w_shape,
+                    w_color,
+                    w_stripe,
+                    query_multicrop=query_multicrop,
+                    query_crop_ratio=query_crop_ratio,
+                    query_component_views=pass_query_component_views,
+                )
+                t_recall_local = time.perf_counter() - t0
+                if rerank_enabled:
+                    t1 = time.perf_counter()
+                    ranked = rerank_candidates_with_model(
+                        query_path,
+                        ranked,
+                        standard_dir=standard_dir,
+                        reranker_model_path=reranker_model,
+                        rerank_topn=pass_rerank_topn,
+                        rerank_weight=rerank_weight,
+                        query_multicrop=query_multicrop,
+                        query_crop_ratio=query_crop_ratio,
+                        query_component_views=pass_query_component_views,
+                        rerank_query_views_max=pass_rerank_query_views_max,
+                        rerank_candidate_views_max=rerank_candidate_views_max,
+                        candidate_feature_cache=rerank_candidate_cache,
+                        max_unique_codes=pass_rerank_max_unique_codes,
+                    )
+                    t_rerank_local = time.perf_counter() - t1
+                else:
+                    t_rerank_local = 0.0
+                t2 = time.perf_counter()
+                rows_local = topk_style_codes(
+                    ranked,
+                    top_k,
+                    min_score=min_score,
+                    code_agg_top_n=code_agg_top_n,
+                    code_agg_alpha=code_agg_alpha,
+                    query_hint_code=query_hint_code,
+                    query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                    code_prior_boost=code_prior_boost,
+                )
+                t_post_local = time.perf_counter() - t2
+                return ranked, rows_local, t_recall_local, t_rerank_local, t_post_local
+
+            ranked_images, rows, t_recall, t_rerank, t_post = _run_search_pass(
+                cand_multiplier=candidate_multiplier,
+                recall_cap=recall_topn_cap,
+                pass_query_component_views=query_component_views,
+                pass_rerank_topn=rerank_topn,
+                pass_rerank_query_views_max=rerank_query_views_max,
+                pass_rerank_max_unique_codes=rerank_max_unique_codes,
+            )
+            second_pass_used = False
+            if adaptive_second_pass_enabled:
+                top1_score = float(rows[0]["score"]) if rows else 0.0
+                top2_score = float(rows[1]["score"]) if len(rows) > 1 else 0.0
+                margin = top1_score - top2_score
+                if (top1_score < adaptive_trigger_top1_below) or (len(rows) > 1 and margin < adaptive_trigger_margin_below):
+                    ranked_images, rows, t2_recall, t2_rerank, t2_post = _run_search_pass(
+                        cand_multiplier=adaptive_candidate_multiplier,
+                        recall_cap=adaptive_recall_topn_cap,
+                        pass_query_component_views=adaptive_query_component_views,
+                        pass_rerank_topn=adaptive_rerank_topn,
+                        pass_rerank_query_views_max=adaptive_rerank_query_views_max,
+                        pass_rerank_max_unique_codes=adaptive_rerank_max_unique_codes,
+                    )
+                    t_recall += t2_recall
+                    t_rerank += t2_rerank
+                    t_post += t2_post
+                    second_pass_used = True
 
         base_url = _external_base_url(request)
         for row in rows:
@@ -512,12 +561,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
             t_rerank,
             t_post,
+            second_pass_used,
             time.perf_counter() - t_all,
         )
 
