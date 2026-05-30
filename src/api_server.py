@@ -143,6 +143,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     mask_consistency_enabled = bool(search_cfg.get("mask_consistency_enabled", True))
     mask_consistency_weight = float(search_cfg.get("mask_consistency_weight", 0.10))
     mask_consistency_apply_topn = int(search_cfg.get("mask_consistency_apply_topn", 256))
+    stripe_consistency_enabled = bool(search_cfg.get("stripe_consistency_enabled", True))
+    stripe_consistency_weight = float(search_cfg.get("stripe_consistency_weight", 0.12))
+    stripe_consistency_apply_topn = int(search_cfg.get("stripe_consistency_apply_topn", 256))
+    low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
+    low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -435,6 +440,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
 
+    def _extract_stripe_sig(path: Path, keep: int = 24) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                rgb = np.asarray(im0.convert("RGB").resize((192, 192), Image.Resampling.BILINEAR), dtype=np.uint8)
+        except Exception:
+            return None
+        gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+        fg = np.any(rgb < 240, axis=-1).astype(np.float32)
+        cut = min(int(fg.shape[0] * 0.12), 24)
+        fg[:cut, :] = 0.0
+        if float(fg.sum()) < 64:
+            fg = np.ones_like(fg, dtype=np.float32)
+        proj_y = (gray * fg).sum(axis=1) / np.clip(fg.sum(axis=1), 1.0, None)
+        proj_x = (gray * fg).sum(axis=0) / np.clip(fg.sum(axis=0), 1.0, None)
+
+        def _fft_mag(sig: np.ndarray, k: int) -> np.ndarray:
+            s = sig.astype(np.float32)
+            s = s - s.mean()
+            spec = np.abs(np.fft.rfft(s))[1 : 1 + k]
+            if spec.shape[0] < k:
+                spec = np.pad(spec, (0, k - spec.shape[0]))
+            spec = spec.astype(np.float32)
+            n = float(np.linalg.norm(spec)) + 1e-8
+            return spec / n
+
+        fy = _fft_mag(proj_y, keep)
+        fx = _fft_mag(proj_x, keep)
+        return np.concatenate([fy, fx]).astype(np.float32)
+
     def _apply_shape_consistency(
         ranked: List[tuple[str, float]],
         query_shape: tuple[float, float] | None,
@@ -483,6 +517,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted + tail
 
+    def _apply_stripe_consistency(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> List[tuple[str, float]]:
+        if not ranked or query_sig is None:
+            return ranked
+        head_n = min(len(ranked), max(1, stripe_consistency_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        w = max(0.0, float(stripe_consistency_weight))
+        adjusted: List[tuple[str, float]] = []
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            cs = stripe_sig_cache.get(file_name)
+            if cs is None:
+                adjusted.append((name, score))
+                continue
+            sim = float(query_sig @ cs)
+            adjusted.append((name, float(score) + w * sim))
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted + tail
+
     def _ensure_preview(image_fp: Path, max_edge: int, quality: int) -> Path:
         quality = max(40, min(95, int(quality)))
         out_fp = _cached_preview_path(image_fp.name, max_edge, quality)
@@ -498,6 +554,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
+    stripe_sig_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -518,6 +575,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if mv is not None:
                 fg_mask_cache[file_name] = mv
         logging.info("api preloaded mask cache: %d", len(fg_mask_cache))
+    if stripe_consistency_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            sv = _extract_stripe_sig(fp, keep=24)
+            if sv is not None:
+                stripe_sig_cache[file_name] = sv
+        logging.info("api preloaded stripe cache: %d", len(stripe_sig_cache))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -730,6 +797,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
                         code_prior_boost=code_prior_boost,
                     )
+            if stripe_consistency_enabled:
+                q_stripe_sig = _extract_stripe_sig(query_path, keep=24)
+                if q_stripe_sig is not None:
+                    ranked_images = _apply_stripe_consistency(ranked_images, q_stripe_sig)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                    )
+
+            if low_confidence_enabled and rows:
+                top1 = float(rows[0].get("score", 0.0))
+                top2 = float(rows[1].get("score", 0.0)) if len(rows) > 1 else 0.0
+                gap = top1 - top2
+                low_conf = len(rows) > 1 and gap < low_confidence_margin_threshold
+                rows[0]["low_confidence"] = bool(low_conf)
+                rows[0]["confidence_gap"] = round(gap, 4)
+                if low_conf and len(rows) > 1:
+                    rows[1]["low_confidence"] = True
+                    rows[1]["confidence_gap"] = round(gap, 4)
 
         base_url = _external_base_url(request)
         for row in rows:
