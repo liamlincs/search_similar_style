@@ -7,6 +7,7 @@ import time
 import os
 import hmac
 import hashlib
+import io
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -15,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from PIL import Image
 
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
@@ -120,6 +122,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
     preload_rerank_candidate_cache = bool(search_cfg.get("preload_rerank_candidate_cache", False))
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
+    result_image_max_edge = int(search_cfg.get("result_image_max_edge", 0))
+    result_image_quality = int(search_cfg.get("result_image_quality", 82))
     auth_cfg = cfg.get("auth", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
@@ -176,6 +180,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     app.state.ready = False
     app.state.ready_detail = "initializing"
+    image_cache_dir = Path("outputs/image_cache")
+    image_cache_dir.mkdir(parents=True, exist_ok=True)
 
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
@@ -309,23 +315,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = Path(image_name).name
         if not safe:
             return f"{base_url}/images/"
+        query_parts: List[str] = []
+        if result_image_max_edge > 0:
+            query_parts.append(f"max_edge={result_image_max_edge}")
+            query_parts.append(f"q={max(40, min(95, result_image_quality))}")
         if api_key_enabled and image_url_secret:
             exp_ts = int(time.time()) + max(60, image_url_ttl_sec)
             msg = f"{safe}:{exp_ts}".encode("utf-8")
             sig = hmac.new(image_url_secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
-            return f"{base_url}/images/{safe}?exp={exp_ts}&sig={sig}"
-        return f"{base_url}/images/{safe}"
+            query_parts.extend([f"exp={exp_ts}", f"sig={sig}"])
+        qs = f"?{'&'.join(query_parts)}" if query_parts else ""
+        return f"{base_url}/images/{safe}{qs}"
 
     def _build_image_url_with_exp(base_url: str, image_name: str) -> tuple[str, int]:
         safe = Path(image_name).name
         if not safe:
             return f"{base_url}/images/", 0
+        query_parts: List[str] = []
+        if result_image_max_edge > 0:
+            query_parts.append(f"max_edge={result_image_max_edge}")
+            query_parts.append(f"q={max(40, min(95, result_image_quality))}")
         if api_key_enabled and image_url_secret:
             exp_ts = int(time.time()) + max(60, image_url_ttl_sec)
             msg = f"{safe}:{exp_ts}".encode("utf-8")
             sig = hmac.new(image_url_secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
-            return f"{base_url}/images/{safe}?exp={exp_ts}&sig={sig}", exp_ts
-        return f"{base_url}/images/{safe}", 0
+            query_parts.extend([f"exp={exp_ts}", f"sig={sig}"])
+            qs = f"?{'&'.join(query_parts)}" if query_parts else ""
+            return f"{base_url}/images/{safe}{qs}", exp_ts
+        qs = f"?{'&'.join(query_parts)}" if query_parts else ""
+        return f"{base_url}/images/{safe}{qs}", 0
 
     def _external_base_url(request: Request) -> str:
         forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
@@ -349,6 +367,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         raw = fp.read_bytes()
         return base64.b64encode(raw).decode("ascii"), _guess_mime(safe)
 
+    def _cached_preview_path(image_name: str, max_edge: int, quality: int) -> Path:
+        stem = Path(image_name).stem
+        return image_cache_dir / f"{stem}__e{max_edge}_q{quality}.jpg"
+
+    def _ensure_preview(image_fp: Path, max_edge: int, quality: int) -> Path:
+        quality = max(40, min(95, int(quality)))
+        out_fp = _cached_preview_path(image_fp.name, max_edge, quality)
+        if out_fp.exists() and out_fp.stat().st_mtime >= image_fp.stat().st_mtime:
+            return out_fp
+        with Image.open(image_fp) as im0:
+            im = im0.convert("RGB")
+            im.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality, optimize=True)
+            out_fp.write_bytes(buf.getvalue())
+        return out_fp
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
@@ -363,11 +398,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         )
 
     @app.get("/images/{image_name}")
-    def get_standard_image(image_name: str) -> FileResponse:
+    def get_standard_image(image_name: str, max_edge: int = 0, q: int = 82) -> FileResponse:
         safe = Path(image_name).name
         fp = standard_dir / safe
         if not fp.exists() or not fp.is_file():
             raise HTTPException(status_code=404, detail="image not found")
+        if max_edge > 0:
+            edge = max(128, min(2048, int(max_edge)))
+            out_fp = _ensure_preview(fp, edge, q)
+            return FileResponse(path=str(out_fp), media_type="image/jpeg")
         return FileResponse(path=str(fp))
 
     @app.get("/image-url", response_model=ImageUrlResponse)

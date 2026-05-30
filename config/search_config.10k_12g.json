@@ -51,6 +51,8 @@
     "label_memory_max_boost": 0.09,
     "feature_cache_enabled": true,
     "db_feature_dtype": "float16",
+    "result_image_max_edge": 768,
+    "result_image_quality": 82,
     "feature_backend": "hybrid",
     "hybrid_weights": {
       "clip": 0.55,
