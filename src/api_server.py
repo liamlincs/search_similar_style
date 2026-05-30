@@ -140,6 +140,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     shape_consistency_aspect_weight = float(search_cfg.get("shape_consistency_aspect_weight", 0.10))
     shape_consistency_fill_weight = float(search_cfg.get("shape_consistency_fill_weight", 0.04))
     shape_consistency_apply_topn = int(search_cfg.get("shape_consistency_apply_topn", 256))
+    mask_consistency_enabled = bool(search_cfg.get("mask_consistency_enabled", True))
+    mask_consistency_weight = float(search_cfg.get("mask_consistency_weight", 0.10))
+    mask_consistency_apply_topn = int(search_cfg.get("mask_consistency_apply_topn", 256))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -416,6 +419,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         fill = float(fg[y0 : y1 + 1, x0 : x1 + 1].mean())
         return aspect, fill
 
+    def _extract_fg_mask_vec(path: Path, size: int = 64) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+        except Exception:
+            return None
+        fg = np.any(rgb < 240, axis=-1).astype(np.float32)
+        cut = min(int(fg.shape[0] * 0.12), 120)
+        fg[:cut, :] = 0.0
+        if float(fg.sum()) < 16:
+            return None
+        im = Image.fromarray((fg * 255.0).astype(np.uint8), mode="L").resize((size, size), Image.BILINEAR)
+        v = (np.asarray(im, dtype=np.float32) / 255.0).reshape(-1)
+        n = float(np.linalg.norm(v)) + 1e-8
+        return (v / n).astype(np.float32)
+
     def _apply_shape_consistency(
         ranked: List[tuple[str, float]],
         query_shape: tuple[float, float] | None,
@@ -442,6 +461,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted + tail
 
+    def _apply_mask_consistency(
+        ranked: List[tuple[str, float]],
+        query_mask_vec: np.ndarray | None,
+    ) -> List[tuple[str, float]]:
+        if not ranked or query_mask_vec is None:
+            return ranked
+        head_n = min(len(ranked), max(1, mask_consistency_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        adjusted: List[tuple[str, float]] = []
+        w = max(0.0, float(mask_consistency_weight))
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            cvec = fg_mask_cache.get(file_name)
+            if cvec is None:
+                adjusted.append((name, score))
+                continue
+            m = float(query_mask_vec @ cvec)  # cosine similarity in [0,1]
+            adjusted.append((name, float(score) + w * m))
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted + tail
+
     def _ensure_preview(image_fp: Path, max_edge: int, quality: int) -> Path:
         quality = max(40, min(95, int(quality)))
         out_fp = _cached_preview_path(image_fp.name, max_edge, quality)
@@ -456,6 +497,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return out_fp
 
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
+    fg_mask_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -466,6 +508,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if shp is not None:
                 fg_shape_cache[file_name] = shp
         logging.info("api preloaded shape cache: %d", len(fg_shape_cache))
+    if mask_consistency_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            mv = _extract_fg_mask_vec(fp, size=64)
+            if mv is not None:
+                fg_mask_cache[file_name] = mv
+        logging.info("api preloaded mask cache: %d", len(fg_mask_cache))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -654,6 +706,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     second_pass_used = True
             if shape_consistency_enabled and q_shape is not None:
                     ranked_images = _apply_shape_consistency(ranked_images, q_shape)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                    )
+            if mask_consistency_enabled:
+                q_mask_vec = _extract_fg_mask_vec(query_path, size=64)
+                if q_mask_vec is not None:
+                    ranked_images = _apply_mask_consistency(ranked_images, q_mask_vec)
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
