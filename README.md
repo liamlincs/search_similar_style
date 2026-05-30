@@ -17,6 +17,7 @@
 - `config/search_config.fast.json`（速度优先）
 - `config/search_config.accurate.json`（精度优先）
 - `config/search_config.10k_12g.json`（10k数据量 + 12G GPU / 32G内存主力档位）
+- `config/search_config.10k_12g_speed.json`（10k数据量 + 12G GPU / 32G内存，极致速度优先）
 
 关键项：
 - `ocr.backend`：当前为 `rapidocr`（本地OCR，不依赖 deepseek / tesseract）
@@ -68,6 +69,7 @@ python src/search_similar_return_code.py data/test_samples/T01.jpg
 python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.fast.json
 python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.accurate.json
 python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.10k_12g.json
+python src/search_similar_return_code.py data/test_samples/T01.png --config config/search_config.10k_12g_speed.json
 ```
 
 输出：标准输出 JSON（可自行重定向到文件）
@@ -107,6 +109,9 @@ SEARCH_CONFIG=config/search_config.accurate.json uvicorn src.api_server:app --ho
 
 # 10k主力档（12G GPU / 32G RAM）
 SEARCH_CONFIG=config/search_config.10k_12g.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+
+# 10k主力档极速版（速度优先）
+SEARCH_CONFIG=config/search_config.10k_12g_speed.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 健康检查：
