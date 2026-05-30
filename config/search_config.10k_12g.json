@@ -33,6 +33,7 @@
     "query_multicrop": true,
     "query_crop_ratio": 0.72,
     "query_component_views": true,
+    "query_view_consensus_weight": 0.20,
     "standard_multicrop": false,
     "standard_crop_ratio": 0.72,
     "ocr_hint_enabled": false,

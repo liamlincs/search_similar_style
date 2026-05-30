@@ -292,6 +292,7 @@ def search_topk_images(
     query_multicrop: bool = True,
     query_crop_ratio: float = 0.75,
     query_component_views: bool = True,
+    query_view_consensus_weight: float = 0.0,
 ) -> List[Tuple[str, float]]:
     q_img = Image.open(query_img).convert("RGB")
     q_views = _build_query_views(
@@ -305,7 +306,13 @@ def search_topk_images(
         for v in q_views
     ]
     sims_stack = np.vstack([(feats @ q).astype(np.float32) for q in q_feats])
-    sims = sims_stack.max(axis=0)
+    w = max(0.0, min(1.0, float(query_view_consensus_weight)))
+    if w <= 1e-6:
+        sims = sims_stack.max(axis=0)
+    else:
+        sims_max = sims_stack.max(axis=0)
+        sims_mean = sims_stack.mean(axis=0)
+        sims = (1.0 - w) * sims_max + w * sims_mean
     k = min(top_k, len(names))
     idx = np.argpartition(-sims, k - 1)[:k]
     idx = idx[np.argsort(-sims[idx])]
@@ -630,6 +637,7 @@ def main() -> None:
     db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
     recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
+    query_view_consensus_weight = float(search_cfg.get("query_view_consensus_weight", 0.0))
 
     names, feats = build_feature_db_with_cache(
         standard_dir,
@@ -666,6 +674,7 @@ def main() -> None:
         query_multicrop=query_multicrop,
         query_crop_ratio=query_crop_ratio,
         query_component_views=query_component_views,
+        query_view_consensus_weight=query_view_consensus_weight,
     )
     if rerank_enabled:
         ranked_images = rerank_candidates_with_model(

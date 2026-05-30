@@ -133,6 +133,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     adaptive_rerank_topn = int(search_cfg.get("adaptive_rerank_topn", 36))
     adaptive_rerank_query_views_max = int(search_cfg.get("adaptive_rerank_query_views_max", 2))
     adaptive_rerank_max_unique_codes = int(search_cfg.get("adaptive_rerank_max_unique_codes", 24))
+    query_view_consensus_weight = float(search_cfg.get("query_view_consensus_weight", 0.0))
+    adaptive_query_view_consensus_weight = float(search_cfg.get("adaptive_query_view_consensus_weight", 0.35))
     auth_cfg = cfg.get("auth", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
@@ -466,6 +468,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_rerank_topn: int,
                 pass_rerank_query_views_max: int,
                 pass_rerank_max_unique_codes: int,
+                pass_query_view_consensus_weight: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 t0 = time.perf_counter()
                 image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
@@ -484,6 +487,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     query_multicrop=query_multicrop,
                     query_crop_ratio=query_crop_ratio,
                     query_component_views=pass_query_component_views,
+                    query_view_consensus_weight=pass_query_view_consensus_weight,
                 )
                 t_recall_local = time.perf_counter() - t0
                 if rerank_enabled:
@@ -527,6 +531,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_rerank_topn=rerank_topn,
                 pass_rerank_query_views_max=rerank_query_views_max,
                 pass_rerank_max_unique_codes=rerank_max_unique_codes,
+                pass_query_view_consensus_weight=query_view_consensus_weight,
             )
             second_pass_used = False
             if adaptive_second_pass_enabled:
@@ -541,6 +546,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         pass_rerank_topn=adaptive_rerank_topn,
                         pass_rerank_query_views_max=adaptive_rerank_query_views_max,
                         pass_rerank_max_unique_codes=adaptive_rerank_max_unique_codes,
+                        pass_query_view_consensus_weight=adaptive_query_view_consensus_weight,
                     )
                     t_recall += t2_recall
                     t_rerank += t2_rerank
