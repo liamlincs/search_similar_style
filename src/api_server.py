@@ -8,6 +8,7 @@ import os
 import hmac
 import hashlib
 import io
+import math
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -148,6 +149,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     stripe_consistency_apply_topn = int(search_cfg.get("stripe_consistency_apply_topn", 256))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
+    phash_enabled = bool(search_cfg.get("phash_enabled", True))
+    phash_boost_weight = float(search_cfg.get("phash_boost_weight", 0.18))
+    phash_apply_topn = int(search_cfg.get("phash_apply_topn", 256))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -469,6 +473,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         fx = _fft_mag(proj_x, keep)
         return np.concatenate([fy, fx]).astype(np.float32)
 
+    def _extract_phash_bits(path: Path, size: int = 32, keep: int = 8) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                arr = np.asarray(im0.convert("L").resize((size, size), Image.Resampling.BILINEAR), dtype=np.float32)
+        except Exception:
+            return None
+        dct = np.fft.fft2(arr).real
+        low = dct[:keep, :keep].copy()
+        med = float(np.median(low[1:, 1:])) if keep > 1 else float(np.median(low))
+        bits = (low > med).astype(np.uint8).reshape(-1)
+        return bits
+
     def _apply_shape_consistency(
         ranked: List[tuple[str, float]],
         query_shape: tuple[float, float] | None,
@@ -539,6 +555,32 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted + tail
 
+    def _apply_phash_consistency(
+        ranked: List[tuple[str, float]],
+        query_bits: np.ndarray | None,
+    ) -> List[tuple[str, float]]:
+        if not ranked or query_bits is None:
+            return ranked
+        head_n = min(len(ranked), max(1, phash_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        w = max(0.0, float(phash_boost_weight))
+        nbits = max(1, int(query_bits.shape[0]))
+        adjusted: List[tuple[str, float]] = []
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            cbits = phash_cache.get(file_name)
+            if cbits is None or cbits.shape[0] != query_bits.shape[0]:
+                adjusted.append((name, score))
+                continue
+            hdist = int(np.count_nonzero(query_bits != cbits))
+            sim = 1.0 - (hdist / float(nbits))
+            # Emphasize very near duplicates
+            boost = w * (sim ** 2)
+            adjusted.append((name, float(score) + float(boost)))
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted + tail
+
     def _ensure_preview(image_fp: Path, max_edge: int, quality: int) -> Path:
         quality = max(40, min(95, int(quality)))
         out_fp = _cached_preview_path(image_fp.name, max_edge, quality)
@@ -555,6 +597,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
+    phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -585,6 +628,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if sv is not None:
                 stripe_sig_cache[file_name] = sv
         logging.info("api preloaded stripe cache: %d", len(stripe_sig_cache))
+    if phash_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            bits = _extract_phash_bits(fp, size=32, keep=8)
+            if bits is not None:
+                phash_cache[file_name] = bits
+        logging.info("api preloaded phash cache: %d", len(phash_cache))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -801,6 +854,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_stripe_sig = _extract_stripe_sig(query_path, keep=24)
                 if q_stripe_sig is not None:
                     ranked_images = _apply_stripe_consistency(ranked_images, q_stripe_sig)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                    )
+            if phash_enabled:
+                q_bits = _extract_phash_bits(query_path, size=32, keep=8)
+                if q_bits is not None:
+                    ranked_images = _apply_phash_consistency(ranked_images, q_bits)
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,

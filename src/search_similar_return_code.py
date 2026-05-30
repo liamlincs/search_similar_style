@@ -388,11 +388,16 @@ def topk_style_codes(
             agg_score += query_hint_boost
         if code_prior_boost:
             agg_score += float(code_prior_boost.get(code_norm, 0.0))
+        raw_score = float(agg_score)
+        # Final score may include multiple heuristic boosts; clamp display score to [0, 0.9999]
+        # so client-side percentage stays within [0%, 99.99%].
+        score = min(0.9999, max(0.0, raw_score))
         rows.append(
             {
                 "style_code": code,
                 "best_standard_image": display_image_name(best_img),
-                "score": round(agg_score, 4),
+                "score": round(score, 4),
+                "raw_score": round(raw_score, 4),
             }
         )
 
