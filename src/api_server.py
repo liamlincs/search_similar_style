@@ -327,6 +327,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return f"{base_url}/images/{safe}?exp={exp_ts}&sig={sig}", exp_ts
         return f"{base_url}/images/{safe}", 0
 
+    def _external_base_url(request: Request) -> str:
+        forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        scheme = forwarded_proto if forwarded_proto in {"http", "https"} else request.url.scheme
+        host = request.headers.get("host", "").strip() or request.url.netloc
+        return f"{scheme}://{host}".rstrip("/")
+
     def _guess_mime(name: str) -> str:
         s = name.lower()
         if s.endswith(".png"):
@@ -370,7 +376,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         fp = standard_dir / safe
         if not fp.exists() or not fp.is_file():
             raise HTTPException(status_code=404, detail="image not found")
-        base_url = str(request.base_url).rstrip("/")
+        base_url = _external_base_url(request)
         image_url, exp_ts = _build_image_url_with_exp(base_url, safe)
         return {"image_name": safe, "image_url": image_url, "expires_at": exp_ts}
 
@@ -453,7 +459,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             t_post = time.perf_counter() - t2
 
-        base_url = str(request.base_url).rstrip("/")
+        base_url = _external_base_url(request)
         for row in rows:
             img = str(row.get("best_standard_image", "")).strip()
             row["best_standard_image_url"] = _build_image_url(base_url, img)
