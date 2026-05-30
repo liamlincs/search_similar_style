@@ -28,6 +28,7 @@ from search_similar_return_code import (
     DEFAULT_CONFIG,
     build_feature_db_with_cache,
     build_label_memory_prior_from_refs,
+    filename_to_style_code,
     precompute_label_memory_refs,
     precompute_rerank_candidate_cache,
     rerank_candidates_with_model,
@@ -921,11 +922,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if file_name in seen:
                 continue
             seen.add(file_name)
+            z = float(display_score_scale) * (float(score) - float(display_score_bias))
+            disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+            disp = min(0.9999, max(0.0, float(disp)))
             similar_images.append(
                 {
                     "image_name": file_name,
+                    "style_code": filename_to_style_code(file_name),
                     "image_url": _build_image_url(base_url, file_name),
                     "rank_score": round(float(score), 6),
+                    "score": round(disp, 4),
                 }
             )
             if len(similar_images) >= max_n:

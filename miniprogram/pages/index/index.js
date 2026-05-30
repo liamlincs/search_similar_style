@@ -84,10 +84,17 @@ Page({
       const list = srcList.map((row, idx) => {
         const imageName = row.image_name || row.best_standard_image || "";
         const meta = byImage[imageName] || null;
-        const scoreNum = Number((meta && meta.item && meta.item.score) || 0);
+        const scoreNum = Number(
+          (meta && meta.item && meta.item.score) ||
+          row.score ||
+          0
+        );
         return {
           rank: idx + 1,
-          styleCode: (meta && meta.item && meta.item.style_code) || "-",
+          styleCode:
+            (meta && meta.item && meta.item.style_code) ||
+            row.style_code ||
+            (imageName ? imageName.replace(/\.[^.]+$/, "").replace(/_[^_]+$/, "") : "-"),
           imageName,
           imageUrl: row.image_url || row.best_standard_image_url || "",
           imageRetryCount: 0,
