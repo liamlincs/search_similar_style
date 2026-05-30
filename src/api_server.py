@@ -11,6 +11,7 @@ import io
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
@@ -135,6 +136,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     adaptive_rerank_max_unique_codes = int(search_cfg.get("adaptive_rerank_max_unique_codes", 24))
     query_view_consensus_weight = float(search_cfg.get("query_view_consensus_weight", 0.0))
     adaptive_query_view_consensus_weight = float(search_cfg.get("adaptive_query_view_consensus_weight", 0.35))
+    shape_consistency_enabled = bool(search_cfg.get("shape_consistency_enabled", False))
+    shape_consistency_aspect_weight = float(search_cfg.get("shape_consistency_aspect_weight", 0.10))
+    shape_consistency_fill_weight = float(search_cfg.get("shape_consistency_fill_weight", 0.04))
+    shape_consistency_apply_topn = int(search_cfg.get("shape_consistency_apply_topn", 256))
+    strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
+    strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
+    strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
+    strip_w_clip = float(search_cfg.get("strip_w_clip", 0.35))
+    strip_w_shape = float(search_cfg.get("strip_w_shape", 0.30))
+    strip_w_color = float(search_cfg.get("strip_w_color", 0.10))
+    strip_w_stripe = float(search_cfg.get("strip_w_stripe", 0.25))
     auth_cfg = cfg.get("auth", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
@@ -382,6 +394,54 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         stem = Path(image_name).stem
         return image_cache_dir / f"{stem}__e{max_edge}_q{quality}.jpg"
 
+    def _extract_fg_shape(path: Path) -> tuple[float, float] | None:
+        try:
+            with Image.open(path) as im0:
+                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+        except Exception:
+            return None
+        if rgb.ndim != 3 or rgb.shape[2] != 3:
+            return None
+        fg = np.any(rgb < 240, axis=-1)
+        cut = min(int(fg.shape[0] * 0.12), 120)
+        fg[:cut, :] = False
+        ys, xs = np.where(fg)
+        if ys.size < 32:
+            return None
+        y0, y1 = int(ys.min()), int(ys.max())
+        x0, x1 = int(xs.min()), int(xs.max())
+        hh = max(1, y1 - y0 + 1)
+        ww = max(1, x1 - x0 + 1)
+        aspect = float(ww) / float(hh)
+        fill = float(fg[y0 : y1 + 1, x0 : x1 + 1].mean())
+        return aspect, fill
+
+    def _apply_shape_consistency(
+        ranked: List[tuple[str, float]],
+        query_shape: tuple[float, float] | None,
+    ) -> List[tuple[str, float]]:
+        if not ranked or query_shape is None:
+            return ranked
+        qa, qf = query_shape
+        eps = 1e-6
+        head_n = min(len(ranked), max(1, shape_consistency_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        adjusted: List[tuple[str, float]] = []
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            cshape = fg_shape_cache.get(file_name)
+            if cshape is None:
+                adjusted.append((name, score))
+                continue
+            ca, cf = cshape
+            d_aspect = min(1.0, abs(np.log((qa + eps) / (ca + eps))))
+            d_fill = min(1.0, abs(qf - cf))
+            penalty = shape_consistency_aspect_weight * d_aspect + shape_consistency_fill_weight * d_fill
+            adjusted.append((name, float(score) - float(penalty)))
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted + tail
+
     def _ensure_preview(image_fp: Path, max_edge: int, quality: int) -> Path:
         quality = max(40, min(95, int(quality)))
         out_fp = _cached_preview_path(image_fp.name, max_edge, quality)
@@ -394,6 +454,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             im.save(buf, format="JPEG", quality=quality, optimize=True)
             out_fp.write_bytes(buf.getvalue())
         return out_fp
+
+    fg_shape_cache: Dict[str, tuple[float, float]] = {}
+    if shape_consistency_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            shp = _extract_fg_shape(fp)
+            if shp is not None:
+                fg_shape_cache[file_name] = shp
+        logging.info("api preloaded shape cache: %d", len(fg_shape_cache))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -469,6 +541,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_rerank_query_views_max: int,
                 pass_rerank_max_unique_codes: int,
                 pass_query_view_consensus_weight: float,
+                pass_w_clip: float,
+                pass_w_shape: float,
+                pass_w_color: float,
+                pass_w_stripe: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 t0 = time.perf_counter()
                 image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
@@ -480,10 +556,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     feats,
                     image_topk,
                     feature_backend,
-                    w_clip,
-                    w_shape,
-                    w_color,
-                    w_stripe,
+                    pass_w_clip,
+                    pass_w_shape,
+                    pass_w_color,
+                    pass_w_stripe,
                     query_multicrop=query_multicrop,
                     query_crop_ratio=query_crop_ratio,
                     query_component_views=pass_query_component_views,
@@ -524,6 +600,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 t_post_local = time.perf_counter() - t2
                 return ranked, rows_local, t_recall_local, t_rerank_local, t_post_local
 
+            q_shape = _extract_fg_shape(query_path)
+            use_strip_mode = False
+            if strip_mode_enabled and q_shape is not None:
+                qa, qf = q_shape
+                use_strip_mode = (qa >= strip_aspect_threshold) or (qf <= strip_fill_threshold)
+            if use_strip_mode:
+                w_clip_pass = strip_w_clip
+                w_shape_pass = strip_w_shape
+                w_color_pass = strip_w_color
+                w_stripe_pass = strip_w_stripe
+            else:
+                w_clip_pass = w_clip
+                w_shape_pass = w_shape
+                w_color_pass = w_color
+                w_stripe_pass = w_stripe
+
             ranked_images, rows, t_recall, t_rerank, t_post = _run_search_pass(
                 cand_multiplier=candidate_multiplier,
                 recall_cap=recall_topn_cap,
@@ -532,6 +624,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_rerank_query_views_max=rerank_query_views_max,
                 pass_rerank_max_unique_codes=rerank_max_unique_codes,
                 pass_query_view_consensus_weight=query_view_consensus_weight,
+                pass_w_clip=w_clip_pass,
+                pass_w_shape=w_shape_pass,
+                pass_w_color=w_color_pass,
+                pass_w_stripe=w_stripe_pass,
             )
             second_pass_used = False
             if adaptive_second_pass_enabled:
@@ -547,11 +643,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         pass_rerank_query_views_max=adaptive_rerank_query_views_max,
                         pass_rerank_max_unique_codes=adaptive_rerank_max_unique_codes,
                         pass_query_view_consensus_weight=adaptive_query_view_consensus_weight,
+                        pass_w_clip=w_clip_pass,
+                        pass_w_shape=w_shape_pass,
+                        pass_w_color=w_color_pass,
+                        pass_w_stripe=w_stripe_pass,
                     )
                     t_recall += t2_recall
                     t_rerank += t2_rerank
                     t_post += t2_post
                     second_pass_used = True
+            if shape_consistency_enabled and q_shape is not None:
+                    ranked_images = _apply_shape_consistency(ranked_images, q_shape)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                    )
 
         base_url = _external_base_url(request)
         for row in rows:
@@ -567,13 +679,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
             t_rerank,
             t_post,
             second_pass_used,
+            use_strip_mode,
             time.perf_counter() - t_all,
         )
 
