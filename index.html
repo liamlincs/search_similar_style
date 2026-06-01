@@ -379,6 +379,17 @@
       text-decoration: none;
     }
 
+    .beian-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .beian-link img {
+      width: 16px;
+      height: 16px;
+    }
+
     .footer a:hover {
       text-decoration: underline;
     }
@@ -552,8 +563,9 @@
 
     <!-- Footer -->
     <footer class="footer">
-      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">
-        粤ICP备2026060186号-2
+      <a class="beian-link" href="https://beian.mps.gov.cn/#/query/webSearch?code=44010602016016" rel="noreferrer" target="_blank">
+        <img src="/assets/beian-icon.png" alt="公安备案图标">
+        <span>粤公网安备44010602016016号</span>
       </a>
     </footer>
   </div>
