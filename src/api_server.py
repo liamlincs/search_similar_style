@@ -9,16 +9,20 @@ import hmac
 import hashlib
 import io
 import math
+import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image
+from zoneinfo import ZoneInfo
 
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
@@ -36,8 +40,32 @@ from search_similar_return_code import (
     topk_style_codes,
     try_extract_query_style_code,
 )
-from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
+from catalog_store import CatalogStore
+
+try:
+    from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
+    PRINT_SERVICE_IMPORT_ERROR: Exception | None = None
+except Exception as exc:
+    PRINT_SERVICE_IMPORT_ERROR = exc
+    PRINT_STATIC_DIR = (THIS_DIR / "print_runtime" / "static")
+    PRINT_STORAGE_DIR = (THIS_DIR / "print_runtime" / "storage")
+    PRINT_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    PRINT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _raise_print_service_unavailable() -> None:
+        raise RuntimeError(
+            "print service unavailable; install optional dependency 'reportlab' first"
+        ) from PRINT_SERVICE_IMPORT_ERROR
+
+    def list_templates() -> List[Dict[str, Any]]:
+        _raise_print_service_unavailable()
+
+    def process_upload(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        _raise_print_service_unavailable()
+
+    def render_layout(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        _raise_print_service_unavailable()
 
 
 class SearchResponse(BaseModel):
@@ -52,6 +80,14 @@ class ImageUrlResponse(BaseModel):
     image_name: str
     image_url: str
     expires_at: int
+
+
+class CatalogTagUpdateRequest(BaseModel):
+    tags: List[str]
+
+
+class CatalogTagCreateRequest(BaseModel):
+    name: str
 
 
 def _load_cfg(path: Path) -> Dict[str, Any]:
@@ -171,6 +207,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     strip_w_color = float(search_cfg.get("strip_w_color", 0.10))
     strip_w_stripe = float(search_cfg.get("strip_w_stripe", 0.25))
     auth_cfg = cfg.get("auth", {})
+    catalog_cfg = cfg.get("catalog", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
     image_url_ttl_sec = int(auth_cfg.get("image_url_ttl_sec", 600))
@@ -183,6 +220,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         user = str(item.get("user", "")).strip() or "unknown"
         if key:
             api_key_map[key] = user
+
+    catalog_db_path = Path(catalog_cfg.get("db_path", "data/product_catalog.db"))
+    catalog_public = bool(catalog_cfg.get("public_endpoints", True))
+    catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
+    catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
+    catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
+    catalog_web_users: Dict[str, str] = {}
+    if isinstance(catalog_web_users_cfg, list):
+        for item in catalog_web_users_cfg:
+            if not isinstance(item, dict):
+                continue
+            username = str(item.get("username", "")).strip()
+            password = str(item.get("password", ""))
+            if username and password:
+                catalog_web_users[username] = password
+    if not catalog_web_users:
+        catalog_web_username = str(catalog_web_auth_cfg.get("username", "admin")).strip()
+        catalog_web_password = str(catalog_web_auth_cfg.get("password", "change-me"))
+        if catalog_web_username and catalog_web_password:
+            catalog_web_users[catalog_web_username] = catalog_web_password
+    catalog_web_captcha_enabled = bool(catalog_web_auth_cfg.get("captcha_enabled", True))
+    catalog_web_captcha_timezone = str(catalog_web_auth_cfg.get("captcha_timezone", "Asia/Shanghai")).strip() or "Asia/Shanghai"
+    catalog_web_session_secret = str(catalog_web_auth_cfg.get("session_secret", "replace-with-catalog-session-secret")).strip()
+    catalog_web_session_ttl_sec = int(catalog_web_auth_cfg.get("session_ttl_sec", 43200))
+    catalog_web_cookie_name = str(catalog_web_auth_cfg.get("cookie_name", "catalog_session")).strip() or "catalog_session"
 
     _setup_logging()
     names, feats = build_feature_db_with_cache(
@@ -218,6 +280,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
     if label_memory_enabled:
         logging.info("api preloaded label memory refs: %d", len(label_memory_refs))
+    catalog_store = CatalogStore(catalog_db_path)
+    sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+    logging.info("catalog sync done: %s", sync_stats)
 
     app = FastAPI(title="search-similar-style-api", version="1.0.0")
     app.mount("/print-static", StaticFiles(directory=str(PRINT_STATIC_DIR)), name="print-static")
@@ -229,6 +294,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     image_cache_dir = Path("outputs/image_cache")
     image_cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _catalog_session_sign(username: str, exp_ts: int) -> str:
+        payload = f"{username}:{exp_ts}".encode("utf-8")
+        return hmac.new(catalog_web_session_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+    def _catalog_build_session_value(username: str) -> tuple[str, int]:
+        exp_ts = int(time.time()) + max(300, catalog_web_session_ttl_sec)
+        sig = _catalog_session_sign(username, exp_ts)
+        return f"{username}:{exp_ts}:{sig}", exp_ts
+
+    def _catalog_read_session_user(request: Request) -> str:
+        if not catalog_web_auth_enabled:
+            return ""
+        raw = str(request.cookies.get(catalog_web_cookie_name, "")).strip()
+        if not raw:
+            return ""
+        parts = raw.split(":", 2)
+        if len(parts) != 3:
+            return ""
+        username, exp_raw, sig = parts
+        if not username or not exp_raw.isdigit() or not sig:
+            return ""
+        exp_ts = int(exp_raw)
+        if exp_ts < int(time.time()):
+            return ""
+        expected = _catalog_session_sign(username, exp_ts)
+        if not hmac.compare_digest(expected, sig):
+            return ""
+        return username
+
+    def _catalog_is_login_ok(username: str, password: str) -> bool:
+        user = username.strip()
+        expected = catalog_web_users.get(user)
+        return bool(expected) and hmac.compare_digest(password, expected)
+
+    def _catalog_today_captcha() -> str:
+        weekday_map = ["一", "二", "三", "四", "五", "六", "日"]
+        try:
+            now = dt.datetime.now(ZoneInfo(catalog_web_captcha_timezone))
+        except Exception:
+            now = dt.datetime.now()
+        return f"{now:%Y%m%d}{weekday_map[now.weekday()]}"
+
+    def _catalog_is_captcha_ok(captcha: str) -> bool:
+        if not catalog_web_captcha_enabled:
+            return True
+        actual = str(captcha or "").strip()
+        expected = _catalog_today_captcha()
+        return bool(actual) and hmac.compare_digest(actual.encode("utf-8"), expected.encode("utf-8"))
+
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
         t0 = time.perf_counter()
@@ -239,14 +353,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ua = request.headers.get("user-agent", "-")
 
         path = request.url.path
+        is_catalog_ui = path == "/catalog"
+        is_catalog_login = path == "/catalog/login"
+        is_catalog_logout = path == "/catalog/logout"
+        is_catalog_api = path.startswith("/api/v1/catalog/")
+        is_catalog_route = is_catalog_ui or is_catalog_login or is_catalog_logout or is_catalog_api
         allow_public = (
             path in {"/health", "/ready"}
+            or is_catalog_login
+            or is_catalog_logout
+            or ((not catalog_web_auth_enabled) and is_catalog_ui)
+            or ((not catalog_web_auth_enabled) and catalog_public and is_catalog_api)
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
             or path.startswith("/recolor-static/")
         )
         allow_api = (
             path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
+            or is_catalog_route
             or path.startswith("/images/")
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
@@ -255,6 +379,56 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not (allow_public or allow_api):
             resp = JSONResponse(status_code=404, content={"detail": "not found"})
             logging.debug(
+                'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                client_ip,
+                request.method,
+                request.url.path,
+                resp.status_code,
+                (time.perf_counter() - t0) * 1000.0,
+                req_len,
+                ua[:200],
+            )
+            return resp
+
+        if is_catalog_route and catalog_web_auth_enabled and not is_catalog_login:
+            key = request.headers.get("X-API-Key", "").strip() if api_key_enabled else ""
+            api_user = api_key_map.get(key, "") if key else ""
+            web_user = _catalog_read_session_user(request)
+            if api_user:
+                request.state.api_user = api_user
+                resp = await call_next(request)
+                logging.info(
+                    'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                    client_ip,
+                    getattr(request.state, "api_user", "unknown"),
+                    request.method,
+                    request.url.path,
+                    resp.status_code,
+                    (time.perf_counter() - t0) * 1000.0,
+                    req_len,
+                    ua[:200],
+                )
+                return resp
+            if web_user:
+                request.state.api_user = f"catalog-web:{web_user}"
+                resp = await call_next(request)
+                logging.info(
+                    'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                    client_ip,
+                    getattr(request.state, "api_user", "unknown"),
+                    request.method,
+                    request.url.path,
+                    resp.status_code,
+                    (time.perf_counter() - t0) * 1000.0,
+                    req_len,
+                    ua[:200],
+                )
+                return resp
+            if is_catalog_ui or is_catalog_logout:
+                resp = RedirectResponse(url="/catalog/login", status_code=303)
+            else:
+                resp = JSONResponse(status_code=401, content={"detail": "catalog login required"})
+            logging.info(
                 'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
                 client_ip,
                 request.method,
@@ -412,6 +586,58 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return "", ""
         raw = fp.read_bytes()
         return base64.b64encode(raw).decode("ascii"), _guess_mime(safe)
+
+    def _serialize_catalog_product(base_url: str, product: Dict[str, Any]) -> Dict[str, Any]:
+        images = [
+            {
+                "image_name": str(item.get("image_name", "")),
+                "sort_order": int(item.get("sort_order", 0)),
+                "image_url": _build_image_url(base_url, str(item.get("image_name", ""))),
+            }
+            for item in list(product.get("images", []))
+        ]
+        cover_image = str(product.get("cover_image", "")).strip()
+        return {
+            "style_code": str(product.get("style_code", "")),
+            "cover_image": cover_image,
+            "cover_image_url": _build_image_url(base_url, cover_image) if cover_image else "",
+            "note": str(product.get("note", "")),
+            "tags": list(product.get("tags", [])),
+            "images": images,
+            "created_at": str(product.get("created_at", "")),
+            "updated_at": str(product.get("updated_at", "")),
+        }
+
+    def _enrich_search_rows(base_url: str, rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        style_codes = [str(row.get("style_code", "")).strip() for row in rows_in if str(row.get("style_code", "")).strip()]
+        product_map = {
+            str(item.get("style_code", "")): item
+            for item in catalog_store.get_products_by_codes(style_codes)
+        }
+        for row in rows_in:
+            style_code = str(row.get("style_code", "")).strip()
+            product = product_map.get(style_code)
+            if not product:
+                row["tags"] = []
+                row["catalog_cover_image"] = row.get("best_standard_image", "")
+                row["catalog_cover_image_url"] = row.get("best_standard_image_url", "")
+                continue
+            row["tags"] = list(product.get("tags", []))
+            row["catalog_cover_image"] = str(product.get("cover_image", ""))
+            row["catalog_cover_image_url"] = _build_image_url(base_url, str(product.get("cover_image", "")))
+        return rows_in
+
+    def _enrich_similar_images(base_url: str, rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        style_codes = [str(row.get("style_code", "")).strip() for row in rows_in if str(row.get("style_code", "")).strip()]
+        product_map = {
+            str(item.get("style_code", "")): item
+            for item in catalog_store.get_products_by_codes(style_codes)
+        }
+        for row in rows_in:
+            style_code = str(row.get("style_code", "")).strip()
+            product = product_map.get(style_code)
+            row["tags"] = list(product.get("tags", [])) if product else []
+        return rows_in
 
     def _cached_preview_path(image_name: str, max_edge: int, quality: int) -> Path:
         stem = Path(image_name).stem
@@ -662,6 +888,473 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             status_code=503,
             content={"status": "not_ready", "detail": str(getattr(app.state, "ready_detail", "initializing"))},
         )
+
+    @app.get("/catalog/login", response_class=HTMLResponse)
+    def catalog_login_page(request: Request, error: int = 0) -> HTMLResponse:
+        if catalog_web_auth_enabled and _catalog_read_session_user(request):
+            return HTMLResponse("", status_code=303, headers={"Location": "/catalog"})
+        err_html = '<div class="err">用户名、密码或验证码错误</div>' if int(error or 0) else ""
+        html = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>产品库登录</title>
+  <style>
+    body {{ margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(180deg,#f8fafc,#eef2f7); font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+    .card {{ width: min(420px, calc(100vw - 32px)); background: #fff; border-radius: 18px; box-shadow: 0 16px 36px rgba(15,23,42,.12); padding: 28px; }}
+    h1 {{ margin: 0 0 8px; font-size: 28px; color: #0f172a; }}
+    .sub {{ color: #64748b; font-size: 14px; margin-bottom: 18px; }}
+    .err {{ margin-bottom: 14px; padding: 10px 12px; border-radius: 10px; background: #fef2f2; color: #b91c1c; font-size: 14px; }}
+    label {{ display: block; font-size: 13px; color: #475569; margin: 14px 0 6px; }}
+    input {{ width: 100%; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 12px; padding: 12px 14px; font-size: 15px; }}
+    button {{ width: 100%; margin-top: 18px; border: none; border-radius: 12px; padding: 12px 14px; font-size: 15px; background: #0f172a; color: #fff; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <form class="card" method="post" action="/catalog/login">
+    <h1>产品库登录</h1>
+    <div class="sub">登录后可访问 Web 产品库管理页。</div>
+    {err_html}
+    <label for="username">用户名</label>
+    <input id="username" name="username" autocomplete="username" />
+    <label for="password">密码</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" />
+    <label for="captcha">验证码</label>
+    <input id="captcha" name="captcha" autocomplete="off" />
+    <button type="submit">登录</button>
+  </form>
+</body>
+</html>"""
+        return HTMLResponse(html)
+
+    @app.post("/catalog/login")
+    async def catalog_login_submit(
+        username: str = Form(""),
+        password: str = Form(""),
+        captcha: str = Form(""),
+    ) -> RedirectResponse:
+        if not catalog_web_auth_enabled:
+            return RedirectResponse(url="/catalog", status_code=303)
+        if (not _catalog_is_login_ok(username, password)) or (not _catalog_is_captcha_ok(captcha)):
+            return RedirectResponse(url="/catalog/login?error=1", status_code=303)
+        session_value, exp_ts = _catalog_build_session_value(username.strip())
+        resp = RedirectResponse(url="/catalog", status_code=303)
+        resp.set_cookie(
+            key=catalog_web_cookie_name,
+            value=session_value,
+            max_age=max(300, catalog_web_session_ttl_sec),
+            expires=exp_ts,
+            httponly=True,
+            samesite="lax",
+        )
+        return resp
+
+    @app.get("/catalog/logout")
+    def catalog_logout() -> RedirectResponse:
+        resp = RedirectResponse(url="/catalog/login", status_code=303)
+        resp.delete_cookie(catalog_web_cookie_name)
+        return resp
+
+    @app.get("/catalog", response_class=HTMLResponse)
+    def catalog_page() -> str:
+        return """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>产品库</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin: 0; background: #f5f7fa; color: #111827; }
+    .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .toolbar { display: grid; grid-template-columns: 1.6fr auto auto; gap: 12px; margin-bottom: 16px; }
+    .toolbar-secondary { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; margin-bottom: 16px; }
+    input, button { font-size: 14px; padding: 10px 12px; border-radius: 10px; border: 1px solid #d1d5db; }
+    button { cursor: pointer; background: #111827; color: #fff; border: none; }
+    button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
+    .muted { color: #6b7280; font-size: 13px; }
+    .filter-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; min-height: 28px; }
+    .filter-tag { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .filter-tag.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+    .card { background: #fff; border-radius: 14px; padding: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); }
+    .thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; border-radius: 10px; cursor: pointer; }
+    .code { font-weight: 700; margin: 10px 0 8px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 26px; margin-bottom: 10px; }
+    .tag { background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+    .tag-remove { border: none; background: transparent; color: #3730a3; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; }
+    .row { display: flex; gap: 8px; position: relative; align-items: center; }
+    .picker-trigger { flex: 1; font-size: 12px; padding: 6px 10px; border-radius: 9px; border: 1px dashed #c7d2fe; background: #f8faff; min-height: 30px; display: flex; align-items: center; color: #6366f1; cursor: pointer; }
+    .picker-trigger.active { border-color: #818cf8; background: #eef2ff; box-shadow: none; }
+    .picker-pop { position: absolute; left: 0; right: 64px; top: calc(100% + 8px); background: #fff; border: 1px solid #d1d5db; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,0.12); padding: 10px; display: none; z-index: 10; }
+    .picker-pop.open { display: block; }
+    .picker-options { display: flex; flex-wrap: wrap; gap: 8px; max-height: 180px; overflow: auto; }
+    .picker-option { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .picker-option.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .picker-add-btn { min-width: 52px; padding: 6px 9px; font-size: 12px; border-radius: 9px; }
+    .status { margin: 8px 0 16px; min-height: 20px; }
+    .logout-btn { display:inline-flex; align-items:center; justify-content:center; height:38px; padding:0 14px; border-radius:10px; background:#fff1f2; color:#be123c; border:1px solid #fecdd3; text-decoration:none; font-size:14px; font-weight:600; }
+    .logout-btn:hover { background:#ffe4e6; }
+    .modal { position: fixed; inset: 0; background: rgba(17,24,39,0.68); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 999; }
+    .modal.open { display: flex; }
+    .modal-panel { width: min(1080px, 100%); max-height: 90vh; overflow: auto; background: #fff; border-radius: 16px; padding: 18px; }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .modal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+    .gallery-item { background: #f9fafb; border-radius: 12px; padding: 10px; }
+    .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; background: #e5e7eb; }
+    .gallery-caption { margin-top: 8px; font-size: 12px; color: #4b5563; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+      <h1>产品库</h1>
+      <a href="/catalog/logout" class="logout-btn">退出登录</a>
+    </div>
+    <div class="muted">按款号管理图片与材料标签。标签支持新增，搜索接口后续可直接按款号和标签筛选。</div>
+    <div class="toolbar">
+      <input id="styleCodeQuery" placeholder="按款号搜索，如 GZ25-1177" />
+      <button id="searchBtn">查询</button>
+      <button id="syncBtn">同步图片</button>
+    </div>
+    <div class="toolbar-secondary">
+      <input id="newTagName" list="allTagsList" placeholder="新增标签名称；输入时会提示已有标签" />
+      <button id="addTagBtn">新增标签</button>
+      <button id="reloadBtn" class="secondary">刷新</button>
+    </div>
+    <div id="activeFilterTags" class="filter-tags"></div>
+    <div id="status" class="status muted"></div>
+    <div id="cards" class="cards"></div>
+  </div>
+  <datalist id="allTagsList"></datalist>
+  <div id="galleryModal" class="modal">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div>
+          <div id="galleryTitle" class="code" style="margin:0;"></div>
+          <div id="gallerySubTitle" class="muted"></div>
+        </div>
+        <button id="closeGalleryBtn" class="secondary">关闭</button>
+      </div>
+      <div id="galleryGrid" class="modal-grid"></div>
+    </div>
+  </div>
+  <script>
+    let globalTags = [];
+    let currentProducts = [];
+    let selectedFilterTags = [];
+    const els = {
+      styleCodeQuery: document.getElementById('styleCodeQuery'),
+      searchBtn: document.getElementById('searchBtn'),
+      syncBtn: document.getElementById('syncBtn'),
+      newTagName: document.getElementById('newTagName'),
+      addTagBtn: document.getElementById('addTagBtn'),
+      reloadBtn: document.getElementById('reloadBtn'),
+      status: document.getElementById('status'),
+      cards: document.getElementById('cards'),
+      activeFilterTags: document.getElementById('activeFilterTags'),
+      allTagsList: document.getElementById('allTagsList'),
+      galleryModal: document.getElementById('galleryModal'),
+      galleryTitle: document.getElementById('galleryTitle'),
+      gallerySubTitle: document.getElementById('gallerySubTitle'),
+      galleryGrid: document.getElementById('galleryGrid'),
+      closeGalleryBtn: document.getElementById('closeGalleryBtn'),
+    };
+
+    function setStatus(msg, isError) {
+      els.status.textContent = msg || '';
+      els.status.style.color = isError ? '#b91c1c' : '#6b7280';
+    }
+
+    function uniqTags(tags) {
+      return Array.from(new Set((tags || []).filter(Boolean)));
+    }
+
+    async function saveTags(styleCode, tags) {
+      const resp = await fetch('/api/v1/catalog/products/' + encodeURIComponent(styleCode) + '/tags', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: uniqTags(tags) })
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+    }
+
+    async function loadGlobalTags() {
+      const resp = await fetch('/api/v1/catalog/tags');
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      globalTags = data.tags || [];
+      els.allTagsList.innerHTML = globalTags.map(tag => `<option value="${tag}"></option>`).join('');
+    }
+
+    async function loadProducts() {
+      setStatus('加载中...', false);
+      const params = new URLSearchParams();
+      if (els.styleCodeQuery.value.trim()) params.set('style_code', els.styleCodeQuery.value.trim());
+      const tags = selectedFilterTags;
+      if (tags.length) params.set('tags', tags.join(','));
+      const resp = await fetch('/api/v1/catalog/products?' + params.toString());
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      currentProducts = data.products || [];
+      renderCards(currentProducts);
+      renderActiveFilterTags();
+      setStatus(`共 ${currentProducts.length} 个款`, false);
+    }
+
+    function renderActiveFilterTags() {
+      const all = uniqTags(globalTags);
+      els.activeFilterTags.innerHTML = all.map(tag => `
+        <button type="button" class="filter-tag ${selectedFilterTags.includes(tag) ? 'active' : ''}" data-role="filterTagBtn" data-tag="${tag}">
+          ${tag}
+        </button>
+      `).join('');
+      els.activeFilterTags.querySelectorAll('[data-role="filterTagBtn"]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const tag = button.dataset.tag || '';
+          if (!tag) return;
+          if (selectedFilterTags.includes(tag)) {
+            selectedFilterTags = selectedFilterTags.filter(x => x !== tag);
+          } else {
+            selectedFilterTags = uniqTags([...selectedFilterTags, tag]);
+          }
+          await loadProducts();
+        });
+      });
+    }
+
+    function toggleFilterTag(tag) {
+      if (!tag) return;
+      if (selectedFilterTags.includes(tag)) {
+        selectedFilterTags = selectedFilterTags.filter(x => x !== tag);
+      } else {
+        selectedFilterTags = uniqTags([...selectedFilterTags, tag]);
+      }
+      loadProducts().catch(err => setStatus(err.message || '加载失败', true));
+    }
+
+    function buildCardTagsHtml(tags) {
+      return (tags || []).map(tag => `
+          <span class="tag">
+            <button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${tag}" title="按该标签筛选">#</button>
+            <span>${tag}</span>
+            <button type="button" class="tag-remove" data-role="removeTagBtn" data-tag="${tag}" title="删除标签">×</button>
+          </span>
+        `).join('');
+    }
+
+    function buildPickerOptions(selectedTags) {
+      const selected = new Set(selectedTags || []);
+      const options = globalTags.map(tag => `
+            <button class="picker-option ${selected.has(tag) ? 'active' : ''}" type="button" data-role="pickerOption" data-tag="${tag}">
+              ${tag}
+            </button>
+      `).join('');
+      return options || '<div class="muted">暂无可选标签，请先在顶部新增。</div>';
+    }
+
+    function updatePickerTrigger(trigger, pendingTags) {
+      const list = uniqTags(pendingTags);
+      trigger.textContent = list.length ? `+ ${list.join('、')}` : '+ 标签';
+      trigger.classList.toggle('active', list.length > 0);
+    }
+
+    function closeAllPickers() {
+      document.querySelectorAll('[data-role="pickerPop"]').forEach((el) => el.classList.remove('open'));
+    }
+
+    function openGallery(product) {
+      els.galleryTitle.textContent = product.style_code || '';
+      els.gallerySubTitle.textContent = `共 ${(product.images || []).length} 张图片`;
+      els.galleryGrid.innerHTML = (product.images || []).map(item => `
+        <div class="gallery-item">
+          <img src="${item.image_url || ''}" alt="${item.image_name || ''}" />
+          <div class="gallery-caption">${item.image_name || ''}</div>
+        </div>
+      `).join('');
+      els.galleryModal.classList.add('open');
+    }
+
+    function closeGallery() {
+      els.galleryModal.classList.remove('open');
+    }
+
+    function renderCards(products) {
+      els.cards.innerHTML = '';
+      if (!products.length) {
+        els.cards.innerHTML = '<div class="muted">没有符合条件的产品。</div>';
+        return;
+      }
+      products.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        const tags = item.tags || [];
+        const tagsHtml = buildCardTagsHtml(tags);
+        card.innerHTML = `
+          <img class="thumb" src="${item.cover_image_url || ''}" alt="${item.style_code}" title="点击查看该款全部图片" />
+          <div class="code">${item.style_code}</div>
+          <div class="tags">${tagsHtml}</div>
+          <div class="muted" style="margin-bottom:10px;">图片数：${(item.images || []).length}</div>
+          <div class="row">
+            <div class="picker-trigger" data-role="pickerTrigger">点击选择已有标签</div>
+            <div class="picker-pop" data-role="pickerPop">
+              <div class="picker-options" data-role="pickerOptions">${buildPickerOptions([])}</div>
+            </div>
+            <button type="button" class="picker-add-btn" data-role="saveBtn">添加</button>
+          </div>
+        `;
+        card.querySelector('.thumb').addEventListener('click', () => openGallery(item));
+        let pendingTags = [];
+        const pickerTrigger = card.querySelector('[data-role="pickerTrigger"]');
+        const pickerPop = card.querySelector('[data-role="pickerPop"]');
+        const pickerOptions = card.querySelector('[data-role="pickerOptions"]');
+        updatePickerTrigger(pickerTrigger, pendingTags);
+        pickerTrigger.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const isOpen = pickerPop.classList.contains('open');
+          closeAllPickers();
+          if (!isOpen) pickerPop.classList.add('open');
+        });
+        pickerOptions.querySelectorAll('[data-role="pickerOption"]').forEach((button) => {
+          button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const tag = button.dataset.tag || '';
+            if (!tag) return;
+            if (pendingTags.includes(tag)) {
+              pendingTags = pendingTags.filter(x => x !== tag);
+            } else {
+              pendingTags = uniqTags([...pendingTags, tag]);
+            }
+            button.classList.toggle('active', pendingTags.includes(tag));
+            updatePickerTrigger(pickerTrigger, pendingTags);
+          });
+        });
+        card.querySelectorAll('[data-role="filterFromCardBtn"]').forEach((button) => {
+          button.addEventListener('click', () => toggleFilterTag(button.dataset.tag || ''));
+        });
+        card.querySelectorAll('[data-role="removeTagBtn"]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const tag = button.dataset.tag || '';
+            const nextTags = tags.filter(x => x !== tag);
+            try {
+              await saveTags(item.style_code, nextTags);
+              await loadProducts();
+              setStatus('标签已删除', false);
+            } catch (err) {
+              setStatus(err.message || '删除失败', true);
+            }
+          });
+        });
+        card.querySelector('[data-role="saveBtn"]').addEventListener('click', async () => {
+          if (!pendingTags.length) {
+            setStatus('请先选择至少一个已有标签', true);
+            return;
+          }
+          const nextTags = uniqTags([...(item.tags || []), ...pendingTags]);
+          try {
+            await saveTags(item.style_code, nextTags);
+            pendingTags = [];
+            await loadGlobalTags();
+            await loadProducts();
+            setStatus('标签已保存', false);
+          } catch (err) {
+            setStatus(err.message || '保存失败', true);
+          }
+        });
+        els.cards.appendChild(card);
+      });
+    }
+
+    els.searchBtn.addEventListener('click', () => {
+      loadProducts().catch(err => setStatus(err.message || '加载失败', true));
+    });
+    els.reloadBtn.addEventListener('click', () => Promise.all([loadGlobalTags(), loadProducts()]).catch(err => setStatus(err.message || '加载失败', true)));
+    els.addTagBtn.addEventListener('click', async () => {
+      try {
+        const value = els.newTagName.value.trim();
+        if (!value) {
+          setStatus('请输入标签名称', true);
+          return;
+        }
+        const resp = await fetch('/api/v1/catalog/tags', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: value })
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        els.newTagName.value = '';
+        await loadGlobalTags();
+        setStatus('标签已新增', false);
+      } catch (err) {
+        setStatus(err.message || '新增标签失败', true);
+      }
+    });
+    els.syncBtn.addEventListener('click', async () => {
+      try {
+        const resp = await fetch('/api/v1/catalog/sync', { method: 'POST' });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        await loadGlobalTags();
+        await loadProducts();
+        setStatus(`同步完成：新增款 ${data.products_added}，新增/更新图 ${data.images_added_or_updated}`, false);
+      } catch (err) {
+        setStatus(err.message || '同步失败', true);
+      }
+    });
+    els.closeGalleryBtn.addEventListener('click', closeGallery);
+    els.galleryModal.addEventListener('click', (event) => {
+      if (event.target === els.galleryModal) closeGallery();
+    });
+    document.addEventListener('click', () => closeAllPickers());
+
+    Promise.all([loadGlobalTags(), loadProducts()]).catch(err => setStatus(err.message || '加载失败', true));
+  </script>
+</body>
+</html>"""
+
+    @app.get("/api/v1/catalog/products")
+    def api_list_catalog_products(
+        request: Request,
+        style_code: str = "",
+        tags: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        base_url = _external_base_url(request)
+        tag_list = [item.strip() for item in tags.split(",") if item.strip()]
+        products = catalog_store.list_products(style_code=style_code, tags=tag_list, limit=limit, offset=offset)
+        return {"products": [_serialize_catalog_product(base_url, item) for item in products]}
+
+    @app.get("/api/v1/catalog/products/{style_code}")
+    def api_get_catalog_product(request: Request, style_code: str) -> Dict[str, Any]:
+        product = catalog_store.get_product(style_code)
+        if not product:
+            raise HTTPException(status_code=404, detail="product not found")
+        return _serialize_catalog_product(_external_base_url(request), product)
+
+    @app.put("/api/v1/catalog/products/{style_code}/tags")
+    def api_replace_catalog_product_tags(style_code: str, payload: CatalogTagUpdateRequest) -> Dict[str, Any]:
+        try:
+            tags_local = catalog_store.replace_product_tags(style_code, payload.tags)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"style_code": style_code, "tags": tags_local}
+
+    @app.get("/api/v1/catalog/tags")
+    def api_list_catalog_tags() -> Dict[str, Any]:
+        return {"tags": catalog_store.list_tags()}
+
+    @app.post("/api/v1/catalog/tags")
+    def api_create_catalog_tag(payload: CatalogTagCreateRequest) -> Dict[str, Any]:
+        try:
+            tag = catalog_store.create_tag(payload.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"tag": tag}
+
+    @app.post("/api/v1/catalog/sync")
+    def api_sync_catalog() -> Dict[str, Any]:
+        return catalog_store.sync_from_standard_dir(standard_dir, image_exts)
 
     @app.get("/images/{image_name}")
     def get_standard_image(image_name: str, max_edge: int = 0, q: int = 82) -> FileResponse:
@@ -930,6 +1623,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for row in rows:
             img = str(row.get("best_standard_image", "")).strip()
             row["best_standard_image_url"] = _build_image_url(base_url, img)
+        rows = _enrich_search_rows(base_url, rows)
 
         similar_images: List[Dict[str, Any]] = []
         seen = set()
@@ -953,6 +1647,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             if len(similar_images) >= max_n:
                 break
+        similar_images = _enrich_similar_images(base_url, similar_images)
 
         if include_image_base64:
             n = len(rows) if base64_topn <= 0 else min(len(rows), base64_topn)
@@ -1013,7 +1708,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/v1/templates")
     def api_list_templates() -> List[Dict[str, Any]]:
-        return list_templates()
+        try:
+            return list_templates()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.post("/api/v1/images/upload")
     async def api_upload_image(file: UploadFile = File(...)) -> Dict[str, Any]:
@@ -1027,6 +1725,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         try:
             return process_upload(content, suffix=suffix)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"处理图片失败: {exc}") from exc
 
@@ -1034,6 +1734,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def api_render_layout(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         try:
             return render_layout(payload)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

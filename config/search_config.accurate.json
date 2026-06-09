@@ -17,6 +17,28 @@
       }
     ]
   },
+  "catalog": {
+    "db_path": "data/product_catalog.db",
+    "public_endpoints": true,
+    "web_auth": {
+      "enabled": true,
+      "captcha_enabled": true,
+      "captcha_timezone": "Asia/Shanghai",
+      "users": [
+        {
+          "username": "admin",
+          "password": "change-me"
+        },
+        {
+          "username": "merch",
+          "password": "change-me-too"
+        }
+      ],
+      "session_secret": "replace-with-catalog-session-secret",
+      "session_ttl_sec": 43200,
+      "cookie_name": "catalog_session"
+    }
+  },
   "paths": {
     "standard_dir": "data/standard_samples",
     "standard_pattern": "*",

@@ -103,6 +103,56 @@ function parseErrorMessage(res) {
   return `请求失败: HTTP ${res.statusCode || "unknown"}`;
 }
 
+function requestJson(url, method, data) {
+  return new Promise((resolve, reject) => {
+    wx.request({
+      url,
+      method: method || "GET",
+      data: data || null,
+      timeout: config.timeout,
+      header: {
+        "content-type": "application/json",
+        "X-API-Key": config.apiKey
+      },
+      success: (res) => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(res.data || {});
+          return;
+        }
+        reject(new Error(parseErrorMessage(res)));
+      },
+      fail: (err) => reject(new Error((err && err.errMsg) || "网络错误"))
+    });
+  });
+}
+
+function fetchCatalogTags() {
+  const paths = config.catalogPaths || {};
+  const finalUrl = `${config.baseUrl}${paths.tags || "/api/v1/catalog/tags"}`;
+  return requestJson(finalUrl, "GET");
+}
+
+function fetchCatalogProducts(options = {}) {
+  const paths = config.catalogPaths || {};
+  const finalUrl = `${config.baseUrl}${paths.products || "/api/v1/catalog/products"}`;
+  const payload = {};
+  if (options.style_code) payload.style_code = String(options.style_code).trim();
+  const tags = Array.isArray(options.tags) ? options.tags.filter(Boolean) : [];
+  if (tags.length) payload.tags = tags.join(",");
+  return requestJson(finalUrl, "GET", payload);
+}
+
+function fetchCatalogProductDetail(styleCode) {
+  const code = String(styleCode || "").trim();
+  if (!code) {
+    return Promise.reject(new Error("缺少款号"));
+  }
+  const paths = config.catalogPaths || {};
+  const basePath = paths.products || "/api/v1/catalog/products";
+  const finalUrl = `${config.baseUrl}${basePath}/${encodeURIComponent(code)}`;
+  return requestJson(finalUrl, "GET");
+}
+
 function printRequest(path, method, data) {
   const finalUrl = buildPrintUrl(path);
   return new Promise((resolve, reject) => {
@@ -314,6 +364,9 @@ async function uploadAndSearch(filePath) {
 module.exports = {
   uploadAndSearch,
   fetchSignedImageUrl,
+  fetchCatalogTags,
+  fetchCatalogProducts,
+  fetchCatalogProductDetail,
   fetchPrintTemplates,
   printUpload,
   renderPrintLayout,

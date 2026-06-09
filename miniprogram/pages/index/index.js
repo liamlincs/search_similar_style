@@ -1,15 +1,55 @@
-const { uploadAndSearch, fetchSignedImageUrl } = require("../../utils/api");
+const { uploadAndSearch, fetchSignedImageUrl, fetchCatalogTags, fetchCatalogProducts, fetchCatalogProductDetail } = require("../../utils/api");
 const config = require("../../utils/config");
+
+function uniqTags(tags) {
+  return Array.from(new Set((tags || []).filter(Boolean)));
+}
+
+function buildCatalogTagItems(allTags, selectedTags) {
+  const selected = new Set(selectedTags || []);
+  return (allTags || []).map((tag) => ({
+    name: tag,
+    active: selected.has(tag)
+  }));
+}
+
+function buildPreviewUrls(product) {
+  const imageUrls = (product.images || [])
+    .map((item) => item.image_url || item.imageUrl || "")
+    .filter(Boolean);
+  if (imageUrls.length) return uniqTags(imageUrls);
+  const cover = product.coverImageUrl || product.cover_image_url || product.imageUrl || "";
+  return cover ? [cover] : [];
+}
 
 Page({
   data: {
+    pageMode: "image",
     localImage: "",
     searching: false,
     hasSearched: false,
     errorMessage: "",
     results: [],
     isAmbiguous: false,
-    confidenceBand: "low"
+    confidenceBand: "low",
+    catalogQuery: "",
+    catalogTags: [],
+    catalogTagItems: [],
+    selectedCatalogTags: [],
+    catalogLoading: false,
+    catalogErrorMessage: "",
+    catalogResults: []
+  },
+
+  onLoad() {
+    this.loadCatalogFilters();
+    this.searchCatalog();
+  },
+
+  switchMode(e) {
+    const mode = e.currentTarget.dataset.mode || "image";
+    if (mode === this.data.pageMode) return;
+    this.setData({ pageMode: mode });
   },
 
   chooseFromAlbum() {
@@ -35,6 +75,73 @@ Page({
   },
 
   goSearchPage() {},
+
+  onCatalogQueryInput(e) {
+    this.setData({ catalogQuery: e.detail.value || "" });
+  },
+
+  toggleCatalogTag(e) {
+    const tag = e.currentTarget.dataset.tag || "";
+    if (!tag) return;
+    const selected = this.data.selectedCatalogTags || [];
+    const next = selected.includes(tag)
+      ? selected.filter((item) => item !== tag)
+      : uniqTags(selected.concat(tag));
+    this.setData({
+      selectedCatalogTags: next,
+      catalogTagItems: buildCatalogTagItems(this.data.catalogTags, next)
+    });
+    this.searchCatalog();
+  },
+
+  clearCatalogFilters() {
+    this.setData({
+      catalogQuery: "",
+      selectedCatalogTags: [],
+      catalogTagItems: buildCatalogTagItems(this.data.catalogTags, []),
+      catalogErrorMessage: ""
+    });
+    this.searchCatalog();
+  },
+
+  async loadCatalogFilters() {
+    try {
+      const resp = await fetchCatalogTags();
+      const tags = resp.tags || [];
+      this.setData({
+        catalogTags: tags,
+        catalogTagItems: buildCatalogTagItems(tags, this.data.selectedCatalogTags || [])
+      });
+    } catch (_err) {}
+  },
+
+  async searchCatalog() {
+    this.setData({ catalogLoading: true, catalogErrorMessage: "" });
+    try {
+      const resp = await fetchCatalogProducts({
+        style_code: this.data.catalogQuery,
+        tags: this.data.selectedCatalogTags
+      });
+      const list = (resp.products || []).map((item) => ({
+        styleCode: item.style_code || "",
+        coverImage: item.cover_image || "",
+        coverImageUrl: item.cover_image_url || "",
+        imageRetryCount: 0,
+        tags: item.tags || [],
+        images: item.images || [],
+        imageCount: (item.images || []).length,
+        previewUrls: buildPreviewUrls(item)
+      }));
+      this.setData({ catalogResults: list });
+    } catch (err) {
+      this.setData({
+        catalogResults: [],
+        catalogErrorMessage: err.message || "产品库检索失败"
+      });
+    } finally {
+      this.setData({ catalogLoading: false });
+    }
+  },
 
   pickImage(sourceType) {
     wx.chooseMedia({
@@ -94,6 +201,7 @@ Page({
           imageName,
           imageUrl: row.image_url || row.best_standard_image_url || "",
           imageRetryCount: 0,
+          tags: (meta && meta.item && meta.item.tags) || row.tags || [],
           score: scoreNum,
           scoreText: `${(scoreNum * 100).toFixed(2)}%`,
           rankScore: Number(row.rank_score || 0)
@@ -122,16 +230,46 @@ Page({
   },
 
   previewResult(e) {
-    const current = e.currentTarget.dataset.url;
-    if (!current) return;
-    const urls = this.data.results.map((x) => x.imageUrl).filter(Boolean);
-    wx.previewImage({ current, urls });
+    const idx = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(idx) || idx < 0) return;
+    const item = this.data.results[idx];
+    if (!item || !item.styleCode) return;
+    this.previewStyleImages(item.styleCode, item.imageUrl);
+  },
+
+  previewCatalogProduct(e) {
+    const idx = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(idx) || idx < 0) return;
+    const item = this.data.catalogResults[idx];
+    if (!item || !item.styleCode) return;
+    this.previewStyleImages(item.styleCode, item.coverImageUrl, idx);
+  },
+
+  async previewStyleImages(styleCode, fallbackUrl, catalogIndex = -1) {
+    try {
+      const detail = await fetchCatalogProductDetail(styleCode);
+      const urls = buildPreviewUrls(detail);
+      const current = urls[0] || fallbackUrl || "";
+      if (!current) return;
+      if (catalogIndex >= 0 && urls.length) {
+        this.setData({
+          [`catalogResults[${catalogIndex}].images`]: detail.images || [],
+          [`catalogResults[${catalogIndex}].previewUrls`]: urls
+        });
+      }
+      wx.previewImage({ current, urls: urls.length ? urls : [current] });
+    } catch (_err) {
+      if (!fallbackUrl) return;
+      wx.previewImage({ current: fallbackUrl, urls: [fallbackUrl] });
+    }
   },
 
   async onResultImageError(e) {
     const idx = Number(e.currentTarget.dataset.index);
+    const listType = e.currentTarget.dataset.list || "results";
     if (!Number.isInteger(idx) || idx < 0) return;
-    const current = this.data.results[idx];
+    const list = this.data[listType] || [];
+    const current = list[idx];
     if (!current || !current.imageName) return;
 
     const maxRetries = Number((config.imageLoadRetry || {}).maxRetries || 0);
@@ -140,15 +278,36 @@ Page({
 
     try {
       const refreshed = await fetchSignedImageUrl(current.imageName);
-      const keyUrl = `results[${idx}].imageUrl`;
-      const keyRetry = `results[${idx}].imageRetryCount`;
+      const keyUrl = `${listType}[${idx}].imageUrl`;
+      const keyRetry = `${listType}[${idx}].imageRetryCount`;
       this.setData({
         [keyUrl]: refreshed.image_url || current.imageUrl,
         [keyRetry]: tried + 1
       });
     } catch (err) {
-      const keyRetry = `results[${idx}].imageRetryCount`;
+      const keyRetry = `${listType}[${idx}].imageRetryCount`;
       this.setData({ [keyRetry]: tried + 1 });
+    }
+  },
+
+  async onCatalogImageError(e) {
+    const idx = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(idx) || idx < 0) return;
+    const current = this.data.catalogResults[idx];
+    if (!current || !current.coverImage) return;
+
+    const maxRetries = Number((config.imageLoadRetry || {}).maxRetries || 0);
+    const tried = Number(current.imageRetryCount || 0);
+    if (tried >= maxRetries) return;
+
+    try {
+      const refreshed = await fetchSignedImageUrl(current.coverImage);
+      this.setData({
+        [`catalogResults[${idx}].coverImageUrl`]: refreshed.image_url || current.coverImageUrl,
+        [`catalogResults[${idx}].imageRetryCount`]: tried + 1
+      });
+    } catch (_err) {
+      this.setData({ [`catalogResults[${idx}].imageRetryCount`]: tried + 1 });
     }
   }
 });

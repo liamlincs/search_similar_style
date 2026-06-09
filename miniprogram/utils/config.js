@@ -1,11 +1,15 @@
 const config = {
   // 与 curl 保持一致
-  baseUrl: "https://api.openfire.cloud",
+  baseUrl: "http://127.0.0.1:8000",
   // 拼图打印服务地址；不填则复用 baseUrl
   printBaseUrl: "https://api.openfire.cloud",
   apiKey: "replace-with-real-key-a",
   searchPath: "/search",
   imageUrlPath: "/image-url",
+  catalogPaths: {
+    products: "/api/v1/catalog/products",
+    tags: "/api/v1/catalog/tags"
+  },
   printPaths: {
     templates: "/api/v1/templates",
     upload: "/api/v1/images/upload",

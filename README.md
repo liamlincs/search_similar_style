@@ -152,6 +152,7 @@ curl -s -X POST "http://127.0.0.1:8000/search?include_image_base64=true&base64_t
 - `style_code`：命中款号
 - `best_standard_image`：命中的标样图片文件名
 - `best_standard_image_url`：可直接给其它系统展示的图片 URL
+- `tags`：该款在产品库中的标签列表
 - `best_standard_image_base64`：图片 base64（仅当 `include_image_base64=true`）
 - `best_standard_image_mime`：图片 MIME（如 `image/jpeg`）
 - `score`：分数
@@ -166,6 +167,159 @@ curl -s -X POST "http://127.0.0.1:8000/search?include_image_base64=true&base64_t
 - `/image-url?image_name=xxx`：返回新的签名图片 URL（用于签名过期后的刷新）
 - `auth.image_url_secret`：图片签名密钥（强烈建议改成高强度随机串）
 - `auth.image_url_ttl_sec`：签名 URL 过期时间（秒，默认 600）
+
+## 3.1) 产品库（SQLite）
+
+当前已新增独立产品库，不再把标签等主数据绑在文件名里。
+
+- 数据库路径：`config/search_config.json` -> `catalog.db_path`
+- 默认库文件：`data/product_catalog.db`
+- 图片仍然保留在 `data/standard_samples`
+- 首次启动 API 时会自动按文件名把图片同步进产品库：
+  - `style_code` 仍从 `款号_序号.jpg` 推导
+  - 标签单独存 SQLite，可多选、可新增
+
+管理页：
+
+```bash
+http://127.0.0.1:8000/catalog
+```
+
+登录配置：
+
+- `config/search_config.json` -> `catalog.web_auth`
+- 默认启用登录保护
+- 支持多组账号密码，推荐写法：
+
+```json
+"web_auth": {
+  "enabled": true,
+  "captcha_enabled": true,
+  "captcha_timezone": "Asia/Shanghai",
+  "users": [
+    { "username": "admin", "password": "change-me" },
+    { "username": "merch", "password": "change-me-too" }
+  ],
+  "session_secret": "replace-with-catalog-session-secret",
+  "session_ttl_sec": 43200,
+  "cookie_name": "catalog_session"
+}
+```
+
+- 兼容旧写法（单组账号）：
+  - `catalog.web_auth.username`
+  - `catalog.web_auth.password`
+- 强烈建议上线前修改：
+  - `catalog.web_auth.users`
+  - `catalog.web_auth.session_secret`
+- 默认还启用一个后端校验验证码：
+  - `catalog.web_auth.captcha_enabled`
+  - `catalog.web_auth.captcha_timezone`
+  - 验证码规则只在后端生效，前端登录页不会暴露规则
+
+登录/退出路径：
+
+```bash
+http://127.0.0.1:8000/catalog/login
+http://127.0.0.1:8000/catalog/logout
+```
+
+目录接口：
+
+```bash
+# 列表
+curl -s "http://127.0.0.1:8000/api/v1/catalog/products?style_code=GZ25&tags=棉,羊毛"
+
+# 单款详情
+curl -s "http://127.0.0.1:8000/api/v1/catalog/products/GZ25-1177-1"
+
+# 标签列表
+curl -s "http://127.0.0.1:8000/api/v1/catalog/tags"
+
+# 新增标签
+curl -s -X POST "http://127.0.0.1:8000/api/v1/catalog/tags" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"羊毛"}'
+
+# 替换某款标签
+curl -s -X PUT "http://127.0.0.1:8000/api/v1/catalog/products/GZ25-1177-1/tags" \
+  -H "Content-Type: application/json" \
+  -d '{"tags":["羊毛","针织"]}'
+
+# 手动同步 standard_samples 到产品库
+curl -s -X POST "http://127.0.0.1:8000/api/v1/catalog/sync"
+```
+
+说明：
+- 文件名现在只负责图片定位和初始化款号；
+- 款号检索、标签检索应走产品库接口；
+- 小程序后续应直接消费产品库返回的 `style_code + tags + image_url`，不要再自行解析文件名。
+- Web 产品库支持表单登录；小程序仍通过 `X-API-Key` 调用目录接口，不受影响。
+
+### 新增标样图片后的操作
+
+当 `data/standard_samples` 有新增图片时，要区分两件事：
+
+1. **同步到产品库（SQLite）**
+2. **重载以图搜款的特征检索库**
+
+建议命名仍保持：
+
+```text
+款号_序号.jpg
+```
+
+例如：
+
+```text
+GZ26-0001_000.jpg
+GZ26-0001_001.jpg
+```
+
+操作步骤：
+
+#### 方式 A：推荐人工操作流程
+
+1) 把新图片放入：
+
+```bash
+data/standard_samples
+```
+
+2) 同步到产品库：
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/catalog/sync"
+```
+
+或者在 Web 管理页点击：
+
+```text
+/catalog -> 同步图片
+```
+
+3) 重启 API 服务，让以图搜款加载新图片特征：
+
+```bash
+uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+```
+
+如果原服务已在运行，先停止再启动。
+
+#### 为什么要分两步
+
+- 产品库同步只会更新 SQLite 中的：
+  - `products`
+  - `product_images`
+  - `cover_image`
+- 以图搜款使用的是启动时预加载的特征库与缓存；
+- 所以**不重启服务的话，新图可能已经能在产品库里查到，但还不能参与以图搜款**。
+
+#### 对小程序的影响
+
+- **产品库检索**：完成 `/api/v1/catalog/sync` 后即可查到新款；
+- **同款多图预览**：同步后即可生效；
+- **以图搜款**：必须在服务重启、特征库重载后，新增图片才能参与匹配。
 
 Cloudflare 回源防火墙（UFW）一键更新：
 

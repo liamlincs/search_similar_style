@@ -44,6 +44,23 @@ def collect_images(base: Path, pattern: str, exts: List[str]) -> List[Path]:
     return out
 
 
+def resolve_query_image(query: Path, exts: List[str]) -> Path:
+    if query.exists():
+        return query
+    allow = [f".{e.lower().lstrip('.')}" for e in exts]
+    stem = query.stem
+    parent = query.parent
+    for ext in allow:
+        candidate = parent / f"{stem}{ext}"
+        if candidate.exists():
+            logging.warning("query image fallback: %s -> %s", query, candidate)
+            return candidate
+    raise FileNotFoundError(
+        f"query image not found: {query}. checked same-stem alternatives: "
+        f"{', '.join(str(parent / f'{stem}{ext}') for ext in allow)}"
+    )
+
+
 def _l2norm(x: np.ndarray) -> np.ndarray:
     n = np.linalg.norm(x) + 1e-8
     return (x / n).astype(np.float32)
@@ -664,9 +681,7 @@ def main() -> None:
         db_feature_dtype=db_feature_dtype,
     )
 
-    query = args.query_image
-    if not query.exists():
-        raise FileNotFoundError(f"query image not found: {query}")
+    query = resolve_query_image(args.query_image, image_exts)
 
     image_topk = min(len(names), max(top_k * max(candidate_multiplier, 1), top_k))
     if recall_topn_cap > 0:

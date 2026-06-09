@@ -4,7 +4,57 @@
     <view class="subtitle">上传图片或拍照，快速匹配相似款式</view>
   </view>
 
-  <view class="panel">
+  <view class="mode-switch">
+    <view class="mode-switch-inner">
+      <view class="mode-item {{pageMode === 'image' ? 'active' : ''}}" bindtap="switchMode" data-mode="image">以图搜款</view>
+      <view class="mode-item {{pageMode === 'catalog' ? 'active' : ''}}" bindtap="switchMode" data-mode="catalog">产品库检索</view>
+    </view>
+  </view>
+
+  <view wx:if="{{pageMode === 'catalog'}}" class="panel catalog-panel">
+    <view class="section-title">款号 / 标签检索</view>
+    <input
+      class="catalog-input"
+      placeholder="输入款号，如 GZ25-1177"
+      value="{{catalogQuery}}"
+      bindinput="onCatalogQueryInput"
+      confirm-type="search"
+      bindconfirm="searchCatalog"
+    />
+    <view class="tag-filter-list">
+      <view
+        wx:for="{{catalogTagItems}}"
+        wx:key="name"
+        class="tag-filter-item {{item.active ? 'active' : ''}}"
+        bindtap="toggleCatalogTag"
+        data-tag="{{item.name}}"
+      >
+        {{item.name}}
+      </view>
+    </view>
+    <view class="catalog-actions">
+      <button class="btn btn-main catalog-btn" bindtap="searchCatalog" loading="{{catalogLoading}}">查询产品库</button>
+      <button class="btn btn-sub catalog-btn" bindtap="clearCatalogFilters" disabled="{{!catalogQuery && !selectedCatalogTags.length}}">清空筛选</button>
+    </view>
+    <view wx:if="{{catalogLoading}}" class="loading-card">产品库检索中...</view>
+    <view wx:if="{{catalogErrorMessage}}" class="error-card">{{catalogErrorMessage}}</view>
+    <view wx:if="{{catalogResults.length}}" class="catalog-result-wrap">
+      <view class="card-list">
+        <view wx:for="{{catalogResults}}" wx:key="styleCode" class="card" bindtap="previewCatalogProduct" data-index="{{index}}">
+          <image class="card-image" src="{{item.coverImageUrl}}" mode="aspectFill" binderror="onCatalogImageError" data-index="{{index}}" />
+          <view class="card-body">
+            <view class="style-code">{{item.styleCode}}</view>
+            <view class="catalog-meta">共 {{item.imageCount}} 张图 · 点击查看同款全部图片</view>
+            <view class="result-tags">
+              <text wx:for="{{item.tags}}" wx:key="*this" class="result-tag">{{item}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{pageMode === 'image'}}" class="panel">
     <view wx:if="{{localImage}}" class="query-wrap">
       <image class="query-image" src="{{localImage}}" mode="aspectFill" />
     </view>
@@ -25,12 +75,12 @@
     <button class="retry-btn" bindtap="retrySearch" loading="{{searching}}">手动重试</button>
   </view>
 
-  <view wx:if="{{hasSearched && results.length}}" class="result-section">
+  <view wx:if="{{pageMode === 'image' && hasSearched && results.length}}" class="result-section">
     <view class="section-title">匹配结果</view>
     <view wx:if="{{isAmbiguous}}" class="ambiguous-tip">结果接近，已按相似候选展示，建议人工复核。</view>
     <view wx:elif="{{confidenceBand === 'medium'}}" class="medium-tip">匹配置信度中等，建议对比前几项。</view>
     <view class="card-list">
-      <view wx:for="{{results}}" wx:key="rank" class="card" bindtap="previewResult" data-url="{{item.imageUrl}}">
+      <view wx:for="{{results}}" wx:key="rank" class="card" bindtap="previewResult" data-url="{{item.imageUrl}}" data-index="{{index}}">
         <image class="card-image" src="{{item.imageUrl}}" mode="aspectFill" binderror="onResultImageError" data-index="{{index}}" />
         <view class="card-body">
           <view class="card-top">
@@ -38,6 +88,9 @@
             <text class="score">{{item.scoreText}}</text>
           </view>
           <view class="style-code">{{item.styleCode}}</view>
+          <view class="result-tags">
+            <text wx:for="{{item.tags}}" wx:key="*this" class="result-tag">{{item}}</text>
+          </view>
           <view class="hint">点击查看大图</view>
         </view>
       </view>
