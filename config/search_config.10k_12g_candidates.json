@@ -39,6 +39,10 @@
       "cookie_name": "catalog_session"
     }
   },
+  "debug": {
+    "save_query_images": true,
+    "query_image_dir": "outputs/debug_queries"
+  },
   "paths": {
     "standard_dir": "data/standard_samples",
     "standard_pattern": "*",

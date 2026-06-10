@@ -119,10 +119,27 @@
   margin-top: 18rpx;
 }
 
+.empty-card {
+  margin-top: 18rpx;
+  border-radius: 16rpx;
+  padding: 20rpx;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 24rpx;
+  text-align: center;
+}
+
 .catalog-meta {
   margin-top: 10rpx;
   font-size: 23rpx;
   color: #64748b;
+}
+
+.catalog-end {
+  margin-top: 18rpx;
+  text-align: center;
+  font-size: 22rpx;
+  color: #94a3b8;
 }
 
 .query-wrap {

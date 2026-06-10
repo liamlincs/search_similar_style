@@ -37,13 +37,23 @@ Page({
     catalogTagItems: [],
     selectedCatalogTags: [],
     catalogLoading: false,
+    catalogLoadingMore: false,
+    catalogHasMore: true,
+    catalogLimit: 20,
+    catalogOffset: 0,
     catalogErrorMessage: "",
     catalogResults: []
   },
 
   onLoad() {
     this.loadCatalogFilters();
-    this.searchCatalog();
+    this.searchCatalog(true);
+  },
+
+  onReachBottom() {
+    if (this.data.pageMode !== "catalog") return;
+    if (this.data.catalogLoading || this.data.catalogLoadingMore || !this.data.catalogHasMore) return;
+    this.searchCatalog(false);
   },
 
   switchMode(e) {
@@ -91,7 +101,7 @@ Page({
       selectedCatalogTags: next,
       catalogTagItems: buildCatalogTagItems(this.data.catalogTags, next)
     });
-    this.searchCatalog();
+    this.searchCatalog(true);
   },
 
   clearCatalogFilters() {
@@ -101,7 +111,7 @@ Page({
       catalogTagItems: buildCatalogTagItems(this.data.catalogTags, []),
       catalogErrorMessage: ""
     });
-    this.searchCatalog();
+    this.searchCatalog(true);
   },
 
   async loadCatalogFilters() {
@@ -115,12 +125,21 @@ Page({
     } catch (_err) {}
   },
 
-  async searchCatalog() {
-    this.setData({ catalogLoading: true, catalogErrorMessage: "" });
+  async searchCatalog(reset = true) {
+    if (this.data.catalogLoading || this.data.catalogLoadingMore) return;
+    const offset = reset ? 0 : Number(this.data.catalogOffset || 0);
+    const limit = Number(this.data.catalogLimit || 20);
+    this.setData({
+      catalogLoading: reset,
+      catalogLoadingMore: !reset,
+      catalogErrorMessage: reset ? "" : this.data.catalogErrorMessage
+    });
     try {
       const resp = await fetchCatalogProducts({
         style_code: this.data.catalogQuery,
-        tags: this.data.selectedCatalogTags
+        tags: this.data.selectedCatalogTags,
+        limit,
+        offset
       });
       const list = (resp.products || []).map((item) => ({
         styleCode: item.style_code || "",
@@ -132,14 +151,22 @@ Page({
         imageCount: (item.images || []).length,
         previewUrls: buildPreviewUrls(item)
       }));
-      this.setData({ catalogResults: list });
+      const merged = reset ? list : (this.data.catalogResults || []).concat(list);
+      this.setData({
+        catalogResults: merged,
+        catalogOffset: merged.length,
+        catalogHasMore: list.length >= limit
+      });
     } catch (err) {
       this.setData({
-        catalogResults: [],
+        catalogResults: reset ? [] : this.data.catalogResults,
         catalogErrorMessage: err.message || "产品库检索失败"
       });
     } finally {
-      this.setData({ catalogLoading: false });
+      this.setData({
+        catalogLoading: false,
+        catalogLoadingMore: false
+      });
     }
   },
 

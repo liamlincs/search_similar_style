@@ -1,6 +1,6 @@
 const config = {
   // 与 curl 保持一致
-  baseUrl: "http://127.0.0.1:8000",
+  baseUrl: "https://api.openfire.cloud",
   // 拼图打印服务地址；不填则复用 baseUrl
   printBaseUrl: "https://api.openfire.cloud",
   apiKey: "replace-with-real-key-a",

@@ -38,6 +38,7 @@
     </view>
     <view wx:if="{{catalogLoading}}" class="loading-card">产品库检索中...</view>
     <view wx:if="{{catalogErrorMessage}}" class="error-card">{{catalogErrorMessage}}</view>
+    <view wx:if="{{!catalogLoading && !catalogErrorMessage && !catalogResults.length}}" class="empty-card">没有符合条件的产品</view>
     <view wx:if="{{catalogResults.length}}" class="catalog-result-wrap">
       <view class="card-list">
         <view wx:for="{{catalogResults}}" wx:key="styleCode" class="card" bindtap="previewCatalogProduct" data-index="{{index}}">
@@ -51,6 +52,8 @@
           </view>
         </view>
       </view>
+      <view wx:if="{{catalogLoadingMore}}" class="loading-card">加载更多中...</view>
+      <view wx:elif="{{!catalogHasMore}}" class="catalog-end">已加载全部产品</view>
     </view>
   </view>
 

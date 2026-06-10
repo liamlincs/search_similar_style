@@ -10,6 +10,7 @@ import hashlib
 import io
 import math
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -283,6 +284,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_store = CatalogStore(catalog_db_path)
     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
     logging.info("catalog sync done: %s", sync_stats)
+    debug_cfg = cfg.get("debug", {})
+    debug_query_enabled = bool(debug_cfg.get("save_query_images", True))
+    debug_query_dir = Path(debug_cfg.get("query_image_dir", "outputs/debug_queries"))
+    if debug_query_enabled:
+        debug_query_dir.mkdir(parents=True, exist_ok=True)
 
     app = FastAPI(title="search-similar-style-api", version="1.0.0")
     app.mount("/print-static", StaticFiles(directory=str(PRINT_STATIC_DIR)), name="print-static")
@@ -342,6 +348,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         actual = str(captcha or "").strip()
         expected = _catalog_today_captcha()
         return bool(actual) and hmac.compare_digest(actual.encode("utf-8"), expected.encode("utf-8"))
+
+    def _save_debug_query_image(request: Request, query_path: Path, original_name: str) -> Path | None:
+        if not debug_query_enabled:
+            return None
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(original_name or "query").stem).strip("._") or "query"
+        user = str(getattr(request.state, "api_user", "anonymous")).replace(":", "_")
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        out_path = debug_query_dir / f"{stamp}__{user}__{safe_name}.jpg"
+        try:
+            with Image.open(query_path) as im0:
+                im = im0.convert("RGB")
+                im.save(out_path, format="JPEG", quality=92)
+            return out_path
+        except Exception:
+            return None
 
     @app.middleware("http")
     async def check_api_key(request: Request, call_next):
@@ -1463,7 +1484,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail="only png/jpg/jpeg supported")
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf:
-            tf.write(await file.read())
+            upload_bytes = await file.read()
+            tf.write(upload_bytes)
             tf.flush()
             query_path = Path(tf.name)
             if query_max_edge > 0:
@@ -1481,6 +1503,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             q2.save(query_path, format="JPEG", quality=90)
                 except Exception:
                     pass
+            query_width = 0
+            query_height = 0
+            try:
+                with Image.open(query_path) as qim1:
+                    query_width, query_height = qim1.size
+            except Exception:
+                pass
+            debug_saved = _save_debug_query_image(request, query_path, file.filename or "query")
+            logging.info(
+                "search upload user=%s file=%s bytes=%d final_size=%sx%s saved=%s",
+                getattr(request.state, "api_user", "unknown"),
+                file.filename,
+                len(upload_bytes),
+                query_width,
+                query_height,
+                str(debug_saved or ""),
+            )
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             code_prior_boost = (

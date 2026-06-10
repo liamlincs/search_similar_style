@@ -98,7 +98,13 @@ function fetchSignedImageUrl(imageName) {
 
 function parseErrorMessage(res) {
   if (!res) return "请求失败";
-  if (typeof res.data === "string") return res.data;
+  if (typeof res.data === "string") {
+    const raw = res.data.trim();
+    if (/^\s*<html[\s>]/i.test(raw) || /<title>\s*504\s+Gateway\s+Time-?out/i.test(raw)) {
+      return "产品库请求超时，请稍后重试";
+    }
+    return raw;
+  }
   if (res.data && typeof res.data.detail === "string") return res.data.detail;
   return `请求失败: HTTP ${res.statusCode || "unknown"}`;
 }
@@ -139,6 +145,10 @@ function fetchCatalogProducts(options = {}) {
   if (options.style_code) payload.style_code = String(options.style_code).trim();
   const tags = Array.isArray(options.tags) ? options.tags.filter(Boolean) : [];
   if (tags.length) payload.tags = tags.join(",");
+  payload.limit = Number(options.limit || 20);
+  if (options.offset !== undefined && options.offset !== null) {
+    payload.offset = Number(options.offset || 0);
+  }
   return requestJson(finalUrl, "GET", payload);
 }
 
