@@ -1003,6 +1003,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .gallery-item { background: #f9fafb; border-radius: 12px; padding: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; background: #e5e7eb; }
     .gallery-caption { margin-top: 8px; font-size: 12px; color: #4b5563; word-break: break-all; }
+    .load-more { padding: 18px 0 8px; text-align: center; color: #6b7280; font-size: 13px; }
+    @media (max-width: 720px) {
+      .wrap { padding: 12px; }
+      .toolbar, .toolbar-secondary { grid-template-columns: 1fr 1fr; }
+      .toolbar input, .toolbar-secondary input { grid-column: 1 / -1; }
+      .cards { grid-template-columns: 1fr; gap: 12px; }
+      .card { padding: 12px; }
+      .modal { padding: 12px; }
+      .modal-panel { padding: 14px; }
+      .picker-pop { right: 0; top: calc(100% + 6px); }
+      .row { flex-wrap: wrap; }
+      .picker-trigger { min-width: 0; }
+      .picker-add-btn { width: 100%; min-width: 0; }
+      .logout-btn { height: 34px; padding: 0 10px; font-size: 13px; }
+    }
   </style>
 </head>
 <body>
@@ -1025,6 +1040,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div id="activeFilterTags" class="filter-tags"></div>
     <div id="status" class="status muted"></div>
     <div id="cards" class="cards"></div>
+    <div id="loadMore" class="load-more"></div>
   </div>
   <datalist id="allTagsList"></datalist>
   <div id="galleryModal" class="modal">
@@ -1043,6 +1059,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let globalTags = [];
     let currentProducts = [];
     let selectedFilterTags = [];
+    let currentOffset = 0;
+    let pageSize = 24;
+    let hasMore = true;
+    let isLoadingMore = false;
+    let observer = null;
     const els = {
       styleCodeQuery: document.getElementById('styleCodeQuery'),
       searchBtn: document.getElementById('searchBtn'),
@@ -1052,6 +1073,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       reloadBtn: document.getElementById('reloadBtn'),
       status: document.getElementById('status'),
       cards: document.getElementById('cards'),
+      loadMore: document.getElementById('loadMore'),
       activeFilterTags: document.getElementById('activeFilterTags'),
       allTagsList: document.getElementById('allTagsList'),
       galleryModal: document.getElementById('galleryModal'),
@@ -1087,19 +1109,57 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       els.allTagsList.innerHTML = globalTags.map(tag => `<option value="${tag}"></option>`).join('');
     }
 
-    async function loadProducts() {
-      setStatus('加载中...', false);
+    function setLoadMoreText() {
+      if (!currentProducts.length && !isLoadingMore) {
+        els.loadMore.textContent = '';
+        return;
+      }
+      if (isLoadingMore) {
+        els.loadMore.textContent = '加载中...';
+        return;
+      }
+      els.loadMore.textContent = hasMore ? '继续下滑加载更多' : '已加载全部';
+    }
+
+    function buildProductQueryParams() {
       const params = new URLSearchParams();
       if (els.styleCodeQuery.value.trim()) params.set('style_code', els.styleCodeQuery.value.trim());
       const tags = selectedFilterTags;
       if (tags.length) params.set('tags', tags.join(','));
-      const resp = await fetch('/api/v1/catalog/products?' + params.toString());
-      if (!resp.ok) throw new Error(await resp.text());
-      const data = await resp.json();
-      currentProducts = data.products || [];
-      renderCards(currentProducts);
-      renderActiveFilterTags();
-      setStatus(`共 ${currentProducts.length} 个款`, false);
+      return params;
+    }
+
+    async function loadProducts(reset = true) {
+      if (isLoadingMore) return;
+      if (reset) {
+        currentOffset = 0;
+        hasMore = true;
+        currentProducts = [];
+        els.cards.innerHTML = '';
+        setStatus('加载中...', false);
+      } else if (!hasMore) {
+        return;
+      }
+      isLoadingMore = true;
+      setLoadMoreText();
+      try {
+        const params = buildProductQueryParams();
+        params.set('limit', String(pageSize));
+        params.set('offset', String(currentOffset));
+        const resp = await fetch('/api/v1/catalog/products?' + params.toString());
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        const rows = data.products || [];
+        currentProducts = reset ? rows : currentProducts.concat(rows);
+        currentOffset = currentProducts.length;
+        hasMore = rows.length >= pageSize;
+        renderCards(reset ? currentProducts : rows, reset);
+        renderActiveFilterTags();
+        setStatus(`已加载 ${currentProducts.length} 个款`, false);
+      } finally {
+        isLoadingMore = false;
+        setLoadMoreText();
+      }
     }
 
     function renderActiveFilterTags() {
@@ -1118,7 +1178,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           } else {
             selectedFilterTags = uniqTags([...selectedFilterTags, tag]);
           }
-          await loadProducts();
+          await loadProducts(true);
         });
       });
     }
@@ -1130,7 +1190,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       } else {
         selectedFilterTags = uniqTags([...selectedFilterTags, tag]);
       }
-      loadProducts().catch(err => setStatus(err.message || '加载失败', true));
+      loadProducts(true).catch(err => setStatus(err.message || '加载失败', true));
     }
 
     function buildCardTagsHtml(tags) {
@@ -1168,7 +1228,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       els.gallerySubTitle.textContent = `共 ${(product.images || []).length} 张图片`;
       els.galleryGrid.innerHTML = (product.images || []).map(item => `
         <div class="gallery-item">
-          <img src="${item.image_url || ''}" alt="${item.image_name || ''}" />
+          <img src="${item.image_url || ''}" loading="lazy" alt="${item.image_name || ''}" />
           <div class="gallery-caption">${item.image_name || ''}</div>
         </div>
       `).join('');
@@ -1179,9 +1239,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       els.galleryModal.classList.remove('open');
     }
 
-    function renderCards(products) {
-      els.cards.innerHTML = '';
-      if (!products.length) {
+    function renderCards(products, reset = true) {
+      if (reset) els.cards.innerHTML = '';
+      if (!products.length && reset) {
         els.cards.innerHTML = '<div class="muted">没有符合条件的产品。</div>';
         return;
       }
@@ -1191,7 +1251,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const tags = item.tags || [];
         const tagsHtml = buildCardTagsHtml(tags);
         card.innerHTML = `
-          <img class="thumb" src="${item.cover_image_url || ''}" alt="${item.style_code}" title="点击查看该款全部图片" />
+          <img class="thumb" src="${item.cover_image_url || ''}" loading="lazy" alt="${item.style_code}" title="点击查看该款全部图片" />
           <div class="code">${item.style_code}</div>
           <div class="tags">${tagsHtml}</div>
           <div class="muted" style="margin-bottom:10px;">图片数：${(item.images || []).length}</div>
@@ -1238,7 +1298,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             const nextTags = tags.filter(x => x !== tag);
             try {
               await saveTags(item.style_code, nextTags);
-              await loadProducts();
+              await loadProducts(true);
               setStatus('标签已删除', false);
             } catch (err) {
               setStatus(err.message || '删除失败', true);
@@ -1255,7 +1315,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             await saveTags(item.style_code, nextTags);
             pendingTags = [];
             await loadGlobalTags();
-            await loadProducts();
+            await loadProducts(true);
             setStatus('标签已保存', false);
           } catch (err) {
             setStatus(err.message || '保存失败', true);
@@ -1266,9 +1326,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
 
     els.searchBtn.addEventListener('click', () => {
-      loadProducts().catch(err => setStatus(err.message || '加载失败', true));
+      loadProducts(true).catch(err => setStatus(err.message || '加载失败', true));
     });
-    els.reloadBtn.addEventListener('click', () => Promise.all([loadGlobalTags(), loadProducts()]).catch(err => setStatus(err.message || '加载失败', true)));
+    els.reloadBtn.addEventListener('click', () => Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true)));
     els.addTagBtn.addEventListener('click', async () => {
       try {
         const value = els.newTagName.value.trim();
@@ -1295,7 +1355,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (!resp.ok) throw new Error(await resp.text());
         const data = await resp.json();
         await loadGlobalTags();
-        await loadProducts();
+        await loadProducts(true);
         setStatus(`同步完成：新增款 ${data.products_added}，新增/更新图 ${data.images_added_or_updated}`, false);
       } catch (err) {
         setStatus(err.message || '同步失败', true);
@@ -1306,8 +1366,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (event.target === els.galleryModal) closeGallery();
     });
     document.addEventListener('click', () => closeAllPickers());
+    if ('IntersectionObserver' in window) {
+      observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && hasMore && !isLoadingMore) {
+            loadProducts(false).catch(err => setStatus(err.message || '加载失败', true));
+          }
+        });
+      }, { rootMargin: '300px 0px' });
+      observer.observe(els.loadMore);
+    }
 
-    Promise.all([loadGlobalTags(), loadProducts()]).catch(err => setStatus(err.message || '加载失败', true));
+    Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true));
   </script>
 </body>
 </html>"""
