@@ -160,7 +160,7 @@ Page({
     } catch (err) {
       this.setData({
         catalogResults: reset ? [] : this.data.catalogResults,
-        catalogErrorMessage: err.message || "产品库检索失败"
+        catalogErrorMessage: err.message || "款库检索失败"
       });
     } finally {
       this.setData({

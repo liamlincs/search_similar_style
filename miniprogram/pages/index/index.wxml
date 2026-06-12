@@ -7,7 +7,7 @@
   <view class="mode-switch">
     <view class="mode-switch-inner">
       <view class="mode-item {{pageMode === 'image' ? 'active' : ''}}" bindtap="switchMode" data-mode="image">以图搜款</view>
-      <view class="mode-item {{pageMode === 'catalog' ? 'active' : ''}}" bindtap="switchMode" data-mode="catalog">产品库检索</view>
+      <view class="mode-item {{pageMode === 'catalog' ? 'active' : ''}}" bindtap="switchMode" data-mode="catalog">款库检索</view>
     </view>
   </view>
 
@@ -33,10 +33,10 @@
       </view>
     </view>
     <view class="catalog-actions">
-      <button class="btn btn-main catalog-btn" bindtap="searchCatalog" loading="{{catalogLoading}}">查询产品库</button>
+      <button class="btn btn-main catalog-btn" bindtap="searchCatalog" loading="{{catalogLoading}}">查询款库</button>
       <button class="btn btn-sub catalog-btn" bindtap="clearCatalogFilters" disabled="{{!catalogQuery && !selectedCatalogTags.length}}">清空筛选</button>
     </view>
-    <view wx:if="{{catalogLoading}}" class="loading-card">产品库检索中...</view>
+    <view wx:if="{{catalogLoading}}" class="loading-card">款库检索中...</view>
     <view wx:if="{{catalogErrorMessage}}" class="error-card">{{catalogErrorMessage}}</view>
     <view wx:if="{{!catalogLoading && !catalogErrorMessage && !catalogResults.length}}" class="empty-card">没有符合条件的产品</view>
     <view wx:if="{{catalogResults.length}}" class="catalog-result-wrap">
