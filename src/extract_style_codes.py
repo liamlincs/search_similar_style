@@ -11,12 +11,17 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageOps
-from rapidocr_onnxruntime import RapidOCR
 
 STYLE_RE = re.compile(r"([A-Za-z0-9_-]+#)")
 SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 DEFAULT_CONFIG = Path("config/search_config.json")
-OCR_ENGINE = RapidOCR()
+OCR_ENGINE = None
+OCR_IMPORT_ERROR: Exception | None = None
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    OCR_ENGINE = RapidOCR()
+except Exception as exc:
+    OCR_IMPORT_ERROR = exc
 
 
 def collect_images(base: Path, pattern: str, exts: list[str]) -> list[Path]:
@@ -88,6 +93,10 @@ def _prep_for_ocr(img: Image.Image) -> list[Image.Image]:
 
 
 def _run_rapidocr(img: Image.Image) -> str:
+    if OCR_ENGINE is None:
+        raise RuntimeError(
+            "rapidocr_onnxruntime is not installed; install it first to use OCR style-code extraction"
+        ) from OCR_IMPORT_ERROR
     arr = np.asarray(img.convert("RGB"))
     result, _ = OCR_ENGINE(arr)
     if not result:

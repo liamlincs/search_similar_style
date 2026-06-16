@@ -178,6 +178,32 @@ class CatalogStore:
             conn.commit()
         return cleaned
 
+    def add_product_tags(self, style_code: str, tags: Iterable[str]) -> List[str]:
+        code = style_code.strip()
+        if not code:
+            raise ValueError("style_code is empty")
+        extra_tags = self._normalize_tags(tags)
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM products WHERE style_code=? LIMIT 1",
+                (code,),
+            ).fetchone()
+            if not exists:
+                raise ValueError("style_code not found")
+            current_rows = conn.execute(
+                """
+                SELECT t.name
+                FROM product_tags pt
+                JOIN tags t ON t.id = pt.tag_id
+                WHERE pt.style_code=?
+                ORDER BY t.name COLLATE NOCASE ASC
+                """,
+                (code,),
+            ).fetchall()
+            current_tags = [str(row["name"]) for row in current_rows]
+        merged = self._normalize_tags([*current_tags, *extra_tags])
+        return self.replace_product_tags(code, merged)
+
     def get_product(self, style_code: str) -> Dict[str, Any] | None:
         rows = self.get_products_by_codes([style_code])
         return rows[0] if rows else None
@@ -230,8 +256,18 @@ class CatalogStore:
         query_code = style_code.strip()
         normalized_tags = self._normalize_tags(tags or [])
         if query_code:
-            filters.append("p.style_code LIKE ?")
-            params.append(f"%{query_code}%")
+            filters.append(
+                """
+                (
+                    UPPER(p.style_code) LIKE UPPER(?)
+                    OR (
+                        INSTR(p.style_code, '-') > 0
+                        AND UPPER(SUBSTR(p.style_code, INSTR(p.style_code, '-') + 1)) LIKE UPPER(?)
+                    )
+                )
+                """
+            )
+            params.extend([f"%{query_code}%", f"%{query_code}%"])
 
         from_clause = "FROM products p"
         if normalized_tags:

@@ -185,6 +185,21 @@ curl -s -X POST "http://127.0.0.1:8000/search?include_image_base64=true&base64_t
 http://127.0.0.1:8000/catalog
 ```
 
+批量导入目录可直接写在配置里：
+
+```json
+"catalog": {
+  "db_path": "data/product_catalog.db",
+  "import_source_dir": "/data/new_samples"
+}
+```
+
+Windows 路径也支持，但 JSON 里要写双反斜杠：
+
+```json
+"import_source_dir": "D:\\catalog\\incoming"
+```
+
 登录配置：
 
 - `config/search_config.json` -> `catalog.web_auth`
@@ -248,6 +263,14 @@ curl -s -X PUT "http://127.0.0.1:8000/api/v1/catalog/products/GZ25-1177-1/tags" 
 
 # 手动同步 standard_samples 到产品库
 curl -s -X POST "http://127.0.0.1:8000/api/v1/catalog/sync"
+
+# 服务器目录预处理导入（先 OCR 出候选文件名）
+curl -s -X POST "http://127.0.0.1:8000/api/v1/catalog/imports/prepare" \
+  -H "Content-Type: application/json" \
+  -d '{"source_dir":"/data/new_samples"}'
+
+# 查询导入任务进度
+curl -s "http://127.0.0.1:8000/api/v1/catalog/imports/<job_id>"
 ```
 
 说明：
@@ -255,6 +278,12 @@ curl -s -X POST "http://127.0.0.1:8000/api/v1/catalog/sync"
 - 款号检索、标签检索应走产品库接口；
 - 小程序后续应直接消费产品库返回的 `style_code + tags + image_url`，不要再自行解析文件名。
 - Web 产品库支持表单登录；小程序仍通过 `X-API-Key` 调用目录接口，不受影响。
+- Web 产品库现在支持“服务器目录批量导入”：
+  - 输入服务器本地目录；
+  - 后端复用 `src/extract_style_codes.py` 的 OCR 提款号逻辑生成候选文件名；
+  - 页面会显示识别进度；
+  - 导入前可手工修改每张图的目标文件名；
+  - 确认后复制到 `data/standard_samples` 并自动同步到产品库。
 
 ### 调试：对比开发者工具与真机上传图
 
@@ -313,7 +342,56 @@ GZ26-0001_001.jpg
 
 操作步骤：
 
-#### 方式 A：推荐人工操作流程
+#### 方式 A：推荐 Web 批量导入
+
+1) 打开：
+
+```bash
+http://127.0.0.1:8000/catalog
+```
+
+2) 点击“目录批量导入”
+
+3) 输入服务器本地目录，例如：
+
+```bash
+/data/new_samples
+```
+
+4) 等待 OCR 识别完成：
+- 系统会自动提取款号；
+- 自动生成候选文件名，如 `GZ26-0001_000.jpg`；
+- 自动识别年份标签，规则是“第一个 `-` 前字段末尾两位数字 + `20`”，例如 `BM23-J0831` -> `2023`；
+- 若 OCR 失败，仍会给出一个可编辑的候选文件名。
+
+5) 在导入列表中可点击“源文件”打开原图大图预览，人工确认后按需手工修改：
+- 目标文件名；
+- 年份标签（如 `2024`）。
+
+6) 点击“确认导入”
+
+7) 导入确认后，系统会把填写的年份作为该款的标签写入产品库
+
+### 给老数据批量回填年份标签
+
+如果老图片以前已经导入过，只是缺少年份标签，不要删图重导，直接运行：
+
+```bash
+python src/backfill_catalog_year_tags.py --dry-run
+python src/backfill_catalog_year_tags.py
+```
+
+如果要把已有年份标签统一覆盖成按款号重新解析的结果：
+
+```bash
+python src/backfill_catalog_year_tags.py --overwrite
+```
+
+7) 导入完成后：
+- 产品库会自动同步；
+- 但以图搜款仍需重启服务，新增图片才会进入特征检索库。
+
+#### 方式 B：人工拷贝 + 同步
 
 1) 把新图片放入：
 

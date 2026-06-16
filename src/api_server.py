@@ -11,6 +11,10 @@ import io
 import math
 import datetime as dt
 import re
+import shutil
+import threading
+import uuid
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -43,6 +47,7 @@ from search_similar_return_code import (
 )
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
 from catalog_store import CatalogStore
+from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
 try:
     from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
@@ -89,6 +94,22 @@ class CatalogTagUpdateRequest(BaseModel):
 
 class CatalogTagCreateRequest(BaseModel):
     name: str
+
+
+class CatalogImportPrepareRequest(BaseModel):
+    source_dir: str
+
+
+class CatalogImportCommitItem(BaseModel):
+    source_rel_path: str
+    target_filename: str = ""
+    year_tag: str = ""
+    selected: bool = True
+
+
+class CatalogImportCommitRequest(BaseModel):
+    job_id: str
+    items: List[CatalogImportCommitItem]
 
 
 def _load_cfg(path: Path) -> Dict[str, Any]:
@@ -223,6 +244,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             api_key_map[key] = user
 
     catalog_db_path = Path(catalog_cfg.get("db_path", "data/product_catalog.db"))
+    catalog_import_source_dir = str(catalog_cfg.get("import_source_dir", "")).strip()
     catalog_public = bool(catalog_cfg.get("public_endpoints", True))
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
@@ -284,6 +306,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_store = CatalogStore(catalog_db_path)
     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
     logging.info("catalog sync done: %s", sync_stats)
+    catalog_import_jobs: Dict[str, Dict[str, Any]] = {}
+    catalog_import_lock = threading.Lock()
+    allowed_image_exts = {f".{str(ext).lower().lstrip('.')}" for ext in image_exts}
+    tesseract_bin = shutil.which("tesseract")
     debug_cfg = cfg.get("debug", {})
     debug_query_enabled = bool(debug_cfg.get("save_query_images", True))
     debug_query_dir = Path(debug_cfg.get("query_image_dir", "outputs/debug_queries"))
@@ -299,6 +325,162 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.state.ready_detail = "initializing"
     image_cache_dir = Path("outputs/image_cache")
     image_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _list_import_source_images(source_dir: Path) -> List[Path]:
+        return [
+            path for path in sorted(source_dir.rglob("*"))
+            if path.is_file() and path.suffix.lower() in allowed_image_exts
+        ]
+
+    def _resolve_catalog_import_source_dir(raw: str) -> Path:
+        value = os.path.expandvars(str(raw or "").strip())
+        return Path(value).expanduser()
+
+    def _sanitize_import_filename(filename: str, fallback_suffix: str) -> str:
+        raw = Path(str(filename or "").strip()).name
+        stem = Path(raw).stem.strip()
+        suffix = Path(raw).suffix.lower() or fallback_suffix.lower()
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+        if not stem:
+            raise ValueError("filename is empty")
+        if suffix not in allowed_image_exts:
+            raise ValueError(f"unsupported image suffix: {suffix}")
+        return f"{stem}{suffix}"
+
+    def _derive_year_tag_from_style_code(style_code: str) -> str:
+        code = str(style_code or "").strip()
+        if not code:
+            return ""
+        prefix = code.split("-", 1)[0].strip()
+        match = re.search(r"(\d{2})$", prefix)
+        if not match:
+            return ""
+        return f"20{match.group(1)}"
+
+    def _sanitize_year_tag(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if re.fullmatch(r"20\d{2}", raw):
+            return raw
+        raise ValueError("year_tag must be YYYY, e.g. 2024")
+
+    def _is_valid_import_style_code(style_code: str) -> bool:
+        code = str(style_code or "").strip()
+        return bool(code) and bool(re.match(r"^[A-Za-z]", code))
+
+    def _next_import_filename(prefix: str, suffix: str, used_names: set[str], next_seq: Dict[str, int]) -> str:
+        clean_prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", str(prefix or "").strip()).strip("_") or "UNKNOWN"
+        seq = int(next_seq.get(clean_prefix, 0))
+        while True:
+            candidate = f"{clean_prefix}_{seq:03d}{suffix.lower()}"
+            if candidate.lower() not in used_names:
+                used_names.add(candidate.lower())
+                next_seq[clean_prefix] = seq + 1
+                return candidate
+            seq += 1
+
+    def _build_import_name_allocator() -> tuple[set[str], Dict[str, int]]:
+        used_names = {
+            path.name.lower()
+            for path in standard_dir.glob("*")
+            if path.is_file() and path.suffix.lower() in allowed_image_exts
+        }
+        next_seq: Dict[str, int] = {}
+        for path in standard_dir.glob("*"):
+            if not path.is_file() or path.suffix.lower() not in allowed_image_exts:
+                continue
+            stem = path.stem
+            if "_" not in stem:
+                continue
+            prefix, suffix_num = stem.rsplit("_", 1)
+            if suffix_num.isdigit():
+                next_seq[prefix] = max(int(suffix_num) + 1, int(next_seq.get(prefix, 0)))
+        return used_names, next_seq
+
+    def _run_catalog_import_prepare(job_id: str, source_dir: Path) -> None:
+        try:
+            files = _list_import_source_images(source_dir)
+            used_names, next_seq = _build_import_name_allocator()
+            total = len(files)
+            with catalog_import_lock:
+                job = catalog_import_jobs.get(job_id)
+                if job is None:
+                    return
+                job["total"] = total
+                job["status"] = "running"
+                job["message"] = f"发现 {total} 张图片"
+
+            results: List[Dict[str, Any]] = []
+            for index, path in enumerate(files, start=1):
+                rel_path = str(path.relative_to(source_dir)).replace("\\", "/")
+                code = ""
+                error = ""
+                for crop in build_header_crops(path):
+                    code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
+                    if code:
+                        break
+                style_code = code[:-1] if code.endswith("#") else code
+                is_valid_code = _is_valid_import_style_code(style_code)
+                if not code:
+                    error = "OCR 未识别到款号"
+                elif not is_valid_code:
+                    error = "识别款号必须以字母开头"
+                prefix = code_to_filename_prefix(code) if code else re.sub(r"[^A-Za-z0-9_-]+", "_", path.stem).strip("_") or "UNKNOWN"
+                proposed_filename = _next_import_filename(prefix, path.suffix.lower(), used_names, next_seq)
+                results.append(
+                    {
+                        "source_rel_path": rel_path,
+                        "source_name": path.name,
+                        "proposed_style_code": style_code,
+                        "proposed_year_tag": _derive_year_tag_from_style_code(style_code),
+                        "proposed_filename": proposed_filename,
+                        "status": "ok" if (code and is_valid_code) else ("invalid_style_code" if code else "ocr_failed"),
+                        "error": error,
+                    }
+                )
+                with catalog_import_lock:
+                    job = catalog_import_jobs.get(job_id)
+                    if job is None:
+                        return
+                    job["processed"] = index
+                    job["items"] = list(results)
+                    job["message"] = f"已处理 {index}/{total}"
+
+            with catalog_import_lock:
+                job = catalog_import_jobs.get(job_id)
+                if job is None:
+                    return
+                job["status"] = "completed"
+                job["message"] = f"预处理完成，共 {total} 张"
+        except Exception as exc:
+            logging.exception("catalog import prepare failed: %s", exc)
+            with catalog_import_lock:
+                job = catalog_import_jobs.get(job_id)
+                if job is not None:
+                    job["status"] = "failed"
+                    job["message"] = str(exc)
+
+    def _serialize_catalog_import_job(job: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "job_id": str(job.get("job_id", "")),
+            "source_dir": str(job.get("source_dir", "")),
+            "status": str(job.get("status", "pending")),
+            "message": str(job.get("message", "")),
+            "total": int(job.get("total", 0)),
+            "processed": int(job.get("processed", 0)),
+            "items": list(job.get("items", [])),
+            "committed": bool(job.get("committed", False)),
+        }
+
+    def _catalog_import_job_item(job: Dict[str, Any], source_rel_path: str) -> Dict[str, Any] | None:
+        target = str(source_rel_path or "").strip()
+        if not target:
+            return None
+        for item in job.get("items", []):
+            if str(item.get("source_rel_path", "")).strip() == target:
+                return item
+        return None
 
     def _catalog_session_sign(username: str, exp_ts: int) -> str:
         payload = f"{username}:{exp_ts}".encode("utf-8")
@@ -988,9 +1170,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   <style>
     body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin: 0; background: #f5f7fa; color: #111827; }
     .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
-    .toolbar { display: grid; grid-template-columns: 1.6fr auto auto; gap: 12px; margin-bottom: 16px; }
-    .toolbar-secondary { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; margin-bottom: 16px; }
-    input, button { font-size: 14px; padding: 10px 12px; border-radius: 10px; border: 1px solid #d1d5db; }
+    .toolbar { display: grid; grid-template-columns: minmax(260px, 1.6fr) repeat(3, 124px); gap: 10px; margin-bottom: 14px; }
+    .toolbar-secondary { display: grid; grid-template-columns: minmax(260px, 1fr) repeat(2, 124px); gap: 10px; margin-bottom: 14px; }
+    input, button { font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #d1d5db; min-height: 42px; box-sizing: border-box; }
     button { cursor: pointer; background: #111827; color: #fff; border: none; }
     button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
     .muted { color: #6b7280; font-size: 13px; }
@@ -1001,9 +1183,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .card { background: #fff; border-radius: 14px; padding: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); }
     .thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; border-radius: 10px; cursor: pointer; }
     .code { font-weight: 700; margin: 10px 0 8px; }
-    .tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 26px; margin-bottom: 10px; }
-    .tag { background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 4px 8px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
-    .tag-remove { border: none; background: transparent; color: #3730a3; cursor: pointer; font-size: 14px; line-height: 1; padding: 0; }
+    .tags { display: flex; flex-wrap: wrap; gap: 5px; min-height: 24px; margin-bottom: 10px; }
+    .tag { background: #f8fafc; color: #334155; border: 1px solid #dbe2ea; border-radius: 4px; padding: 2px 6px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; line-height: 1.1; }
+    .tag-remove { min-height: auto; height: auto; padding: 0; margin: 0; border: none; background: transparent; color: #475569; cursor: pointer; font-size: 12px; line-height: 1; border-radius: 0; box-shadow: none; }
     .row { display: flex; gap: 8px; position: relative; align-items: center; }
     .picker-trigger { flex: 1; font-size: 12px; padding: 6px 10px; border-radius: 9px; border: 1px dashed #c7d2fe; background: #f8faff; min-height: 30px; display: flex; align-items: center; color: #6366f1; cursor: pointer; }
     .picker-trigger.active { border-color: #818cf8; background: #eef2ff; box-shadow: none; }
@@ -1024,11 +1206,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .gallery-item { background: #f9fafb; border-radius: 12px; padding: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; background: #e5e7eb; }
     .gallery-caption { margin-top: 8px; font-size: 12px; color: #4b5563; word-break: break-all; }
+    .import-panel { width: min(1120px, 100%); }
+    .import-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 12px; }
+    .import-progress { height: 10px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-bottom: 10px; }
+    .import-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #4f46e5, #6366f1); transition: width 0.2s ease; }
+    .import-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .import-table th, .import-table td { padding: 9px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
+    .import-table input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 13px; }
+    .import-table tr.row-error td { background: #fff1f2; }
+    .import-badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
+    .import-badge.ok { background: #ecfdf5; color: #047857; }
+    .import-badge.warn { background: #fff7ed; color: #c2410c; }
+    .import-source-link { border: none; background: transparent; padding: 0; margin: 0; color: #2563eb; cursor: pointer; font-size: 13px; font-weight: 600; text-align: left; }
+    .import-source-link:hover { text-decoration: underline; }
+    .import-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
+    .import-table-wrap { max-height: 52vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 12px; }
+    .import-preview-img { width: 100%; max-height: 72vh; object-fit: contain; background: #f9fafb; border-radius: 12px; }
     .load-more { padding: 18px 0 8px; text-align: center; color: #6b7280; font-size: 13px; }
     @media (max-width: 720px) {
       .wrap { padding: 12px; }
       .toolbar, .toolbar-secondary { grid-template-columns: 1fr 1fr; }
       .toolbar input, .toolbar-secondary input { grid-column: 1 / -1; }
+      .toolbar button, .toolbar-secondary button { min-height: 40px; }
       .cards { grid-template-columns: 1fr; gap: 12px; }
       .card { padding: 12px; }
       .modal { padding: 12px; }
@@ -1049,13 +1248,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     </div>
     <div class="muted">按款号管理图片与材料标签。标签支持新增，搜索接口后续可直接按款号和标签筛选。</div>
     <div class="toolbar">
-      <input id="styleCodeQuery" placeholder="按款号搜索，如 GZ25-1177" />
+      <input id="styleCodeQuery" placeholder="按款号搜索，如 GZ25-1177 或 J0831" />
       <button id="searchBtn">查询</button>
-      <button id="syncBtn">同步图片</button>
+      <button id="syncBtn" class="secondary">同步图片</button>
+      <button id="importBtn" class="secondary">目录批量导入</button>
     </div>
     <div class="toolbar-secondary">
       <input id="newTagName" list="allTagsList" placeholder="新增标签名称；输入时会提示已有标签" />
-      <button id="addTagBtn">新增标签</button>
+      <button id="addTagBtn" class="secondary">新增标签</button>
       <button id="reloadBtn" class="secondary">刷新</button>
     </div>
     <div id="activeFilterTags" class="filter-tags"></div>
@@ -1076,6 +1276,56 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <div id="galleryGrid" class="modal-grid"></div>
     </div>
   </div>
+  <div id="importModal" class="modal">
+    <div class="modal-panel import-panel">
+      <div class="modal-head">
+        <div>
+          <div class="code" style="margin:0;">服务器目录批量导入</div>
+          <div class="muted">输入服务器本地目录，先 OCR 生成候选文件名，再手工修改后导入到产品库图片目录。</div>
+        </div>
+        <button id="closeImportBtn" class="secondary">关闭</button>
+      </div>
+      <div class="import-row">
+        <input id="importSourceDir" value="__CATALOG_IMPORT_SOURCE_DIR__" placeholder="例如 /data/new_samples 或 D:\\samples\\new" />
+        <button id="startImportBtn">开始识别</button>
+      </div>
+      <div class="import-progress"><div id="importProgressBar" class="import-progress-bar"></div></div>
+      <div id="importMeta" class="muted" style="margin-bottom:10px;"></div>
+      <div class="import-table-wrap">
+        <table class="import-table">
+          <thead>
+            <tr>
+              <th style="width:52px;">导入</th>
+              <th>源文件</th>
+              <th style="width:150px;">识别款号</th>
+              <th style="width:110px;">年份标签</th>
+              <th>导入后文件名</th>
+              <th style="width:130px;">状态</th>
+            </tr>
+          </thead>
+          <tbody id="importTableBody">
+            <tr><td colspan="6" class="muted">尚未开始导入预处理。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="import-actions">
+        <div id="importCommitStatus" class="muted"></div>
+        <button id="commitImportBtn">确认导入</button>
+      </div>
+    </div>
+  </div>
+  <div id="importPreviewModal" class="modal">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div>
+          <div id="importPreviewTitle" class="code" style="margin:0;"></div>
+          <div id="importPreviewSubTitle" class="muted"></div>
+        </div>
+        <button id="closeImportPreviewBtn" class="secondary">关闭</button>
+      </div>
+      <img id="importPreviewImg" class="import-preview-img" alt="source preview" />
+    </div>
+  </div>
   <script>
     let globalTags = [];
     let currentProducts = [];
@@ -1085,10 +1335,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let hasMore = true;
     let isLoadingMore = false;
     let observer = null;
+    let importJobId = '';
+    let importPollTimer = null;
+    let importJobData = null;
     const els = {
       styleCodeQuery: document.getElementById('styleCodeQuery'),
       searchBtn: document.getElementById('searchBtn'),
       syncBtn: document.getElementById('syncBtn'),
+      importBtn: document.getElementById('importBtn'),
       newTagName: document.getElementById('newTagName'),
       addTagBtn: document.getElementById('addTagBtn'),
       reloadBtn: document.getElementById('reloadBtn'),
@@ -1102,11 +1356,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       gallerySubTitle: document.getElementById('gallerySubTitle'),
       galleryGrid: document.getElementById('galleryGrid'),
       closeGalleryBtn: document.getElementById('closeGalleryBtn'),
+      importModal: document.getElementById('importModal'),
+      closeImportBtn: document.getElementById('closeImportBtn'),
+      importSourceDir: document.getElementById('importSourceDir'),
+      startImportBtn: document.getElementById('startImportBtn'),
+      importProgressBar: document.getElementById('importProgressBar'),
+      importMeta: document.getElementById('importMeta'),
+      importTableBody: document.getElementById('importTableBody'),
+      commitImportBtn: document.getElementById('commitImportBtn'),
+      importCommitStatus: document.getElementById('importCommitStatus'),
+      importPreviewModal: document.getElementById('importPreviewModal'),
+      importPreviewTitle: document.getElementById('importPreviewTitle'),
+      importPreviewSubTitle: document.getElementById('importPreviewSubTitle'),
+      importPreviewImg: document.getElementById('importPreviewImg'),
+      closeImportPreviewBtn: document.getElementById('closeImportPreviewBtn'),
     };
 
     function setStatus(msg, isError) {
+      if (!els.status) return;
       els.status.textContent = msg || '';
       els.status.style.color = isError ? '#b91c1c' : '#6b7280';
+    }
+
+    function setNodeText(node, value) {
+      if (!node) return;
+      node.textContent = value || '';
     }
 
     function uniqTags(tags) {
@@ -1217,8 +1491,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function buildCardTagsHtml(tags) {
       return (tags || []).map(tag => `
           <span class="tag">
-            <button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${tag}" title="按该标签筛选">#</button>
-            <span>${tag}</span>
+            <button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${tag}" title="按该标签筛选">${tag}</button>
             <button type="button" class="tag-remove" data-role="removeTagBtn" data-tag="${tag}" title="删除标签">×</button>
           </span>
         `).join('');
@@ -1258,6 +1531,130 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     function closeGallery() {
       els.galleryModal.classList.remove('open');
+    }
+
+    function openImportModal() {
+      els.importModal.classList.add('open');
+    }
+
+    function closeImportModal() {
+      els.importModal.classList.remove('open');
+    }
+
+    function openImportPreview(item) {
+      if (!item || !importJobId) return;
+      setNodeText(els.importPreviewTitle, item.source_name || '');
+      setNodeText(els.importPreviewSubTitle, item.source_rel_path || '');
+      if (els.importPreviewImg) {
+        const params = new URLSearchParams();
+        params.set('source_rel_path', item.source_rel_path || '');
+        params.set('max_edge', '1600');
+        els.importPreviewImg.src = '/api/v1/catalog/imports/' + encodeURIComponent(importJobId) + '/source-image?' + params.toString();
+      }
+      if (els.importPreviewModal) els.importPreviewModal.classList.add('open');
+    }
+
+    function closeImportPreview() {
+      if (els.importPreviewModal) els.importPreviewModal.classList.remove('open');
+      if (els.importPreviewImg) els.importPreviewImg.src = '';
+    }
+
+    function stopImportPolling() {
+      if (importPollTimer) {
+        clearTimeout(importPollTimer);
+        importPollTimer = null;
+      }
+    }
+
+    function deriveYearTagFromFilename(filename) {
+      const raw = String(filename || '').trim();
+      if (!raw) return '';
+      const stem = raw.replace(/\.[^.]+$/, '');
+      const styleCode = stem.includes('_') ? stem.slice(0, stem.lastIndexOf('_')) : stem;
+      const prefix = styleCode.split('-', 1)[0] || '';
+      const match = prefix.match(/(\d{2})$/);
+      return match ? `20${match[1]}` : '';
+    }
+
+    function renderImportJob(job) {
+      importJobData = job;
+      const total = Number(job.total || 0);
+      const processed = Number(job.processed || 0);
+      const pct = total > 0 ? Math.min(100, Math.round(processed * 100 / total)) : 0;
+      if (els.importProgressBar) els.importProgressBar.style.width = pct + '%';
+      setNodeText(els.importMeta, `${job.message || ''}${total ? ` · ${processed}/${total}` : ''}`);
+      const items = job.items || [];
+      if (!items.length) {
+        if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="6" class="muted">处理中...</td></tr>';
+      } else {
+        if (els.importTableBody) els.importTableBody.innerHTML = items.map((item, index) => `
+          <tr class="${item.status === 'ok' ? '' : 'row-error'}">
+            <td><input type="checkbox" data-role="importSelect" data-index="${index}" ${item.selected === false ? '' : 'checked'} /></td>
+            <td>
+              <button type="button" class="import-source-link" data-role="importPreviewBtn" data-index="${index}">${item.source_name || ''}</button>
+              <div class="muted">${item.source_rel_path || ''}</div>
+            </td>
+            <td>${item.proposed_style_code || '-'}</td>
+            <td><input type="text" data-role="importYearTag" data-index="${index}" value="${item.year_tag || item.proposed_year_tag || ''}" placeholder="如 2024" /></td>
+            <td><input type="text" data-role="importFilename" data-index="${index}" value="${item.target_filename || item.proposed_filename || ''}" /></td>
+            <td><span class="import-badge ${item.status === 'ok' ? 'ok' : 'warn'}">${item.status === 'ok' ? '已识别' : '需人工确认'}</span>${item.error ? `<div class="muted" style="margin-top:4px;color:#b91c1c;">${item.error}</div>` : ''}</td>
+          </tr>
+        `).join('');
+      }
+      if (els.importTableBody) {
+        els.importTableBody.querySelectorAll('[data-role="importPreviewBtn"]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const index = Number(button.dataset.index || '-1');
+            const rows = importJobData && importJobData.items ? importJobData.items : [];
+            if (index < 0 || index >= rows.length) return;
+            openImportPreview(rows[index]);
+          });
+        });
+        els.importTableBody.querySelectorAll('[data-role="importFilename"]').forEach((input) => {
+          input.addEventListener('input', () => {
+            const index = input.dataset.index || '';
+            const yearInput = els.importTableBody.querySelector(`[data-role="importYearTag"][data-index="${index}"]`);
+            if (!yearInput) return;
+            const nextYearTag = deriveYearTagFromFilename(input.value);
+            if (nextYearTag) yearInput.value = nextYearTag;
+          });
+        });
+      }
+      setNodeText(els.importCommitStatus, job.committed ? '该批次已导入' : '');
+      if (els.commitImportBtn) els.commitImportBtn.disabled = job.status !== 'completed' || !!job.committed;
+    }
+
+    async function pollImportJob() {
+      if (!importJobId) return;
+      const resp = await fetch('/api/v1/catalog/imports/' + encodeURIComponent(importJobId));
+      if (!resp.ok) throw new Error(await resp.text());
+      const job = await resp.json();
+      renderImportJob(job);
+      if (job.status === 'pending' || job.status === 'running') {
+        importPollTimer = setTimeout(() => {
+          pollImportJob().catch(err => {
+            setNodeText(els.importCommitStatus, err.message || '导入进度查询失败');
+          });
+        }, 800);
+      } else {
+        stopImportPolling();
+      }
+    }
+
+    function collectImportItemsFromTable() {
+      if (!importJobData) return [];
+      const rows = importJobData.items || [];
+      return rows.map((item, index) => {
+        const checkbox = els.importTableBody.querySelector(`[data-role="importSelect"][data-index="${index}"]`);
+        const input = els.importTableBody.querySelector(`[data-role="importFilename"][data-index="${index}"]`);
+        const yearInput = els.importTableBody.querySelector(`[data-role="importYearTag"][data-index="${index}"]`);
+        return {
+          source_rel_path: item.source_rel_path,
+          selected: !!(checkbox && checkbox.checked),
+          year_tag: yearInput ? yearInput.value.trim() : (item.year_tag || item.proposed_year_tag || ''),
+          target_filename: input ? input.value.trim() : (item.target_filename || item.proposed_filename || ''),
+        };
+      });
     }
 
     function renderCards(products, reset = true) {
@@ -1349,6 +1746,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     els.searchBtn.addEventListener('click', () => {
       loadProducts(true).catch(err => setStatus(err.message || '加载失败', true));
     });
+    els.styleCodeQuery.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      loadProducts(true).catch(err => setStatus(err.message || '加载失败', true));
+    });
     els.reloadBtn.addEventListener('click', () => Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true)));
     els.addTagBtn.addEventListener('click', async () => {
       try {
@@ -1382,6 +1784,59 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         setStatus(err.message || '同步失败', true);
       }
     });
+    els.importBtn.addEventListener('click', openImportModal);
+    els.closeImportBtn.addEventListener('click', closeImportModal);
+    els.importModal.addEventListener('click', (event) => {
+      if (event.target === els.importModal) closeImportModal();
+    });
+    els.closeImportPreviewBtn.addEventListener('click', closeImportPreview);
+    els.importPreviewModal.addEventListener('click', (event) => {
+      if (event.target === els.importPreviewModal) closeImportPreview();
+    });
+    els.startImportBtn.addEventListener('click', async () => {
+      try {
+        const sourceDir = els.importSourceDir.value.trim();
+        if (!sourceDir) {
+          setNodeText(els.importCommitStatus, '请输入服务器目录');
+          return;
+        }
+        stopImportPolling();
+        setNodeText(els.importCommitStatus, '');
+        if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="5" class="muted">任务创建中...</td></tr>';
+        const resp = await fetch('/api/v1/catalog/imports/prepare', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_dir: sourceDir })
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const job = await resp.json();
+        importJobId = job.job_id || '';
+        renderImportJob(job);
+        await pollImportJob();
+      } catch (err) {
+        setNodeText(els.importCommitStatus, err.message || '导入预处理失败');
+      }
+    });
+    els.commitImportBtn.addEventListener('click', async () => {
+      try {
+        if (!importJobId) {
+          setNodeText(els.importCommitStatus, '请先完成识别');
+          return;
+        }
+        const items = collectImportItemsFromTable();
+        const resp = await fetch('/api/v1/catalog/imports/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: importJobId, items })
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        setNodeText(els.importCommitStatus, `已导入 ${data.imported} 张；新增款 ${data.sync.products_added}，新增/更新图 ${data.sync.images_added_or_updated}`);
+        await loadProducts(true);
+      } catch (err) {
+        setNodeText(els.importCommitStatus, err.message || '导入失败');
+      }
+    });
     els.closeGalleryBtn.addEventListener('click', closeGallery);
     els.galleryModal.addEventListener('click', (event) => {
       if (event.target === els.galleryModal) closeGallery();
@@ -1401,7 +1856,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true));
   </script>
 </body>
-</html>"""
+</html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True))
 
     @app.get("/api/v1/catalog/products")
     def api_list_catalog_products(
@@ -1446,6 +1901,137 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.post("/api/v1/catalog/sync")
     def api_sync_catalog() -> Dict[str, Any]:
         return catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+
+    @app.post("/api/v1/catalog/imports/prepare")
+    def api_prepare_catalog_import(payload: CatalogImportPrepareRequest) -> Dict[str, Any]:
+        source_dir_raw = str(payload.source_dir or "").strip() or catalog_import_source_dir
+        if not source_dir_raw:
+            raise HTTPException(status_code=400, detail="source_dir is empty; set catalog.import_source_dir in config or input it manually")
+        source_dir = _resolve_catalog_import_source_dir(source_dir_raw)
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise HTTPException(status_code=400, detail="source_dir not found")
+        files = _list_import_source_images(source_dir)
+        if not files:
+            raise HTTPException(status_code=400, detail="source_dir has no supported images")
+        job_id = uuid.uuid4().hex
+        job = {
+            "job_id": job_id,
+            "source_dir": str(source_dir),
+            "status": "pending",
+            "message": "任务已创建",
+            "total": 0,
+            "processed": 0,
+            "items": [],
+            "committed": False,
+        }
+        with catalog_import_lock:
+            catalog_import_jobs[job_id] = job
+        thread = threading.Thread(target=_run_catalog_import_prepare, args=(job_id, source_dir), daemon=True)
+        thread.start()
+        return _serialize_catalog_import_job(job)
+
+    @app.get("/api/v1/catalog/imports/{job_id}")
+    def api_get_catalog_import_job(job_id: str) -> Dict[str, Any]:
+        with catalog_import_lock:
+            job = catalog_import_jobs.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="import job not found")
+            return _serialize_catalog_import_job(job)
+
+    @app.get("/api/v1/catalog/imports/{job_id}/source-image")
+    def api_get_catalog_import_source_image(job_id: str, source_rel_path: str, max_edge: int = 0, q: int = 82) -> FileResponse:
+        with catalog_import_lock:
+            job = catalog_import_jobs.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="import job not found")
+            source_dir = Path(str(job.get("source_dir", "")))
+            item = _catalog_import_job_item(job, source_rel_path)
+        if item is None:
+            raise HTTPException(status_code=404, detail="source image not found")
+        fp = (source_dir / source_rel_path).resolve()
+        try:
+            fp.relative_to(source_dir.resolve())
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid source_rel_path") from exc
+        if not fp.exists() or not fp.is_file():
+            raise HTTPException(status_code=404, detail="source image not found")
+        if max_edge > 0:
+            edge = max(128, min(2048, int(max_edge)))
+            out_fp = _ensure_preview(fp, edge, q)
+            return FileResponse(path=str(out_fp), media_type="image/jpeg")
+        return FileResponse(path=str(fp))
+
+    @app.post("/api/v1/catalog/imports/commit")
+    def api_commit_catalog_import(payload: CatalogImportCommitRequest) -> Dict[str, Any]:
+        with catalog_import_lock:
+            job = catalog_import_jobs.get(payload.job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="import job not found")
+            snapshot = _serialize_catalog_import_job(job)
+        if snapshot["status"] != "completed":
+            raise HTTPException(status_code=400, detail="import job is not completed")
+        if snapshot["committed"]:
+            raise HTTPException(status_code=400, detail="import job already committed")
+
+        source_dir = Path(snapshot["source_dir"])
+        prepared_items = {
+            str(item.get("source_rel_path", "")): item
+            for item in snapshot["items"]
+            if str(item.get("source_rel_path", "")).strip()
+        }
+        selected_items = [item for item in payload.items if item.selected]
+        if not selected_items:
+            raise HTTPException(status_code=400, detail="no selected items")
+
+        planned: List[tuple[Path, str]] = []
+        seen_targets: set[str] = set()
+        style_year_tags: Dict[str, set[str]] = {}
+        for item in selected_items:
+            prepared = prepared_items.get(item.source_rel_path)
+            if prepared is None:
+                raise HTTPException(status_code=400, detail=f"unknown source_rel_path: {item.source_rel_path}")
+            src = source_dir / item.source_rel_path
+            if not src.exists() or not src.is_file():
+                raise HTTPException(status_code=400, detail=f"source file not found: {item.source_rel_path}")
+            fallback_name = str(prepared.get("proposed_filename", "")).strip() or src.name
+            raw_target = item.target_filename.strip() or fallback_name
+            try:
+                target_name = _sanitize_import_filename(raw_target, src.suffix.lower())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
+            if target_name.lower() in seen_targets:
+                raise HTTPException(status_code=400, detail=f"duplicate target filename: {target_name}")
+            if (standard_dir / target_name).exists():
+                raise HTTPException(status_code=400, detail=f"target filename already exists: {target_name}")
+            seen_targets.add(target_name.lower())
+            try:
+                year_tag = _sanitize_year_tag(item.year_tag.strip() or str(prepared.get("proposed_year_tag", "")).strip())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
+            style_code = filename_to_style_code(target_name).strip()
+            if year_tag and style_code:
+                style_year_tags.setdefault(style_code, set()).add(year_tag)
+            planned.append((src, target_name))
+
+        imported = 0
+        for src, target_name in planned:
+            shutil.copy2(src, standard_dir / target_name)
+            imported += 1
+
+        sync_result = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+        for style_code, year_tags in style_year_tags.items():
+            if year_tags:
+                catalog_store.add_product_tags(style_code, sorted(year_tags))
+        with catalog_import_lock:
+            job = catalog_import_jobs.get(payload.job_id)
+            if job is not None:
+                job["committed"] = True
+                job["message"] = f"已导入 {imported} 张图片"
+        return {
+            "job_id": payload.job_id,
+            "imported": imported,
+            "sync": sync_result,
+        }
 
     @app.get("/images/{image_name}")
     def get_standard_image(image_name: str, max_edge: int = 0, q: int = 82) -> FileResponse:

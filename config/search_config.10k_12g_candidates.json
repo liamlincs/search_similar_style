@@ -19,6 +19,7 @@
   },
   "catalog": {
     "db_path": "data/product_catalog.db",
+    "import_source_dir": "",
     "public_endpoints": true,
     "web_auth": {
       "enabled": true,
