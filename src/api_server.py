@@ -1208,8 +1208,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .picker-pop { position: absolute; left: 0; right: 64px; top: calc(100% + 8px); background: #fff; border: 1px solid #d1d5db; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,0.12); padding: 10px; display: none; z-index: 10; }
     .picker-pop.open { display: block; }
     .picker-options { display: flex; flex-wrap: wrap; gap: 8px; max-height: 180px; overflow: auto; }
-    .picker-option { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
-    .picker-option.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .picker-option-item { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 4px 8px; font-size: 12px; }
+    .picker-option-item.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .picker-option { border: none; background: transparent; color: inherit; padding: 0; min-height: auto; height: auto; font-size: 12px; cursor: pointer; }
+    .picker-option-delete { border: none; background: transparent; color: inherit; padding: 0; min-height: auto; height: auto; font-size: 12px; cursor: pointer; opacity: 0.8; }
     .picker-add-btn { min-width: 52px; padding: 6px 9px; font-size: 12px; border-radius: 9px; }
     .status { margin: 8px 0 16px; min-height: 20px; }
     .logout-btn { display:inline-flex; align-items:center; justify-content:center; height:38px; padding:0 14px; border-radius:10px; background:#fff1f2; color:#be123c; border:1px solid #fecdd3; text-decoration:none; font-size:14px; font-weight:600; }
@@ -1232,6 +1234,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-table tr.row-error td { background: #fff1f2; }
     .import-batch-tag-box { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin: 0 0 12px; background: #fafbfc; }
     .import-batch-tag-title { font-size: 12px; color: #475569; margin-bottom: 8px; }
+    .tag-admin-box { margin-top: 8px; }
     .import-tag-list { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; margin-bottom: 6px; }
     .import-tag-chip { display: inline-flex; align-items: center; gap: 4px; background: #f8fafc; color: #334155; border: 1px solid #dbe2ea; border-radius: 4px; padding: 2px 6px; font-size: 11px; line-height: 1.1; }
     .import-tag-remove { min-height: auto; height: auto; padding: 0; margin: 0; border: none; background: transparent; color: #64748b; cursor: pointer; font-size: 12px; line-height: 1; }
@@ -1246,6 +1249,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
     .import-table-wrap { max-height: 52vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 12px; }
     .import-preview-img { width: 100%; max-height: 72vh; object-fit: contain; background: #f9fafb; border-radius: 12px; }
+    .input-pop-wrap { position: relative; width: 100%; }
+    .input-pop-wrap > input { width: 100%; }
+    .tag-suggest-pop { position: absolute; left: 0; top: calc(100% + 6px); width: max(100%, 420px); max-width: min(560px, calc(100vw - 32px)); background: #fff; border: 1px solid #d1d5db; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,0.12); padding: 10px; display: none; z-index: 20; max-height: 240px; overflow: auto; scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+    .tag-suggest-pop.open { display: block; }
+    .tag-suggest-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag-suggest-pop .import-tag-chip.active,
+    .tag-suggest-pop .import-tag-chip:hover { background: #eef2ff; border-color: #c7d2fe; }
+    .tag-suggest-pop::-webkit-scrollbar { width: 8px; }
+    .tag-suggest-pop::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+    .tag-suggest-pop::-webkit-scrollbar-track { background: transparent; }
     .load-more { padding: 18px 0 8px; text-align: center; color: #6b7280; font-size: 13px; }
     @media (max-width: 720px) {
       .wrap { padding: 12px; }
@@ -1261,6 +1274,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       .picker-trigger { min-width: 0; }
       .picker-add-btn { width: 100%; min-width: 0; }
       .logout-btn { height: 34px; padding: 0 10px; font-size: 13px; }
+      .tag-suggest-list { flex-direction: column; gap: 8px; }
+      .tag-suggest-list .import-tag-chip { width: 100%; justify-content: space-between; box-sizing: border-box; }
+      .tag-suggest-pop { left: 0; right: 0; width: auto; max-width: none; max-height: 320px; }
     }
   </style>
 </head>
@@ -1278,7 +1294,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <button id="importBtn" class="secondary">目录批量导入</button>
     </div>
     <div class="toolbar-secondary">
-      <input id="newTagName" list="allTagsList" placeholder="新增标签名称；输入时会提示已有标签" />
+      <div class="input-pop-wrap">
+        <input id="newTagName" placeholder="新增标签名称；输入时会提示已有标签" />
+        <div id="newTagSuggestPop" class="tag-suggest-pop"></div>
+      </div>
       <button id="addTagBtn" class="secondary">新增标签</button>
       <button id="reloadBtn" class="secondary">刷新</button>
     </div>
@@ -1317,7 +1336,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="import-batch-tag-title">批量标签：统一加到本次勾选导入的图片所属款号</div>
         <div id="importBatchTags" class="import-tag-list"><div class="muted">未添加标签</div></div>
         <div class="import-tag-row">
-          <input id="importBatchTagInput" type="text" list="allTagsList" placeholder="添加标签，可选已有，也可直接新增" />
+          <div class="input-pop-wrap">
+            <input id="importBatchTagInput" type="text" placeholder="添加标签，可选已有，也可直接新增" />
+            <div id="importBatchTagSuggestPop" class="tag-suggest-pop"></div>
+          </div>
           <button id="importBatchTagAddBtn" type="button" class="secondary import-tag-add-btn">添加</button>
         </div>
       </div>
@@ -1377,6 +1399,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       syncBtn: document.getElementById('syncBtn'),
       importBtn: document.getElementById('importBtn'),
       newTagName: document.getElementById('newTagName'),
+      newTagSuggestPop: document.getElementById('newTagSuggestPop'),
       addTagBtn: document.getElementById('addTagBtn'),
       reloadBtn: document.getElementById('reloadBtn'),
       status: document.getElementById('status'),
@@ -1397,6 +1420,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       importMeta: document.getElementById('importMeta'),
       importBatchTags: document.getElementById('importBatchTags'),
       importBatchTagInput: document.getElementById('importBatchTagInput'),
+      importBatchTagSuggestPop: document.getElementById('importBatchTagSuggestPop'),
       importBatchTagAddBtn: document.getElementById('importBatchTagAddBtn'),
       importTableBody: document.getElementById('importTableBody'),
       commitImportBtn: document.getElementById('commitImportBtn'),
@@ -1438,6 +1462,95 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const data = await resp.json();
       globalTags = data.tags || [];
       els.allTagsList.innerHTML = globalTags.map(tag => `<option value="${tag}"></option>`).join('');
+      renderGlobalTagAdminLists();
+    }
+
+    async function deleteGlobalTag(tag) {
+      const resp = await fetch('/api/v1/catalog/tags/' + encodeURIComponent(tag), { method: 'DELETE' });
+      if (!resp.ok) throw new Error(await resp.text());
+    }
+
+    function renderGlobalTagAdminLists() {
+      renderTagSuggestPopover(els.newTagSuggestPop, els.newTagName, true);
+      renderTagSuggestPopover(els.importBatchTagSuggestPop, els.importBatchTagInput, true);
+    }
+
+    function closeTagSuggestPops() {
+      [els.newTagSuggestPop, els.importBatchTagSuggestPop].forEach((pop) => {
+        if (pop) pop.classList.remove('open');
+      });
+    }
+
+    function renderTagSuggestPopover(pop, input, allowDelete) {
+      if (!pop) return;
+      const keyword = String((input && input.value) || '').trim().toLowerCase();
+      const tags = globalTags.filter((tag) => !keyword || String(tag).toLowerCase().includes(keyword));
+      let activeIndex = Number(pop.dataset.activeIndex || '0');
+      if (!Number.isFinite(activeIndex) || activeIndex < 0) activeIndex = 0;
+      if (tags.length && activeIndex >= tags.length) activeIndex = tags.length - 1;
+      pop.dataset.activeIndex = String(activeIndex);
+      if (!tags.length) {
+        pop.innerHTML = '<div class="muted">暂无标签</div>';
+      } else {
+        pop.innerHTML = `<div class="tag-suggest-list">${tags.map((tag, index) => `
+          <span class="import-tag-chip ${index === activeIndex ? 'active' : ''}">
+            <button type="button" class="import-tag-remove" data-role="suggestPickTagBtn" data-tag="${tag}" title="选择标签">${tag}</button>
+            ${allowDelete ? `<button type="button" class="import-tag-remove" data-role="suggestDeleteTagBtn" data-tag="${tag}" title="删除标签">×</button>` : ''}
+          </span>
+        `).join('')}</div>`;
+      }
+      pop.querySelectorAll('[data-role="suggestPickTagBtn"]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const tag = String(button.dataset.tag || '').trim();
+          if (input) input.value = tag;
+          pop.classList.remove('open');
+        });
+      });
+      pop.querySelectorAll('[data-role="suggestDeleteTagBtn"]').forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          const tag = String(button.dataset.tag || '').trim();
+          if (!tag) return;
+          const ok = window.confirm(`确认删除标签“${tag}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
+          if (!ok) return;
+          try {
+            await deleteGlobalTag(tag);
+            importBatchTags = normalizeImportTags(importBatchTags.filter(x => String(x) !== tag));
+            renderImportBatchTags();
+            await loadGlobalTags();
+            await loadProducts(true);
+            setStatus('标签已删除', false);
+          } catch (err) {
+            setStatus(err.message || '删除标签失败', true);
+          }
+        });
+      });
+    }
+
+    function moveTagSuggestActive(pop, input, step) {
+      if (!pop) return;
+      const keyword = String((input && input.value) || '').trim().toLowerCase();
+      const tags = globalTags.filter((tag) => !keyword || String(tag).toLowerCase().includes(keyword));
+      if (!tags.length) return;
+      let activeIndex = Number(pop.dataset.activeIndex || '0');
+      if (!Number.isFinite(activeIndex)) activeIndex = 0;
+      activeIndex = (activeIndex + step + tags.length) % tags.length;
+      pop.dataset.activeIndex = String(activeIndex);
+      renderTagSuggestPopover(pop, input, true);
+      pop.classList.add('open');
+    }
+
+    function pickActiveTagSuggest(pop, input) {
+      if (!pop || !input) return false;
+      const keyword = String(input.value || '').trim().toLowerCase();
+      const tags = globalTags.filter((tag) => !keyword || String(tag).toLowerCase().includes(keyword));
+      if (!tags.length) return false;
+      let activeIndex = Number(pop.dataset.activeIndex || '0');
+      if (!Number.isFinite(activeIndex) || activeIndex < 0 || activeIndex >= tags.length) activeIndex = 0;
+      input.value = tags[activeIndex];
+      pop.classList.remove('open');
+      return true;
     }
 
     function setLoadMoreText() {
@@ -1536,9 +1649,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function buildPickerOptions(selectedTags) {
       const selected = new Set(selectedTags || []);
       const options = globalTags.map(tag => `
-            <button class="picker-option ${selected.has(tag) ? 'active' : ''}" type="button" data-role="pickerOption" data-tag="${tag}">
-              ${tag}
-            </button>
+            <span class="picker-option-item ${selected.has(tag) ? 'active' : ''}">
+              <button class="picker-option" type="button" data-role="pickerOption" data-tag="${tag}">
+                ${tag}
+              </button>
+              <button class="picker-option-delete" type="button" data-role="pickerDeleteOption" data-tag="${tag}" title="删除标签">×</button>
+            </span>
       `).join('');
       return options || '<div class="muted">暂无可选标签，请先在顶部新增。</div>';
     }
@@ -1786,8 +1902,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             } else {
               pendingTags = uniqTags([...pendingTags, tag]);
             }
-            button.classList.toggle('active', pendingTags.includes(tag));
+            const item = button.closest('.picker-option-item');
+            if (item) item.classList.toggle('active', pendingTags.includes(tag));
             updatePickerTrigger(pickerTrigger, pendingTags);
+          });
+        });
+        pickerOptions.querySelectorAll('[data-role="pickerDeleteOption"]').forEach((button) => {
+          button.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            const tag = String(button.dataset.tag || '').trim();
+            if (!tag) return;
+            const ok = window.confirm(`确认删除标签“${tag}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
+            if (!ok) return;
+            try {
+              await deleteGlobalTag(tag);
+              pendingTags = pendingTags.filter(x => x !== tag);
+              importBatchTags = normalizeImportTags(importBatchTags.filter(x => String(x) !== tag));
+              renderImportBatchTags();
+              await loadGlobalTags();
+              await loadProducts(true);
+              setStatus('标签已删除', false);
+            } catch (err) {
+              setStatus(err.message || '删除标签失败', true);
+            }
           });
         });
         card.querySelectorAll('[data-role="filterFromCardBtn"]').forEach((button) => {
@@ -1833,6 +1970,49 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (event.key !== 'Enter') return;
       event.preventDefault();
       loadProducts(true).catch(err => setStatus(err.message || '加载失败', true));
+    });
+    [els.newTagName, els.importBatchTagInput].forEach((input) => {
+      if (!input) return;
+      input.addEventListener('focus', () => {
+        const pop = input === els.newTagName ? els.newTagSuggestPop : els.importBatchTagSuggestPop;
+        closeTagSuggestPops();
+        pop.dataset.activeIndex = '0';
+        renderTagSuggestPopover(pop, input, true);
+        if (pop) pop.classList.add('open');
+      });
+      input.addEventListener('input', () => {
+        const pop = input === els.newTagName ? els.newTagSuggestPop : els.importBatchTagSuggestPop;
+        pop.dataset.activeIndex = '0';
+        renderTagSuggestPopover(pop, input, true);
+        if (pop) pop.classList.add('open');
+      });
+      input.addEventListener('keydown', (event) => {
+        const pop = input === els.newTagName ? els.newTagSuggestPop : els.importBatchTagSuggestPop;
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          moveTagSuggestActive(pop, input, 1);
+          return;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          moveTagSuggestActive(pop, input, -1);
+          return;
+        }
+        if (event.key === 'Escape') {
+          if (pop) pop.classList.remove('open');
+          return;
+        }
+        if (event.key === 'Enter' && pop && pop.classList.contains('open')) {
+          const picked = pickActiveTagSuggest(pop, input);
+          if (picked) {
+            event.preventDefault();
+            return;
+          }
+        }
+      });
+      input.addEventListener('click', (event) => {
+        event.stopPropagation();
+      });
     });
     els.reloadBtn.addEventListener('click', () => Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true)));
     els.addTagBtn.addEventListener('click', async () => {
@@ -1937,7 +2117,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     els.galleryModal.addEventListener('click', (event) => {
       if (event.target === els.galleryModal) closeGallery();
     });
-    document.addEventListener('click', () => closeAllPickers());
+    document.addEventListener('click', () => {
+      closeAllPickers();
+      closeTagSuggestPops();
+    });
     if ('IntersectionObserver' in window) {
       observer = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -1993,6 +2176,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"tag": tag}
+
+    @app.delete("/api/v1/catalog/tags/{tag_name}")
+    def api_delete_catalog_tag(tag_name: str) -> Dict[str, Any]:
+        try:
+            tag = catalog_store.delete_tag(tag_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"tag": tag, "deleted": True}
 
     @app.post("/api/v1/catalog/sync")
     def api_sync_catalog() -> Dict[str, Any]:

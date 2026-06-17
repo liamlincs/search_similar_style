@@ -149,6 +149,15 @@ class CatalogStore:
             conn.commit()
         return tag
 
+    def delete_tag(self, name: str) -> str:
+        tag = self._clean_tag(name)
+        if not tag:
+            raise ValueError("tag name is empty")
+        with self._connect() as conn:
+            conn.execute("DELETE FROM tags WHERE name=?", (tag,))
+            conn.commit()
+        return tag
+
     def replace_product_tags(self, style_code: str, tags: Iterable[str]) -> List[str]:
         code = style_code.strip()
         if not code:
