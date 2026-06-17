@@ -104,6 +104,7 @@ class CatalogImportCommitItem(BaseModel):
     source_rel_path: str
     target_filename: str = ""
     year_tag: str = ""
+    tags: List[str] = []
     selected: bool = True
 
 
@@ -365,6 +366,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return raw
         raise ValueError("year_tag must be YYYY, e.g. 2024")
 
+    def _normalize_import_tags(tags: List[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for tag in tags or []:
+            clean = str(tag or "").strip()
+            if not clean:
+                continue
+            lower = clean.casefold()
+            if lower in seen:
+                continue
+            seen.add(lower)
+            out.append(clean)
+        return out
+
     def _is_valid_import_style_code(style_code: str) -> bool:
         code = str(style_code or "").strip()
         return bool(code) and bool(re.match(r"^[A-Za-z]", code))
@@ -435,6 +450,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         "proposed_style_code": style_code,
                         "proposed_year_tag": _derive_year_tag_from_style_code(style_code),
                         "proposed_filename": proposed_filename,
+                        "tags": [],
                         "status": "ok" if (code and is_valid_code) else ("invalid_style_code" if code else "ocr_failed"),
                         "error": error,
                     }
@@ -1214,6 +1230,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-table th, .import-table td { padding: 9px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
     .import-table input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 13px; }
     .import-table tr.row-error td { background: #fff1f2; }
+    .import-batch-tag-box { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin: 0 0 12px; background: #fafbfc; }
+    .import-batch-tag-title { font-size: 12px; color: #475569; margin-bottom: 8px; }
+    .import-tag-list { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; margin-bottom: 6px; }
+    .import-tag-chip { display: inline-flex; align-items: center; gap: 4px; background: #f8fafc; color: #334155; border: 1px solid #dbe2ea; border-radius: 4px; padding: 2px 6px; font-size: 11px; line-height: 1.1; }
+    .import-tag-remove { min-height: auto; height: auto; padding: 0; margin: 0; border: none; background: transparent; color: #64748b; cursor: pointer; font-size: 12px; line-height: 1; }
+    .import-tag-row { display: grid; grid-template-columns: 1fr 72px; gap: 6px; }
+    .import-tag-row input[type="text"] { min-height: 34px; padding: 6px 8px; font-size: 12px; }
+    .import-tag-add-btn { min-height: 34px; padding: 6px 8px; font-size: 12px; border-radius: 8px; }
     .import-badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
     .import-badge.ok { background: #ecfdf5; color: #047857; }
     .import-badge.warn { background: #fff7ed; color: #c2410c; }
@@ -1289,6 +1313,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <input id="importSourceDir" value="__CATALOG_IMPORT_SOURCE_DIR__" placeholder="例如 /data/new_samples 或 D:\\samples\\new" />
         <button id="startImportBtn">开始识别</button>
       </div>
+      <div class="import-batch-tag-box">
+        <div class="import-batch-tag-title">批量标签：统一加到本次勾选导入的图片所属款号</div>
+        <div id="importBatchTags" class="import-tag-list"><div class="muted">未添加标签</div></div>
+        <div class="import-tag-row">
+          <input id="importBatchTagInput" type="text" list="allTagsList" placeholder="添加标签，可选已有，也可直接新增" />
+          <button id="importBatchTagAddBtn" type="button" class="secondary import-tag-add-btn">添加</button>
+        </div>
+      </div>
       <div class="import-progress"><div id="importProgressBar" class="import-progress-bar"></div></div>
       <div id="importMeta" class="muted" style="margin-bottom:10px;"></div>
       <div class="import-table-wrap">
@@ -1338,6 +1370,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let importJobId = '';
     let importPollTimer = null;
     let importJobData = null;
+    let importBatchTags = [];
     const els = {
       styleCodeQuery: document.getElementById('styleCodeQuery'),
       searchBtn: document.getElementById('searchBtn'),
@@ -1362,6 +1395,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       startImportBtn: document.getElementById('startImportBtn'),
       importProgressBar: document.getElementById('importProgressBar'),
       importMeta: document.getElementById('importMeta'),
+      importBatchTags: document.getElementById('importBatchTags'),
+      importBatchTagInput: document.getElementById('importBatchTagInput'),
+      importBatchTagAddBtn: document.getElementById('importBatchTagAddBtn'),
       importTableBody: document.getElementById('importTableBody'),
       commitImportBtn: document.getElementById('commitImportBtn'),
       importCommitStatus: document.getElementById('importCommitStatus'),
@@ -1534,6 +1570,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
 
     function openImportModal() {
+      importBatchTags = [];
+      renderImportBatchTags();
+      if (els.importBatchTagInput) els.importBatchTagInput.value = '';
       els.importModal.classList.add('open');
     }
 
@@ -1574,6 +1613,49 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const prefix = styleCode.split('-', 1)[0] || '';
       const match = prefix.match(/(\d{2})$/);
       return match ? `20${match[1]}` : '';
+    }
+
+    function normalizeImportTags(tags) {
+      const seen = new Set();
+      return (tags || []).map(tag => String(tag || '').trim()).filter((tag) => {
+        if (!tag) return false;
+        const key = tag.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
+    function buildImportTagListHtml(tags) {
+      const list = normalizeImportTags(tags);
+      if (!list.length) return '<div class="muted">未添加标签</div>';
+      return list.map(tag => `
+        <span class="import-tag-chip">
+          <span>${tag}</span>
+          <button type="button" class="import-tag-remove" data-role="importRemoveTagBtn" data-tag="${tag}" title="删除标签">×</button>
+        </span>
+      `).join('');
+    }
+
+    function renderImportBatchTags() {
+      if (!els.importBatchTags) return;
+      els.importBatchTags.innerHTML = buildImportTagListHtml(importBatchTags);
+      els.importBatchTags.querySelectorAll('[data-role="importRemoveTagBtn"]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const tag = String(button.dataset.tag || '').trim();
+          importBatchTags = normalizeImportTags(importBatchTags.filter(x => String(x) !== tag));
+          renderImportBatchTags();
+        });
+      });
+    }
+
+    function updateGlobalTagOptions(tag) {
+      const value = String(tag || '').trim();
+      if (!value) return;
+      if (!globalTags.some(item => String(item).toLowerCase() === value.toLowerCase())) {
+        globalTags = globalTags.concat([value]).sort((a, b) => String(a).localeCompare(String(b), 'zh-CN'));
+        els.allTagsList.innerHTML = globalTags.map(item => `<option value="${item}"></option>`).join('');
+      }
     }
 
     function renderImportJob(job) {
@@ -1651,6 +1733,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {
           source_rel_path: item.source_rel_path,
           selected: !!(checkbox && checkbox.checked),
+          tags: normalizeImportTags(importBatchTags),
           year_tag: yearInput ? yearInput.value.trim() : (item.year_tag || item.proposed_year_tag || ''),
           target_filename: input ? input.value.trim() : (item.target_filename || item.proposed_filename || ''),
         };
@@ -1785,6 +1868,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
     });
     els.importBtn.addEventListener('click', openImportModal);
+    els.importBatchTagAddBtn.addEventListener('click', () => {
+      const value = els.importBatchTagInput ? String(els.importBatchTagInput.value || '').trim() : '';
+      if (!value) return;
+      importBatchTags = normalizeImportTags([...(importBatchTags || []), value]);
+      updateGlobalTagOptions(value);
+      if (els.importBatchTagInput) els.importBatchTagInput.value = '';
+      renderImportBatchTags();
+    });
+    els.importBatchTagInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      els.importBatchTagAddBtn.click();
+    });
     els.closeImportBtn.addEventListener('click', closeImportModal);
     els.importModal.addEventListener('click', (event) => {
       if (event.target === els.importModal) closeImportModal();
@@ -1986,6 +2082,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         planned: List[tuple[Path, str]] = []
         seen_targets: set[str] = set()
         style_year_tags: Dict[str, set[str]] = {}
+        style_extra_tags: Dict[str, set[str]] = {}
         for item in selected_items:
             prepared = prepared_items.get(item.source_rel_path)
             if prepared is None:
@@ -2011,6 +2108,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             style_code = filename_to_style_code(target_name).strip()
             if year_tag and style_code:
                 style_year_tags.setdefault(style_code, set()).add(year_tag)
+            import_tags = _normalize_import_tags(item.tags)
+            if import_tags and style_code:
+                style_extra_tags.setdefault(style_code, set()).update(import_tags)
             planned.append((src, target_name))
 
         imported = 0
@@ -2022,6 +2122,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for style_code, year_tags in style_year_tags.items():
             if year_tags:
                 catalog_store.add_product_tags(style_code, sorted(year_tags))
+        for style_code, import_tags in style_extra_tags.items():
+            if import_tags:
+                catalog_store.add_product_tags(style_code, sorted(import_tags))
         with catalog_import_lock:
             job = catalog_import_jobs.get(payload.job_id)
             if job is not None:
