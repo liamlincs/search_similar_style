@@ -227,6 +227,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     pattern_code_boost_enabled = bool(search_cfg.get("pattern_code_boost_enabled", False))
     pattern_code_boost_weight = float(search_cfg.get("pattern_code_boost_weight", 0.08))
     pattern_code_boost_topn = int(search_cfg.get("pattern_code_boost_topn", 24))
+    checker_consistency_enabled = bool(search_cfg.get("checker_consistency_enabled", False))
+    checker_query_threshold = float(search_cfg.get("checker_query_threshold", 0.12))
+    checker_boost_weight = float(search_cfg.get("checker_boost_weight", 0.28))
+    checker_stripe_penalty_weight = float(search_cfg.get("checker_stripe_penalty_weight", 0.18))
+    checker_apply_topn = int(search_cfg.get("checker_apply_topn", 160))
+    checker_code_boost_weight = float(search_cfg.get("checker_code_boost_weight", 0.12))
+    checker_code_boost_topn = int(search_cfg.get("checker_code_boost_topn", 24))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1028,6 +1035,61 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
 
+    def _extract_checker_profile(path: Path, grid: int = 10) -> Dict[str, float] | None:
+        try:
+            with Image.open(path) as im0:
+                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+        except Exception:
+            return None
+        if rgb.ndim != 3 or rgb.shape[0] < 32 or rgb.shape[1] < 32:
+            return None
+        h, w = rgb.shape[:2]
+        gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+
+        x0 = int(w * 0.12)
+        x1 = int(w * 0.88)
+        y0 = int(h * 0.06)
+        y1 = int(h * 0.92)
+        central = gray[y0:y1, x0:x1]
+        if central.size < 64:
+            central = gray
+            x0, y0 = 0, 0
+
+        dark = central < 105
+        if int(dark.sum()) >= 24:
+            ys, xs = np.where(dark)
+            px = max(4, int((xs.max() - xs.min() + 1) * 0.15))
+            py = max(4, int((ys.max() - ys.min() + 1) * 0.15))
+            bx0 = max(0, x0 + int(xs.min()) - px)
+            bx1 = min(w, x0 + int(xs.max()) + px + 1)
+            by0 = max(0, y0 + int(ys.min()) - py)
+            by1 = min(h, y0 + int(ys.max()) + py + 1)
+            crop = gray[by0:by1, bx0:bx1]
+        else:
+            crop = central
+        if crop.size < 64:
+            return None
+
+        patch = Image.fromarray(np.clip(crop, 0, 255).astype(np.uint8), mode="L").resize((grid, grid), Image.BILINEAR)
+        arr = np.asarray(patch, dtype=np.float32)
+        contrast = min(1.0, float(arr.std()) / 64.0)
+        if contrast < 0.08:
+            return {"checker": 0.0, "stripe": 0.0, "contrast": contrast}
+
+        med = float(np.median(arr))
+        bits = arr > med
+        alt_x = float(np.mean(bits[:, 1:] != bits[:, :-1])) if grid > 1 else 0.0
+        alt_y = float(np.mean(bits[1:, :] != bits[:-1, :])) if grid > 1 else 0.0
+        checker = min(alt_x, alt_y) * contrast
+        stripe = max(0.0, abs(alt_x - alt_y)) * contrast
+        return {
+            "checker": float(checker),
+            "stripe": float(stripe),
+            "contrast": float(contrast),
+            "alt_x": float(alt_x),
+            "alt_y": float(alt_y),
+        }
+
     def _extract_phash_bits(path: Path, size: int = 32, keep: int = 8) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -1158,6 +1220,46 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             boosts[str(code).strip().upper()] = float(pattern_code_boost_weight) * max(0.0, sim / max_sim)
         return boosts
 
+    def _apply_checker_consistency(
+        ranked: List[tuple[str, float]],
+        query_profile: Dict[str, float] | None,
+    ) -> tuple[List[tuple[str, float]], Dict[str, float]]:
+        if not ranked or not query_profile:
+            return ranked, {}
+        q_checker = float(query_profile.get("checker", 0.0))
+        if q_checker < checker_query_threshold:
+            return ranked, {}
+        head_n = min(len(ranked), max(1, checker_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        adjusted: List[tuple[str, float]] = []
+        code_best: Dict[str, float] = {}
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            prof = checker_profile_cache.get(file_name)
+            if not prof:
+                adjusted.append((name, score))
+                continue
+            c_checker = float(prof.get("checker", 0.0))
+            c_stripe = float(prof.get("stripe", 0.0))
+            delta = checker_boost_weight * c_checker - checker_stripe_penalty_weight * max(0.0, c_stripe - c_checker)
+            adjusted.append((name, float(score) + float(delta)))
+            code = filename_to_style_code(file_name)
+            prev = code_best.get(code)
+            if prev is None or c_checker > prev:
+                code_best[code] = c_checker
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+
+        if not code_best:
+            return adjusted + tail, {}
+        max_checker = max(code_best.values()) + 1e-6
+        boosts: Dict[str, float] = {}
+        for code, strength in code_best.items():
+            if strength <= 0.0:
+                continue
+            boosts[str(code).strip().upper()] = checker_code_boost_weight * (strength / max_checker)
+        return adjusted + tail, boosts
+
     def _apply_phash_consistency(
         ranked: List[tuple[str, float]],
         query_bits: np.ndarray | None,
@@ -1201,6 +1303,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     fg_mask_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
     pattern_sig_cache: Dict[str, np.ndarray] = {}
+    checker_profile_cache: Dict[str, Dict[str, float]] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
@@ -1242,6 +1345,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if pv is not None:
                 pattern_sig_cache[file_name] = pv
         logging.info("api preloaded pattern cache: %d", len(pattern_sig_cache))
+    if checker_consistency_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            cp = _extract_checker_profile(fp, grid=10)
+            if cp is not None:
+                checker_profile_cache[file_name] = cp
+        logging.info("api preloaded checker cache: %d", len(checker_profile_cache))
     if phash_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -2561,6 +2674,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             scene_text_tokens: List[str] = []
+            checker_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -2782,6 +2896,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            if checker_consistency_enabled:
+                q_checker_profile = _extract_checker_profile(query_path, grid=10)
+                if q_checker_profile:
+                    checker_debug = (
+                        f"{float(q_checker_profile.get('checker', 0.0)):.3f}/"
+                        f"{float(q_checker_profile.get('stripe', 0.0)):.3f}"
+                    )
+                ranked_images, checker_code_boost = _apply_checker_consistency(ranked_images, q_checker_profile)
+                if checker_code_boost:
+                    code_prior_boost = dict(code_prior_boost)
+                    for code_key, boost in checker_code_boost.items():
+                        code_prior_boost[code_key] = code_prior_boost.get(code_key, 0.0) + float(boost)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
+                    )
             if phash_enabled:
                 q_bits = _extract_phash_bits(query_path, size=32, keep=8)
                 if q_bits is not None:
@@ -2874,7 +3012,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -2882,6 +3020,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             t_post,
             second_pass_used,
             use_strip_mode,
+            checker_debug,
             ",".join(scene_text_tokens[:6]),
             time.perf_counter() - t_all,
         )
