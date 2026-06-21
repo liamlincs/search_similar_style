@@ -344,6 +344,21 @@ def search_topk_images(
     return [(names[i], float(sims[i])) for i in idx]
 
 
+def merge_ranked_image_lists(
+    primary: List[Tuple[str, float]],
+    secondary: List[Tuple[str, float]],
+    secondary_weight: float = 0.9,
+) -> List[Tuple[str, float]]:
+    merged: Dict[str, float] = {}
+    for name, score in primary:
+        merged[name] = max(float(merged.get(name, -1e9)), float(score))
+    w = max(0.0, float(secondary_weight))
+    for name, score in secondary:
+        blended = float(score) * w
+        merged[name] = max(float(merged.get(name, -1e9)), blended)
+    return sorted(merged.items(), key=lambda x: x[1], reverse=True)
+
+
 def filename_to_style_code(img_name: str) -> str:
     base = img_name.split("@", 1)[0]
     stem = Path(base).stem

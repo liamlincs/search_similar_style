@@ -131,11 +131,19 @@
     "result_image_max_edge": 640,
     "result_image_quality": 80,
     "feature_backend": "clip",
+    "secondary_feature_backend": "hybrid",
+    "secondary_recall_weight": 0.94,
     "hybrid_weights": {
       "clip": 0.8,
       "shape": 0.1,
       "color": 0.05,
       "stripe": 0.05
+    },
+    "secondary_hybrid_weights": {
+      "clip": 0.5,
+      "shape": 0.3,
+      "color": 0.1,
+      "stripe": 0.1
     }
   }
 }

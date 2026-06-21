@@ -39,6 +39,7 @@ from search_similar_return_code import (
     build_label_memory_prior_from_refs,
     filename_to_style_code,
     merge_scene_text_candidates,
+    merge_ranked_image_lists,
     precompute_label_memory_refs,
     precompute_rerank_candidate_cache,
     precompute_scene_text_index,
@@ -185,6 +186,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     w_shape = float(hybrid_weights.get("shape", 0.30))
     w_color = float(hybrid_weights.get("color", 0.15))
     w_stripe = float(hybrid_weights.get("stripe", 0.10))
+    secondary_feature_backend = str(search_cfg.get("secondary_feature_backend", "")).strip().lower()
+    secondary_hybrid_weights = search_cfg.get("secondary_hybrid_weights", {})
+    secondary_w_clip = float(secondary_hybrid_weights.get("clip", w_clip))
+    secondary_w_shape = float(secondary_hybrid_weights.get("shape", w_shape))
+    secondary_w_color = float(secondary_hybrid_weights.get("color", w_color))
+    secondary_w_stripe = float(secondary_hybrid_weights.get("stripe", w_stripe))
+    secondary_recall_weight = float(search_cfg.get("secondary_recall_weight", 0.92))
     feature_cache_enabled = bool(search_cfg.get("feature_cache_enabled", True))
     db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
     recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
@@ -294,6 +302,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         db_feature_dtype=db_feature_dtype,
     )
     logging.info("api preloaded db: %d items", len(names))
+    secondary_names: List[str] = []
+    secondary_feats: np.ndarray | None = None
+    if secondary_feature_backend and secondary_feature_backend != feature_backend:
+        secondary_names, secondary_feats = build_feature_db_with_cache(
+            standard_dir,
+            standard_pattern,
+            secondary_feature_backend,
+            image_exts,
+            secondary_w_clip,
+            secondary_w_shape,
+            secondary_w_color,
+            secondary_w_stripe,
+            standard_multicrop=standard_multicrop,
+            standard_crop_ratio=standard_crop_ratio,
+            use_cache=feature_cache_enabled,
+            db_feature_dtype=db_feature_dtype,
+        )
+        logging.info(
+            "api preloaded secondary db: backend=%s items=%d",
+            secondary_feature_backend,
+            len(secondary_names),
+        )
     rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
     if rerank_enabled and preload_rerank_candidate_cache:
         t0 = time.perf_counter()
@@ -2469,6 +2499,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     query_component_views=pass_query_component_views,
                     query_view_consensus_weight=pass_query_view_consensus_weight,
                 )
+                if secondary_feature_backend and secondary_feats is not None and len(secondary_names) == len(secondary_feats):
+                    ranked_secondary = search_topk_images(
+                        query_path,
+                        secondary_names,
+                        secondary_feats,
+                        image_topk,
+                        secondary_feature_backend,
+                        secondary_w_clip,
+                        secondary_w_shape,
+                        secondary_w_color,
+                        secondary_w_stripe,
+                        query_multicrop=query_multicrop,
+                        query_crop_ratio=query_crop_ratio,
+                        query_component_views=pass_query_component_views,
+                        query_view_consensus_weight=pass_query_view_consensus_weight,
+                    )
+                    ranked = merge_ranked_image_lists(
+                        ranked,
+                        ranked_secondary,
+                        secondary_weight=secondary_recall_weight,
+                    )
                 t_recall_local = time.perf_counter() - t0
                 if rerank_enabled:
                     t1 = time.perf_counter()
