@@ -1046,64 +1046,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         h, w = rgb.shape[:2]
         gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
 
-        x0 = int(w * 0.12)
-        x1 = int(w * 0.88)
-        y0 = int(h * 0.06)
-        y1 = int(h * 0.92)
-        central = gray[y0:y1, x0:x1]
-        if central.size < 64:
-            central = gray
-            x0, y0 = 0, 0
-
-        dark = central < 105
-        if int(dark.sum()) >= 24:
-            ys, xs = np.where(dark)
-            px = max(4, int((xs.max() - xs.min() + 1) * 0.15))
-            py = max(4, int((ys.max() - ys.min() + 1) * 0.15))
-            bx0 = max(0, x0 + int(xs.min()) - px)
-            bx1 = min(w, x0 + int(xs.max()) + px + 1)
-            by0 = max(0, y0 + int(ys.min()) - py)
-            by1 = min(h, y0 + int(ys.max()) + py + 1)
-            crop = gray[by0:by1, bx0:bx1]
-            crop_rgb = rgb[by0:by1, bx0:bx1]
-        else:
-            crop = central
-            crop_rgb = rgb[y0:y1, x0:x1]
-        if crop.size < 64:
-            return None
-
-        patch = Image.fromarray(np.clip(crop_rgb, 0, 255).astype(np.uint8), mode="RGB").resize((grid, grid), Image.BILINEAR)
-        cell_rgb = np.asarray(patch, dtype=np.float32)
-        arr = (0.299 * cell_rgb[..., 0] + 0.587 * cell_rgb[..., 1] + 0.114 * cell_rgb[..., 2]).astype(np.float32)
-        chroma = (cell_rgb.max(axis=-1) - cell_rgb.min(axis=-1)).astype(np.float32)
-        contrast = min(1.0, float(arr.std()) / 64.0)
-        if contrast < 0.08:
-            return {"checker": 0.0, "stripe": 0.0, "contrast": contrast, "bw_mix": 0.0}
-
-        dark_cut = min(120.0, float(np.quantile(arr, 0.35)))
-        light_cut = max(115.0, float(np.quantile(arr, 0.65)))
-        dark_cells = arr <= dark_cut
-        light_cells = (arr >= light_cut) & (chroma <= 42.0)
-        dark_ratio = float(np.mean(dark_cells))
-        light_ratio = float(np.mean(light_cells))
-        neutral_light_ratio = float(np.mean(chroma[arr >= light_cut] <= 42.0)) if np.any(arr >= light_cut) else 0.0
-        bw_mix = min(1.0, 2.0 * min(dark_ratio, light_ratio))
-        if dark_ratio < 0.14 or light_ratio < 0.14 or neutral_light_ratio < 0.45:
-            return {
-                "checker": 0.0,
-                "stripe": 0.0,
-                "contrast": float(contrast),
-                "bw_mix": float(bw_mix),
-                "dark_ratio": float(dark_ratio),
-                "light_ratio": float(light_ratio),
-                "neutral_light_ratio": float(neutral_light_ratio),
-            }
-
-        med = float(np.median(arr))
-        bits = arr > med
-        alt_x = float(np.mean(bits[:, 1:] != bits[:, :-1])) if grid > 1 else 0.0
-        alt_y = float(np.mean(bits[1:, :] != bits[:-1, :])) if grid > 1 else 0.0
-
         def _component_count(mask: np.ndarray) -> int:
             seen = np.zeros(mask.shape, dtype=bool)
             count = 0
@@ -1126,27 +1068,115 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             stack.append((ny, nx))
             return count
 
-        dark_components = _component_count(dark_cells)
-        light_components = _component_count(light_cells)
-        component_factor = min(1.0, dark_components / 4.0) * min(1.0, light_components / 3.0)
-        if dark_components < 3 or light_components < 2:
-            component_factor = 0.0
+        def _score_crop(crop_rgb: np.ndarray) -> Dict[str, float] | None:
+            if crop_rgb.ndim != 3 or crop_rgb.shape[0] < 24 or crop_rgb.shape[1] < 24:
+                return None
+            patch = Image.fromarray(np.clip(crop_rgb, 0, 255).astype(np.uint8), mode="RGB").resize((grid, grid), Image.BILINEAR)
+            cell_rgb = np.asarray(patch, dtype=np.float32)
+            arr = (0.299 * cell_rgb[..., 0] + 0.587 * cell_rgb[..., 1] + 0.114 * cell_rgb[..., 2]).astype(np.float32)
+            chroma = (cell_rgb.max(axis=-1) - cell_rgb.min(axis=-1)).astype(np.float32)
+            contrast = min(1.0, float(arr.std()) / 64.0)
+            if contrast < 0.08:
+                return {"checker": 0.0, "stripe": 0.0, "contrast": contrast, "bw_mix": 0.0}
 
-        checker = min(alt_x, alt_y) * contrast * bw_mix * component_factor
-        stripe = max(0.0, abs(alt_x - alt_y)) * contrast * bw_mix
-        return {
-            "checker": float(checker),
-            "stripe": float(stripe),
-            "contrast": float(contrast),
-            "bw_mix": float(bw_mix),
-            "dark_ratio": float(dark_ratio),
-            "light_ratio": float(light_ratio),
-            "dark_components": float(dark_components),
-            "light_components": float(light_components),
-            "component_factor": float(component_factor),
-            "alt_x": float(alt_x),
-            "alt_y": float(alt_y),
-        }
+            dark_cut = min(120.0, float(np.quantile(arr, 0.35)))
+            light_cut = max(112.0, float(np.quantile(arr, 0.65)))
+            dark_cells = arr <= dark_cut
+            light_cells = (arr >= light_cut) & (chroma <= 48.0)
+            dark_ratio = float(np.mean(dark_cells))
+            light_ratio = float(np.mean(light_cells))
+            neutral_light_ratio = float(np.mean(chroma[arr >= light_cut] <= 48.0)) if np.any(arr >= light_cut) else 0.0
+            bw_mix = min(1.0, 2.0 * min(dark_ratio, light_ratio))
+            if dark_ratio < 0.12 or light_ratio < 0.12 or neutral_light_ratio < 0.35:
+                return {
+                    "checker": 0.0,
+                    "stripe": 0.0,
+                    "contrast": float(contrast),
+                    "bw_mix": float(bw_mix),
+                    "dark_ratio": float(dark_ratio),
+                    "light_ratio": float(light_ratio),
+                    "neutral_light_ratio": float(neutral_light_ratio),
+                }
+
+            med = float(np.median(arr))
+            bits = arr > med
+            alt_x = float(np.mean(bits[:, 1:] != bits[:, :-1])) if grid > 1 else 0.0
+            alt_y = float(np.mean(bits[1:, :] != bits[:-1, :])) if grid > 1 else 0.0
+            dark_components = _component_count(dark_cells)
+            light_components = _component_count(light_cells)
+            component_factor = min(1.0, dark_components / 3.0) * min(1.0, light_components / 2.0)
+            if dark_components < 2 or light_components < 2:
+                component_factor = 0.0
+
+            checker = min(alt_x, alt_y) * contrast * bw_mix * component_factor
+            stripe = max(0.0, abs(alt_x - alt_y)) * contrast * bw_mix
+            return {
+                "checker": float(checker),
+                "stripe": float(stripe),
+                "contrast": float(contrast),
+                "bw_mix": float(bw_mix),
+                "dark_ratio": float(dark_ratio),
+                "light_ratio": float(light_ratio),
+                "dark_components": float(dark_components),
+                "light_components": float(light_components),
+                "component_factor": float(component_factor),
+                "alt_x": float(alt_x),
+                "alt_y": float(alt_y),
+            }
+
+        windows: List[tuple[int, int, int, int]] = []
+        windows.append((int(w * 0.12), int(h * 0.06), int(w * 0.88), int(h * 0.92)))
+        windows.append((int(w * 0.20), int(h * 0.12), int(w * 0.80), int(h * 0.78)))
+
+        central = gray[int(h * 0.06) : int(h * 0.92), int(w * 0.12) : int(w * 0.88)]
+        dark = central < 105
+        if int(dark.sum()) >= 24:
+            ys, xs = np.where(dark)
+            px = max(4, int((xs.max() - xs.min() + 1) * 0.15))
+            py = max(4, int((ys.max() - ys.min() + 1) * 0.15))
+            cx0 = int(w * 0.12)
+            cy0 = int(h * 0.06)
+            windows.append((
+                max(0, cx0 + int(xs.min()) - px),
+                max(0, cy0 + int(ys.min()) - py),
+                min(w, cx0 + int(xs.max()) + px + 1),
+                min(h, cy0 + int(ys.max()) + py + 1),
+            ))
+
+        win_w = max(48, int(w * 0.42))
+        win_h = max(48, int(h * 0.42))
+        for cy in (0.22, 0.38, 0.54):
+            for cx in (0.28, 0.50, 0.72):
+                x0 = max(0, min(w - win_w, int(w * cx - win_w / 2)))
+                y0 = max(0, min(h - win_h, int(h * cy - win_h / 2)))
+                windows.append((x0, y0, x0 + win_w, y0 + win_h))
+
+        best: Dict[str, float] | None = None
+        seen = set()
+        for x0, y0, x1, y1 in windows:
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(w, x1), min(h, y1)
+            if x1 - x0 < 24 or y1 - y0 < 24:
+                continue
+            key = (x0, y0, x1, y1)
+            if key in seen:
+                continue
+            seen.add(key)
+            prof = _score_crop(rgb[y0:y1, x0:x1])
+            if prof is None:
+                continue
+            prof["window_area"] = float((x1 - x0) * (y1 - y0)) / float(max(1, w * h))
+            if best is None or (
+                float(prof.get("checker", 0.0)),
+                float(prof.get("bw_mix", 0.0)),
+                float(prof.get("contrast", 0.0)),
+            ) > (
+                float(best.get("checker", 0.0)),
+                float(best.get("bw_mix", 0.0)),
+                float(best.get("contrast", 0.0)),
+            ):
+                best = prof
+        return best
 
     def _extract_phash_bits(path: Path, size: int = 32, keep: int = 8) -> np.ndarray | None:
         try:
