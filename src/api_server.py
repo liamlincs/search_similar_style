@@ -1239,17 +1239,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _apply_checker_consistency(
         ranked: List[tuple[str, float]],
         query_profile: Dict[str, float] | None,
-    ) -> tuple[List[tuple[str, float]], Dict[str, float]]:
+    ) -> tuple[List[tuple[str, float]], Dict[str, float], str]:
         if not ranked or not query_profile:
-            return ranked, {}
+            return ranked, {}, ""
         q_checker = float(query_profile.get("checker", 0.0))
         if q_checker < checker_query_threshold:
-            return ranked, {}
+            return ranked, {}, ""
         head_n = min(len(ranked), max(1, checker_apply_topn))
         head = ranked[:head_n]
         tail = ranked[head_n:]
         adjusted: List[tuple[str, float]] = []
         code_best: Dict[str, float] = {}
+        debug_items: List[str] = []
         for name, score in head:
             file_name = name.split("@", 1)[0]
             prof = checker_profile_cache.get(file_name)
@@ -1264,17 +1265,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             prev = code_best.get(code)
             if prev is None or c_checker > prev:
                 code_best[code] = c_checker
+            if len(debug_items) < 6:
+                debug_items.append(f"{code}:{c_checker:.3f}/{c_stripe:.3f}/{delta:.3f}")
         adjusted.sort(key=lambda x: x[1], reverse=True)
+        debug_text = ",".join(debug_items)
 
         if not code_best:
-            return adjusted + tail, {}
+            return adjusted + tail, {}, debug_text
         max_checker = max(code_best.values()) + 1e-6
         boosts: Dict[str, float] = {}
         for code, strength in code_best.items():
             if strength <= 0.0:
                 continue
             boosts[str(code).strip().upper()] = checker_code_boost_weight * (strength / max_checker)
-        return adjusted + tail, boosts
+        return adjusted + tail, boosts, debug_text
 
     def _apply_phash_consistency(
         ranked: List[tuple[str, float]],
@@ -2691,6 +2695,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             scene_text_tokens: List[str] = []
             checker_debug = ""
+            checker_candidates_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -2920,7 +2925,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         f"{float(q_checker_profile.get('stripe', 0.0)):.3f}/"
                         f"{float(q_checker_profile.get('bw_mix', 0.0)):.3f}"
                     )
-                ranked_images, checker_code_boost = _apply_checker_consistency(ranked_images, q_checker_profile)
+                ranked_images, checker_code_boost, checker_candidates_debug = _apply_checker_consistency(
+                    ranked_images,
+                    q_checker_profile,
+                )
                 if checker_code_boost:
                     code_prior_boost = dict(code_prior_boost)
                     for code_key, boost in checker_code_boost.items():
@@ -3029,7 +3037,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -3038,6 +3046,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             second_pass_used,
             use_strip_mode,
             checker_debug,
+            checker_candidates_debug,
             ",".join(scene_text_tokens[:6]),
             time.perf_counter() - t_all,
         )
