@@ -1074,18 +1074,34 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         arr = np.asarray(patch, dtype=np.float32)
         contrast = min(1.0, float(arr.std()) / 64.0)
         if contrast < 0.08:
-            return {"checker": 0.0, "stripe": 0.0, "contrast": contrast}
+            return {"checker": 0.0, "stripe": 0.0, "contrast": contrast, "bw_mix": 0.0}
+
+        dark_ratio = float(np.mean(arr < 95.0))
+        light_ratio = float(np.mean(arr > 165.0))
+        bw_mix = min(1.0, 2.0 * min(dark_ratio, light_ratio))
+        if dark_ratio < 0.14 or light_ratio < 0.14:
+            return {
+                "checker": 0.0,
+                "stripe": 0.0,
+                "contrast": float(contrast),
+                "bw_mix": float(bw_mix),
+                "dark_ratio": float(dark_ratio),
+                "light_ratio": float(light_ratio),
+            }
 
         med = float(np.median(arr))
         bits = arr > med
         alt_x = float(np.mean(bits[:, 1:] != bits[:, :-1])) if grid > 1 else 0.0
         alt_y = float(np.mean(bits[1:, :] != bits[:-1, :])) if grid > 1 else 0.0
-        checker = min(alt_x, alt_y) * contrast
-        stripe = max(0.0, abs(alt_x - alt_y)) * contrast
+        checker = min(alt_x, alt_y) * contrast * bw_mix
+        stripe = max(0.0, abs(alt_x - alt_y)) * contrast * bw_mix
         return {
             "checker": float(checker),
             "stripe": float(stripe),
             "contrast": float(contrast),
+            "bw_mix": float(bw_mix),
+            "dark_ratio": float(dark_ratio),
+            "light_ratio": float(light_ratio),
             "alt_x": float(alt_x),
             "alt_y": float(alt_y),
         }
@@ -2901,7 +2917,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if q_checker_profile:
                     checker_debug = (
                         f"{float(q_checker_profile.get('checker', 0.0)):.3f}/"
-                        f"{float(q_checker_profile.get('stripe', 0.0)):.3f}"
+                        f"{float(q_checker_profile.get('stripe', 0.0)):.3f}/"
+                        f"{float(q_checker_profile.get('bw_mix', 0.0)):.3f}"
                     )
                 ranked_images, checker_code_boost = _apply_checker_consistency(ranked_images, q_checker_profile)
                 if checker_code_boost:
