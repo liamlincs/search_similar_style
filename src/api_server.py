@@ -1103,7 +1103,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         bits = arr > med
         alt_x = float(np.mean(bits[:, 1:] != bits[:, :-1])) if grid > 1 else 0.0
         alt_y = float(np.mean(bits[1:, :] != bits[:-1, :])) if grid > 1 else 0.0
-        checker = min(alt_x, alt_y) * contrast * bw_mix
+
+        def _component_count(mask: np.ndarray) -> int:
+            seen = np.zeros(mask.shape, dtype=bool)
+            count = 0
+            hh, ww = mask.shape
+            for yy in range(hh):
+                for xx in range(ww):
+                    if seen[yy, xx] or not bool(mask[yy, xx]):
+                        continue
+                    count += 1
+                    stack = [(yy, xx)]
+                    seen[yy, xx] = True
+                    while stack:
+                        cy, cx = stack.pop()
+                        for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                            if ny < 0 or ny >= hh or nx < 0 or nx >= ww:
+                                continue
+                            if seen[ny, nx] or not bool(mask[ny, nx]):
+                                continue
+                            seen[ny, nx] = True
+                            stack.append((ny, nx))
+            return count
+
+        dark_components = _component_count(dark_cells)
+        light_components = _component_count(light_cells)
+        component_factor = min(1.0, dark_components / 4.0) * min(1.0, light_components / 3.0)
+        if dark_components < 3 or light_components < 2:
+            component_factor = 0.0
+
+        checker = min(alt_x, alt_y) * contrast * bw_mix * component_factor
         stripe = max(0.0, abs(alt_x - alt_y)) * contrast * bw_mix
         return {
             "checker": float(checker),
@@ -1112,6 +1141,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "bw_mix": float(bw_mix),
             "dark_ratio": float(dark_ratio),
             "light_ratio": float(light_ratio),
+            "dark_components": float(dark_components),
+            "light_components": float(light_components),
+            "component_factor": float(component_factor),
             "alt_x": float(alt_x),
             "alt_y": float(alt_y),
         }
@@ -1270,6 +1302,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             c_checker = float(prof.get("checker", 0.0))
             c_stripe = float(prof.get("stripe", 0.0))
             c_bw_mix = float(prof.get("bw_mix", 0.0))
+            c_dark_components = int(float(prof.get("dark_components", 0.0)))
+            c_light_components = int(float(prof.get("light_components", 0.0)))
             delta = checker_boost_weight * c_checker - checker_stripe_penalty_weight * max(0.0, c_stripe - c_checker)
             adjusted.append((name, float(score) + float(delta)))
             code = filename_to_style_code(file_name)
@@ -1277,7 +1311,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if prev is None or c_checker > prev:
                 code_best[code] = c_checker
             if len(debug_items) < 6:
-                debug_items.append(f"{code}:{c_checker:.3f}/{c_stripe:.3f}/{c_bw_mix:.3f}/{delta:.3f}")
+                debug_items.append(
+                    f"{code}:{c_checker:.3f}/{c_stripe:.3f}/{c_bw_mix:.3f}/"
+                    f"{c_dark_components}x{c_light_components}/{delta:.3f}"
+                )
         adjusted.sort(key=lambda x: x[1], reverse=True)
         debug_text = ",".join(debug_items)
 
