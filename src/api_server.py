@@ -1065,21 +1065,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             by0 = max(0, y0 + int(ys.min()) - py)
             by1 = min(h, y0 + int(ys.max()) + py + 1)
             crop = gray[by0:by1, bx0:bx1]
+            crop_rgb = rgb[by0:by1, bx0:bx1]
         else:
             crop = central
+            crop_rgb = rgb[y0:y1, x0:x1]
         if crop.size < 64:
             return None
 
-        patch = Image.fromarray(np.clip(crop, 0, 255).astype(np.uint8), mode="L").resize((grid, grid), Image.BILINEAR)
-        arr = np.asarray(patch, dtype=np.float32)
+        patch = Image.fromarray(np.clip(crop_rgb, 0, 255).astype(np.uint8), mode="RGB").resize((grid, grid), Image.BILINEAR)
+        cell_rgb = np.asarray(patch, dtype=np.float32)
+        arr = (0.299 * cell_rgb[..., 0] + 0.587 * cell_rgb[..., 1] + 0.114 * cell_rgb[..., 2]).astype(np.float32)
+        chroma = (cell_rgb.max(axis=-1) - cell_rgb.min(axis=-1)).astype(np.float32)
         contrast = min(1.0, float(arr.std()) / 64.0)
         if contrast < 0.08:
             return {"checker": 0.0, "stripe": 0.0, "contrast": contrast, "bw_mix": 0.0}
 
-        dark_ratio = float(np.mean(arr < 95.0))
-        light_ratio = float(np.mean(arr > 165.0))
+        dark_cut = min(120.0, float(np.quantile(arr, 0.35)))
+        light_cut = max(115.0, float(np.quantile(arr, 0.65)))
+        dark_cells = arr <= dark_cut
+        light_cells = (arr >= light_cut) & (chroma <= 42.0)
+        dark_ratio = float(np.mean(dark_cells))
+        light_ratio = float(np.mean(light_cells))
+        neutral_light_ratio = float(np.mean(chroma[arr >= light_cut] <= 42.0)) if np.any(arr >= light_cut) else 0.0
         bw_mix = min(1.0, 2.0 * min(dark_ratio, light_ratio))
-        if dark_ratio < 0.14 or light_ratio < 0.14:
+        if dark_ratio < 0.14 or light_ratio < 0.14 or neutral_light_ratio < 0.45:
             return {
                 "checker": 0.0,
                 "stripe": 0.0,
@@ -1087,6 +1096,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "bw_mix": float(bw_mix),
                 "dark_ratio": float(dark_ratio),
                 "light_ratio": float(light_ratio),
+                "neutral_light_ratio": float(neutral_light_ratio),
             }
 
         med = float(np.median(arr))
@@ -1259,6 +1269,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 continue
             c_checker = float(prof.get("checker", 0.0))
             c_stripe = float(prof.get("stripe", 0.0))
+            c_bw_mix = float(prof.get("bw_mix", 0.0))
             delta = checker_boost_weight * c_checker - checker_stripe_penalty_weight * max(0.0, c_stripe - c_checker)
             adjusted.append((name, float(score) + float(delta)))
             code = filename_to_style_code(file_name)
@@ -1266,7 +1277,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if prev is None or c_checker > prev:
                 code_best[code] = c_checker
             if len(debug_items) < 6:
-                debug_items.append(f"{code}:{c_checker:.3f}/{c_stripe:.3f}/{delta:.3f}")
+                debug_items.append(f"{code}:{c_checker:.3f}/{c_stripe:.3f}/{c_bw_mix:.3f}/{delta:.3f}")
         adjusted.sort(key=lambda x: x[1], reverse=True)
         debug_text = ",".join(debug_items)
 
