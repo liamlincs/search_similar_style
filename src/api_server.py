@@ -224,6 +224,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     pattern_consistency_enabled = bool(search_cfg.get("pattern_consistency_enabled", False))
     pattern_consistency_weight = float(search_cfg.get("pattern_consistency_weight", 0.16))
     pattern_consistency_apply_topn = int(search_cfg.get("pattern_consistency_apply_topn", 256))
+    pattern_code_boost_enabled = bool(search_cfg.get("pattern_code_boost_enabled", False))
+    pattern_code_boost_weight = float(search_cfg.get("pattern_code_boost_weight", 0.08))
+    pattern_code_boost_topn = int(search_cfg.get("pattern_code_boost_topn", 24))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1128,6 +1131,32 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             adjusted.append((name, float(score) + w * sim))
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted + tail
+
+    def _build_pattern_code_boost(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> Dict[str, float]:
+        if (not pattern_code_boost_enabled) or (not ranked) or query_sig is None:
+            return {}
+        head_n = min(len(ranked), max(1, pattern_code_boost_topn))
+        code_best: Dict[str, float] = {}
+        for name, _score in ranked[:head_n]:
+            file_name = name.split("@", 1)[0]
+            cs = pattern_sig_cache.get(file_name)
+            if cs is None:
+                continue
+            sim = float(query_sig @ cs)
+            code = filename_to_style_code(file_name)
+            prev = code_best.get(code)
+            if prev is None or sim > prev:
+                code_best[code] = sim
+        if not code_best:
+            return {}
+        max_sim = max(code_best.values()) + 1e-6
+        boosts: Dict[str, float] = {}
+        for code, sim in code_best.items():
+            boosts[str(code).strip().upper()] = float(pattern_code_boost_weight) * max(0.0, sim / max_sim)
+        return boosts
 
     def _apply_phash_consistency(
         ranked: List[tuple[str, float]],
@@ -2532,7 +2561,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             scene_text_tokens: List[str] = []
-            code_prior_boost = (
+            base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
                     label_memory_refs,
@@ -2542,6 +2571,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if label_memory_enabled
                 else {}
             )
+            code_prior_boost = dict(base_code_prior_boost)
 
             def _run_search_pass(
                 cand_multiplier: int,
@@ -2735,6 +2765,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_pattern_sig = _extract_pattern_sig(query_path, size=14)
                 if q_pattern_sig is not None:
                     ranked_images = _apply_pattern_consistency(ranked_images, q_pattern_sig)
+                    pattern_code_boost = _build_pattern_code_boost(ranked_images, q_pattern_sig)
+                    if pattern_code_boost:
+                        code_prior_boost = dict(base_code_prior_boost)
+                        for code_key, boost in pattern_code_boost.items():
+                            code_prior_boost[code_key] = code_prior_boost.get(code_key, 0.0) + float(boost)
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
