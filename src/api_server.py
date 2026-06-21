@@ -221,6 +221,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     stripe_consistency_enabled = bool(search_cfg.get("stripe_consistency_enabled", True))
     stripe_consistency_weight = float(search_cfg.get("stripe_consistency_weight", 0.12))
     stripe_consistency_apply_topn = int(search_cfg.get("stripe_consistency_apply_topn", 256))
+    pattern_consistency_enabled = bool(search_cfg.get("pattern_consistency_enabled", False))
+    pattern_consistency_weight = float(search_cfg.get("pattern_consistency_weight", 0.16))
+    pattern_consistency_apply_topn = int(search_cfg.get("pattern_consistency_apply_topn", 256))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -982,6 +985,46 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         fx = _fft_mag(proj_x, keep)
         return np.concatenate([fy, fx]).astype(np.float32)
 
+    def _extract_pattern_sig(path: Path, size: int = 14) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+        except Exception:
+            return None
+        gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+        h, w = gray.shape
+        if h < 32 or w < 32:
+            return None
+
+        fg = np.any(rgb < 240, axis=-1)
+        cut = min(int(h * 0.12), 120)
+        fg[:cut, :] = False
+        ys, xs = np.where(fg)
+        if ys.size >= 32:
+            y0, y1 = int(ys.min()), int(ys.max())
+            x0, x1 = int(xs.min()), int(xs.max())
+            bbox = gray[y0 : y1 + 1, x0 : x1 + 1]
+        else:
+            bbox = gray
+
+        ch = max(24, int(h * 0.72))
+        cw = max(24, int(w * 0.72))
+        cy0 = max(0, (h - ch) // 2)
+        cx0 = max(0, (w - cw) // 2)
+        center = gray[cy0 : cy0 + ch, cx0 : cx0 + cw]
+
+        def _norm_patch(arr: np.ndarray) -> np.ndarray:
+            patch = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="L").resize((size, size), Image.BILINEAR)
+            v = np.asarray(patch, dtype=np.float32)
+            v = (v - v.mean()) / (v.std() + 1e-6)
+            return v.reshape(-1)
+
+        v1 = _norm_patch(bbox)
+        v2 = _norm_patch(center)
+        v = np.concatenate([v1, v2]).astype(np.float32)
+        n = float(np.linalg.norm(v)) + 1e-8
+        return (v / n).astype(np.float32)
+
     def _extract_phash_bits(path: Path, size: int = 32, keep: int = 8) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -1064,6 +1107,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted + tail
 
+    def _apply_pattern_consistency(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> List[tuple[str, float]]:
+        if not ranked or query_sig is None:
+            return ranked
+        head_n = min(len(ranked), max(1, pattern_consistency_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        w = max(0.0, float(pattern_consistency_weight))
+        adjusted: List[tuple[str, float]] = []
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            cs = pattern_sig_cache.get(file_name)
+            if cs is None:
+                adjusted.append((name, score))
+                continue
+            sim = float(query_sig @ cs)
+            adjusted.append((name, float(score) + w * sim))
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted + tail
+
     def _apply_phash_consistency(
         ranked: List[tuple[str, float]],
         query_bits: np.ndarray | None,
@@ -1106,6 +1171,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
+    pattern_sig_cache: Dict[str, np.ndarray] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
@@ -1137,6 +1203,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if sv is not None:
                 stripe_sig_cache[file_name] = sv
         logging.info("api preloaded stripe cache: %d", len(stripe_sig_cache))
+    if pattern_consistency_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            pv = _extract_pattern_sig(fp, size=14)
+            if pv is not None:
+                pattern_sig_cache[file_name] = pv
+        logging.info("api preloaded pattern cache: %d", len(pattern_sig_cache))
     if phash_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -2643,6 +2719,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_stripe_sig = _extract_stripe_sig(query_path, keep=24)
                 if q_stripe_sig is not None:
                     ranked_images = _apply_stripe_consistency(ranked_images, q_stripe_sig)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
+                    )
+            if pattern_consistency_enabled:
+                q_pattern_sig = _extract_pattern_sig(query_path, size=14)
+                if q_pattern_sig is not None:
+                    ranked_images = _apply_pattern_consistency(ranked_images, q_pattern_sig)
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
