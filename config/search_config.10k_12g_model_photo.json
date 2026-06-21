@@ -124,12 +124,12 @@
     "db_feature_dtype": "float16",
     "result_image_max_edge": 640,
     "result_image_quality": 80,
-    "feature_backend": "hybrid",
+    "feature_backend": "clip",
     "hybrid_weights": {
-      "clip": 0.55,
-      "shape": 0.3,
-      "color": 0.15,
-      "stripe": 0.1
+      "clip": 0.8,
+      "shape": 0.1,
+      "color": 0.05,
+      "stripe": 0.05
     }
   }
 }
