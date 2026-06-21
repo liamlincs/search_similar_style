@@ -115,6 +115,12 @@ SEARCH_CONFIG=config/search_config.10k_12g_speed.json uvicorn src.api_server:app
 
 # 10k候选列表版（快 + 近似候选3个）
 SEARCH_CONFIG=config/search_config.10k_12g_candidates.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+
+# 10k模特图候选版（适合上身图）
+SEARCH_CONFIG=config/search_config.10k_12g_model_photo.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
+
+# 10k CPU轻量版（4核16G / 无GPU）
+SEARCH_CONFIG=config/search_config.10k_4c16g_cpu.json uvicorn src.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 说明：
