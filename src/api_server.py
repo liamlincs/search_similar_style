@@ -38,8 +38,10 @@ from search_similar_return_code import (
     build_feature_db_with_cache,
     build_label_memory_prior_from_refs,
     filename_to_style_code,
+    merge_scene_text_candidates,
     precompute_label_memory_refs,
     precompute_rerank_candidate_cache,
+    precompute_scene_text_index,
     rerank_candidates_with_model,
     search_topk_images,
     topk_style_codes,
@@ -222,6 +224,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     phash_enabled = bool(search_cfg.get("phash_enabled", True))
     phash_boost_weight = float(search_cfg.get("phash_boost_weight", 0.18))
     phash_apply_topn = int(search_cfg.get("phash_apply_topn", 256))
+    scene_text_hint_enabled = bool(search_cfg.get("scene_text_hint_enabled", False))
+    scene_text_min_token_len = int(search_cfg.get("scene_text_min_token_len", 4))
+    scene_text_seed_score_base = float(search_cfg.get("scene_text_seed_score_base", 0.88))
+    scene_text_boost_scale = float(search_cfg.get("scene_text_boost_scale", 0.18))
+    scene_text_max_candidates_per_token = int(search_cfg.get("scene_text_max_candidates_per_token", 64))
+    scene_text_max_injected = int(search_cfg.get("scene_text_max_injected", 24))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -304,6 +312,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
     if label_memory_enabled:
         logging.info("api preloaded label memory refs: %d", len(label_memory_refs))
+    scene_text_index: Dict[str, Any] | None = None
+    if scene_text_hint_enabled:
+        t0 = time.perf_counter()
+        scene_text_index = precompute_scene_text_index(
+            standard_dir=standard_dir,
+            pattern=standard_pattern,
+            exts=image_exts,
+            min_token_len=scene_text_min_token_len,
+            use_cache=True,
+        )
+        logging.info(
+            "api preloaded scene text index: %d images in %.2fs",
+            int(scene_text_index.get("total_images", 0)) if isinstance(scene_text_index, dict) else 0,
+            time.perf_counter() - t0,
+        )
     catalog_store = CatalogStore(catalog_db_path)
     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
     logging.info("catalog sync done: %s", sync_stats)
@@ -2402,6 +2425,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
+            scene_text_tokens: List[str] = []
             code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -2535,19 +2559,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     t_post += t2_post
                     second_pass_used = True
             if shape_consistency_enabled and q_shape is not None:
-                    ranked_images = _apply_shape_consistency(ranked_images, q_shape)
-                    rows = topk_style_codes(
-                        ranked_images,
-                        top_k,
-                        min_score=min_score,
-                        code_agg_top_n=code_agg_top_n,
-                        code_agg_alpha=code_agg_alpha,
-                        query_hint_code=query_hint_code,
-                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
-                        code_prior_boost=code_prior_boost,
-                        display_score_scale=display_score_scale,
-                        display_score_bias=display_score_bias,
-                    )
+                ranked_images = _apply_shape_consistency(ranked_images, q_shape)
+                rows = topk_style_codes(
+                    ranked_images,
+                    top_k,
+                    min_score=min_score,
+                    code_agg_top_n=code_agg_top_n,
+                    code_agg_alpha=code_agg_alpha,
+                    query_hint_code=query_hint_code,
+                    query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                    code_prior_boost=code_prior_boost,
+                    display_score_scale=display_score_scale,
+                    display_score_bias=display_score_bias,
+                )
             if mask_consistency_enabled:
                 q_mask_vec = _extract_fg_mask_vec(query_path, size=64)
                 if q_mask_vec is not None:
@@ -2584,6 +2608,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_bits = _extract_phash_bits(query_path, size=32, keep=8)
                 if q_bits is not None:
                     ranked_images = _apply_phash_consistency(ranked_images, q_bits)
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
+                    )
+            if scene_text_hint_enabled:
+                ranked_images, scene_text_tokens = merge_scene_text_candidates(
+                    ranked_images,
+                    query_path,
+                    scene_text_index,
+                    seed_score_base=scene_text_seed_score_base,
+                    boost_scale=scene_text_boost_scale,
+                    min_token_len=scene_text_min_token_len,
+                    include_components=True,
+                    max_candidates_per_token=scene_text_max_candidates_per_token,
+                    max_injected=scene_text_max_injected,
+                )
+                if scene_text_tokens:
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
@@ -2647,7 +2696,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -2655,6 +2704,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             t_post,
             second_pass_used,
             use_strip_mode,
+            ",".join(scene_text_tokens[:6]),
             time.perf_counter() - t_all,
         )
 

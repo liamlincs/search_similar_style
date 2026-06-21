@@ -1,11 +1,13 @@
 import argparse
+import difflib
 import json
 import logging
+import math
 import re
 import time
 import warnings
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -19,6 +21,7 @@ warnings.filterwarnings(
 )
 
 from clip_features import extract_feature_clip
+from extract_style_codes import extract_scene_text, extract_text_tokens
 from features import extract_feature, extract_garment_color_feature, extract_stripe_feature
 from reranker import LinearReranker, extract_modal_features, pair_features
 DEFAULT_CONFIG = Path("config/search_config.json")
@@ -120,6 +123,11 @@ def build_feature_db(
 def _feature_cache_path(standard_dir: Path, backend: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
     return Path("outputs") / f"feature_cache_{backend}_{safe}.npz"
+
+
+def _scene_text_cache_path(standard_dir: Path) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+    return Path("outputs") / f"scene_text_cache_{safe}.json"
 
 
 def _file_sig(p: Path) -> str:
@@ -376,6 +384,257 @@ def try_extract_query_style_code(query_img: Path) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _scene_text_views(query_img: Path, include_components: bool = True) -> List[Image.Image]:
+    q_img = Image.open(query_img).convert("RGB")
+    views = [q_img]
+    w, h = q_img.size
+    cw = max(32, int(w * 0.72))
+    ch = max(32, int(h * 0.72))
+    x0 = max(0, (w - cw) // 2)
+    y0 = max(0, (h - ch) // 2)
+    center = q_img.crop((x0, y0, x0 + cw, y0 + ch))
+    if center.size != q_img.size:
+        views.append(center)
+    if include_components:
+        views.extend(_foreground_component_views(q_img, max_components=2, min_area_ratio=0.03))
+    uniq: List[Image.Image] = []
+    seen = set()
+    for v in views:
+        key = (v.size[0], v.size[1], int(np.asarray(v).mean()))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(v)
+    return uniq
+
+
+def extract_query_scene_text_tokens(
+    query_img: Path,
+    min_token_len: int = 4,
+    include_components: bool = True,
+) -> List[str]:
+    tokens: List[str] = []
+    seen = set()
+    try:
+        root_logger = logging.getLogger()
+        prev_level = root_logger.level
+        try:
+            root_logger.setLevel(max(prev_level, logging.WARNING))
+            for view in _scene_text_views(query_img, include_components=include_components):
+                text = extract_scene_text(view)
+                for token in extract_text_tokens(text, min_len=min_token_len):
+                    if token in seen:
+                        continue
+                    seen.add(token)
+                    tokens.append(token)
+        finally:
+            root_logger.setLevel(prev_level)
+    except Exception:
+        return []
+    return tokens
+
+
+def precompute_scene_text_index(
+    standard_dir: Path,
+    pattern: str,
+    exts: List[str],
+    min_token_len: int = 4,
+    use_cache: bool = True,
+) -> Dict[str, Any]:
+    files = collect_images(standard_dir, pattern, exts)
+    if not files:
+        return {"image_tokens": {}, "token_to_images": {}, "token_idf": {}, "total_images": 0}
+
+    sigs = [_file_sig(p) for p in files]
+    cache_path = _scene_text_cache_path(standard_dir)
+    cache_key = json.dumps(
+        {
+            "version": 2,
+            "pattern": pattern,
+            "exts": list(exts),
+            "min_token_len": int(min_token_len),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    if use_cache and cache_path.exists():
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            if payload.get("cache_key") == cache_key and payload.get("file_sigs") == sigs:
+                image_tokens = {
+                    str(k): [str(x) for x in v]
+                    for k, v in dict(payload.get("image_tokens", {})).items()
+                }
+                token_to_images: Dict[str, List[str]] = {}
+                for image_name, toks in image_tokens.items():
+                    for tok in toks:
+                        token_to_images.setdefault(tok, []).append(image_name)
+                token_idf = {
+                    tok: float(val)
+                    for tok, val in dict(payload.get("token_idf", {})).items()
+                }
+                logging.info("scene text cache hit: %s (%d items)", cache_path, len(image_tokens))
+                return {
+                    "image_tokens": image_tokens,
+                    "token_to_images": token_to_images,
+                    "token_idf": token_idf,
+                    "total_images": len(image_tokens),
+                }
+        except Exception:
+            pass
+
+    image_tokens: Dict[str, List[str]] = {}
+    token_df: Dict[str, int] = {}
+    t0 = time.perf_counter()
+    for p in files:
+        try:
+            img = Image.open(p).convert("RGB")
+            tokens = extract_text_tokens(extract_scene_text(img, max_variants=1), min_len=min_token_len)
+        except Exception:
+            tokens = []
+        image_tokens[p.name] = tokens
+        for tok in set(tokens):
+            token_df[tok] = token_df.get(tok, 0) + 1
+
+    total = max(1, len(image_tokens))
+    token_idf = {
+        tok: float(math.log(1.0 + (float(total) / float(df))))
+        for tok, df in token_df.items()
+        if df > 0
+    }
+    if use_cache:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "cache_key": cache_key,
+                    "file_sigs": sigs,
+                    "image_tokens": image_tokens,
+                    "token_idf": token_idf,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        logging.info("scene text cache write: %s", cache_path)
+    token_to_images: Dict[str, List[str]] = {}
+    for image_name, toks in image_tokens.items():
+        for tok in toks:
+            token_to_images.setdefault(tok, []).append(image_name)
+    logging.info(
+        "scene text index built: %d images %d tokens in %.2fs",
+        len(image_tokens),
+        len(token_idf),
+        time.perf_counter() - t0,
+    )
+    return {
+        "image_tokens": image_tokens,
+        "token_to_images": token_to_images,
+        "token_idf": token_idf,
+        "total_images": len(image_tokens),
+    }
+
+
+def _match_scene_tokens(
+    query_token: str,
+    token_to_images: Dict[str, List[str]],
+    token_idf: Dict[str, float],
+    min_ratio: float = 0.78,
+    max_matches: int = 4,
+) -> List[Tuple[str, float]]:
+    if query_token in token_to_images:
+        return [(query_token, 1.0)]
+    out: List[Tuple[str, float]] = []
+    qlen = len(query_token)
+    for cand in token_to_images.keys():
+        clen = len(cand)
+        if abs(clen - qlen) > 3:
+            continue
+        ratio = 0.0
+        if qlen >= 6 and clen >= 6 and (query_token in cand or cand in query_token):
+            ratio = min(1.0, min(qlen, clen) / max(qlen, clen))
+        else:
+            ratio = difflib.SequenceMatcher(None, query_token, cand).ratio()
+        if ratio < min_ratio:
+            continue
+        out.append((cand, float(ratio)))
+    out.sort(key=lambda x: (x[1], float(token_idf.get(x[0], 0.0))), reverse=True)
+    return out[:max_matches]
+
+
+def merge_scene_text_candidates(
+    ranked_images: List[Tuple[str, float]],
+    query_img: Path,
+    text_index: Dict[str, Any] | None,
+    seed_score_base: float = 0.88,
+    boost_scale: float = 0.18,
+    min_token_len: int = 4,
+    include_components: bool = True,
+    max_candidates_per_token: int = 64,
+    max_injected: int = 24,
+    fuzzy_min_ratio: float = 0.78,
+    fuzzy_max_matches: int = 4,
+) -> Tuple[List[Tuple[str, float]], List[str]]:
+    if not text_index:
+        return ranked_images, []
+    token_to_images = dict(text_index.get("token_to_images", {}))
+    token_idf = dict(text_index.get("token_idf", {}))
+    if not token_to_images:
+        return ranked_images, []
+
+    query_tokens = extract_query_scene_text_tokens(
+        query_img,
+        min_token_len=min_token_len,
+        include_components=include_components,
+    )
+    if not query_tokens:
+        return ranked_images, []
+
+    match_scores: Dict[str, float] = {}
+    image_match_count: Dict[str, int] = {}
+    for tok in query_tokens:
+        matched_tokens = _match_scene_tokens(
+            tok,
+            token_to_images,
+            token_idf,
+            min_ratio=fuzzy_min_ratio,
+            max_matches=fuzzy_max_matches,
+        )
+        for matched_tok, ratio in matched_tokens:
+            images = list(token_to_images.get(matched_tok, []))[: max(1, max_candidates_per_token)]
+            if not images:
+                continue
+            tok_w = float(token_idf.get(matched_tok, 0.0)) * float(ratio)
+            if tok_w <= 0.0:
+                continue
+            for image_name in images:
+                match_scores[image_name] = match_scores.get(image_name, 0.0) + tok_w
+                image_match_count[image_name] = image_match_count.get(image_name, 0) + 1
+    if not match_scores:
+        return ranked_images, query_tokens
+
+    norm = max(match_scores.values()) + 1e-6
+    merged: Dict[str, float] = {name: float(score) for name, score in ranked_images}
+    boosted: List[Tuple[str, float]] = []
+    for image_name, raw in match_scores.items():
+        count_bonus = min(0.08, 0.02 * max(0, image_match_count.get(image_name, 1) - 1))
+        seeded = min(1.2, float(seed_score_base) + boost_scale * (raw / norm) + count_bonus)
+        best = max(float(merged.get(image_name, -1e9)), seeded)
+        merged[image_name] = best
+        boosted.append((image_name, best))
+
+    boosted.sort(key=lambda x: x[1], reverse=True)
+    if max_injected > 0:
+        allow = {name for name, _ in boosted[:max_injected]}
+        merged = {
+            name: score
+            for name, score in merged.items()
+            if (name in allow) or any(name == src for src, _ in ranked_images)
+        }
+    out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
+    return out, query_tokens
 
 
 def topk_style_codes(

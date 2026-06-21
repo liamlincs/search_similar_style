@@ -14,6 +14,7 @@ from PIL import Image, ImageEnhance, ImageOps
 
 STYLE_RE = re.compile(r"([A-Za-z0-9_-]+#)")
 SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+SCENE_TOKEN_RE = re.compile(r"[A-Z0-9]{4,}")
 DEFAULT_CONFIG = Path("config/search_config.json")
 OCR_ENGINE = None
 OCR_IMPORT_ERROR: Exception | None = None
@@ -112,6 +113,59 @@ def _run_rapidocr(img: Image.Image) -> str:
         rows.append((y, x, str(text), float(score)))
     rows.sort(key=lambda t: (t[0], t[1]))
     return "\n".join([r[2] for r in rows])
+
+
+def _prep_for_scene_ocr(img: Image.Image) -> list[Image.Image]:
+    base = img.convert("RGB")
+    max_edge = max(base.size)
+    if max_edge < 960:
+        scale = 960.0 / max(1, max_edge)
+        nw = max(1, int(round(base.width * scale)))
+        nh = max(1, int(round(base.height * scale)))
+        base = base.resize((nw, nh), Image.BICUBIC)
+
+    gray = ImageOps.grayscale(base)
+    gray = ImageEnhance.Contrast(gray).enhance(1.9)
+    gray = ImageOps.autocontrast(gray)
+    strong = ImageEnhance.Sharpness(gray).enhance(1.8)
+    return [
+        base,
+        gray.convert("RGB"),
+        strong.convert("RGB"),
+    ]
+
+
+def extract_scene_text(img_rgb: Image.Image, max_variants: int | None = None) -> str:
+    texts: list[str] = []
+    seen = set()
+    variants = _prep_for_scene_ocr(img_rgb)
+    if max_variants is not None and max_variants > 0:
+        variants = variants[:max_variants]
+    for v in variants:
+        raw = _run_rapidocr(v).strip()
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        texts.append(raw)
+    return "\n".join(texts)
+
+
+def extract_text_tokens(text: str, min_len: int = 4) -> list[str]:
+    if not text:
+        return []
+    out: list[str] = []
+    seen = set()
+    for raw in SCENE_TOKEN_RE.findall(text.upper()):
+        token = re.sub(r"^[0-9]+|[0-9]+$", "", raw)
+        if len(token) < max(2, int(min_len)):
+            continue
+        if not re.search(r"[A-Z]", token):
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 def _run_tesseract(img: Image.Image, tesseract_bin: str) -> str:
