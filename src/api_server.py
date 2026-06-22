@@ -274,6 +274,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
     similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
+    region_similar_images_topn = int(search_cfg.get("region_similar_images_topn", max(8, similar_images_topn)))
     confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
     confidence_medium_threshold = float(search_cfg.get("confidence_medium_threshold", 0.03))
     display_score_scale = float(search_cfg.get("display_score_scale", 8.0))
@@ -1604,7 +1605,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         debug_items = [
             f"{filename_to_style_code(file_name)}:{sim:.3f}/{accent_pattern_seed_score_base + accent_pattern_boost_scale * max(0.0, sim):.3f}"
-            for file_name, sim in injected[:12]
+            for file_name, sim in injected[:40]
         ]
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
@@ -1732,7 +1733,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
         debug_items = [
             f"{filename_to_style_code(file_name)}:{sim:.3f}/{sleeve_pattern_seed_score_base + sleeve_pattern_boost_scale * max(0.0, sim):.3f}"
-            for file_name, sim in injected[:12]
+            for file_name, sim in injected[:40]
         ]
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
@@ -3729,7 +3730,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if ranked_region:
                         region_debug = ",".join(
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
-                            for n, s in ranked_region[:8]
+                            for n, s in ranked_region[:40]
                         )
                         ranked = merge_ranked_image_lists(
                             ranked,
@@ -4053,7 +4054,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         similar_images: List[Dict[str, Any]] = []
         seen = set()
-        max_n = max(1, similar_images_topn)
+        max_n = max(1, region_similar_images_topn if crop_active else similar_images_topn)
         for name, score in ranked_images:
             file_name = name.split("@", 1)[0]
             if file_name in seen:
