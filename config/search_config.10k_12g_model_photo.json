@@ -142,7 +142,7 @@
     "low_confidence_margin_threshold": 0.06,
     "low_confidence_top1_threshold": 0.78,
     "similar_images_topn": 3,
-    "region_similar_images_topn": 12,
+    "region_similar_images_topn": 24,
     "confidence_high_threshold": 0.10,
     "confidence_medium_threshold": 0.03,
     "display_score_scale": 6.0,

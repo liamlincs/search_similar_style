@@ -4057,16 +4057,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         max_n = max(1, region_similar_images_topn if crop_active else similar_images_topn)
         for name, score in ranked_images:
             file_name = name.split("@", 1)[0]
-            if file_name in seen:
+            style_code = filename_to_style_code(file_name)
+            seen_key = style_code if crop_active else file_name
+            if seen_key in seen:
                 continue
-            seen.add(file_name)
+            seen.add(seen_key)
             z = float(display_score_scale) * (float(score) - float(display_score_bias))
             disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
             disp = min(0.9999, max(0.0, float(disp)))
             similar_images.append(
                 {
                     "image_name": file_name,
-                    "style_code": filename_to_style_code(file_name),
+                    "style_code": style_code,
                     "image_url": _build_image_url(base_url, file_name),
                     "rank_score": round(float(score), 6),
                     "score": round(disp, 4),
