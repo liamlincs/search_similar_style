@@ -3382,6 +3382,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         file: UploadFile = File(...),
         include_image_base64: bool = False,
         base64_topn: int = 0,
+        crop_x: float = Form(0.0),
+        crop_y: float = Form(0.0),
+        crop_w: float = Form(0.0),
+        crop_h: float = Form(0.0),
     ) -> Dict[str, Any]:
         t_all = time.perf_counter()
         if not file.filename:
@@ -3410,6 +3414,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             q2.save(query_path, format="JPEG", quality=90)
                 except Exception:
                     pass
+            crop_debug = ""
+            if crop_w > 0.02 and crop_h > 0.02:
+                try:
+                    with Image.open(query_path) as crop_im0:
+                        crop_im = crop_im0.convert("RGB")
+                        iw, ih = crop_im.size
+                        x = max(0.0, min(0.98, float(crop_x)))
+                        y = max(0.0, min(0.98, float(crop_y)))
+                        cw = max(0.02, min(1.0 - x, float(crop_w)))
+                        ch = max(0.02, min(1.0 - y, float(crop_h)))
+                        left = int(round(x * iw))
+                        top = int(round(y * ih))
+                        right = int(round((x + cw) * iw))
+                        bottom = int(round((y + ch) * ih))
+                        if right - left >= 32 and bottom - top >= 32:
+                            crop_im.crop((left, top, right, bottom)).save(query_path, format="JPEG", quality=92)
+                            crop_debug = f"{x:.3f},{y:.3f},{cw:.3f},{ch:.3f}"
+                except Exception:
+                    crop_debug = ""
             query_width = 0
             query_height = 0
             try:
@@ -3419,12 +3442,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass
             debug_saved = _save_debug_query_image(request, query_path, file.filename or "query")
             logging.info(
-                "search upload user=%s file=%s bytes=%d final_size=%sx%s saved=%s",
+                "search upload user=%s file=%s bytes=%d final_size=%sx%s crop=%s saved=%s",
                 getattr(request.state, "api_user", "unknown"),
                 file.filename,
                 len(upload_bytes),
                 query_width,
                 query_height,
+                crop_debug,
                 str(debug_saved or ""),
             )
 

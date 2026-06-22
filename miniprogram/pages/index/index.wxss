@@ -147,11 +147,37 @@
   height: 420rpx;
   border-radius: 20rpx;
   overflow: hidden;
+  position: relative;
+  background: #0f172a;
+  touch-action: none;
 }
 
 .query-image {
   width: 100%;
   height: 100%;
+}
+
+.region-active {
+  box-shadow: 0 0 0 4rpx rgba(29, 78, 216, 0.28);
+}
+
+.region-mask {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.20);
+  pointer-events: none;
+}
+
+.region-rect {
+  position: absolute;
+  box-sizing: border-box;
+  border: 4rpx solid #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  box-shadow: 0 0 0 9999rpx rgba(15, 23, 42, 0.26);
+  pointer-events: none;
 }
 
 .placeholder {
@@ -187,6 +213,30 @@
   gap: 16rpx;
 }
 
+.region-actions {
+  margin-top: 14rpx;
+  display: flex;
+  gap: 12rpx;
+}
+
+.region-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 72rpx;
+  line-height: 72rpx;
+  border-radius: 14rpx;
+  border: none;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 25rpx;
+  padding: 0 12rpx;
+}
+
+.region-btn.primary {
+  background: #0f172a;
+  color: #ffffff;
+}
+
 .btn {
   flex: 1 1 0;
   min-width: 0;
@@ -207,6 +257,7 @@
 }
 
 .actions button::after,
+.region-actions button::after,
 .retry-btn::after {
   border: none;
 }

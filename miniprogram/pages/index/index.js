@@ -26,6 +26,11 @@ Page({
   data: {
     pageMode: "image",
     localImage: "",
+    imageInfo: null,
+    regionMode: false,
+    regionBox: null,
+    cropRect: null,
+    cropStart: null,
     searching: false,
     hasSearched: false,
     errorMessage: "",
@@ -74,6 +79,145 @@ Page({
     const filePath = this.data.localImage;
     if (!filePath || this.data.searching) return;
     this.search(filePath);
+  },
+
+  loadLocalImageInfo(filePath) {
+    wx.getImageInfo({
+      src: filePath,
+      success: (info) => {
+        this.setData({ imageInfo: { width: Number(info.width || 0), height: Number(info.height || 0) } });
+      },
+      fail: () => {
+        this.setData({ imageInfo: null });
+      }
+    });
+  },
+
+  enableRegionSelect() {
+    if (!this.data.localImage || this.data.searching) return;
+    this.ensureRegionBox(() => {
+      const box = this.data.regionBox || {};
+      const w = Number(box.width || 0);
+      const h = Number(box.height || 0);
+      if (!w || !h) return;
+      const defaultRect = this.data.cropRect || {
+        left: Math.round(w * 0.25),
+        top: Math.round(h * 0.25),
+        width: Math.round(w * 0.5),
+        height: Math.round(h * 0.5)
+      };
+      this.setData({ regionMode: true, cropRect: defaultRect });
+    });
+  },
+
+  cancelRegionSelect() {
+    this.setData({ regionMode: false, cropStart: null });
+  },
+
+  clearRegionSelect() {
+    this.setData({ regionMode: false, cropRect: null, cropStart: null });
+  },
+
+  ensureRegionBox(callback) {
+    wx.createSelectorQuery()
+      .in(this)
+      .select(".query-wrap")
+      .boundingClientRect((rect) => {
+        if (rect) {
+          this.setData({
+            regionBox: {
+              left: Number(rect.left || 0),
+              top: Number(rect.top || 0),
+              width: Number(rect.width || 0),
+              height: Number(rect.height || 0)
+            }
+          }, callback);
+        } else if (callback) {
+          callback();
+        }
+      })
+      .exec();
+  },
+
+  pointInRegionBox(touch) {
+    const box = this.data.regionBox || {};
+    const x = Number(touch.clientX || 0) - Number(box.left || 0);
+    const y = Number(touch.clientY || 0) - Number(box.top || 0);
+    return {
+      x: Math.max(0, Math.min(Number(box.width || 0), x)),
+      y: Math.max(0, Math.min(Number(box.height || 0), y))
+    };
+  },
+
+  onRegionTouchStart(e) {
+    if (!this.data.regionMode || this.data.searching) return;
+    const touch = e.touches && e.touches[0];
+    if (!touch) return;
+    this.ensureRegionBox(() => {
+      const p = this.pointInRegionBox(touch);
+      this.setData({
+        cropStart: p,
+        cropRect: { left: p.x, top: p.y, width: 1, height: 1 }
+      });
+    });
+  },
+
+  onRegionTouchMove(e) {
+    if (!this.data.regionMode || !this.data.cropStart) return;
+    const touch = e.touches && e.touches[0];
+    if (!touch) return;
+    const start = this.data.cropStart;
+    const p = this.pointInRegionBox(touch);
+    this.setData({
+      cropRect: {
+        left: Math.min(start.x, p.x),
+        top: Math.min(start.y, p.y),
+        width: Math.abs(p.x - start.x),
+        height: Math.abs(p.y - start.y)
+      }
+    });
+  },
+
+  onRegionTouchEnd() {
+    if (!this.data.regionMode) return;
+    this.setData({ cropStart: null });
+  },
+
+  buildCropRatio() {
+    const rect = this.data.cropRect;
+    const box = this.data.regionBox;
+    const info = this.data.imageInfo;
+    if (!rect || !box || !info || !info.width || !info.height) return null;
+    if (Number(rect.width || 0) < 20 || Number(rect.height || 0) < 20) return null;
+
+    const scale = Math.min(box.width / info.width, box.height / info.height);
+    const drawW = info.width * scale;
+    const drawH = info.height * scale;
+    const offsetX = (box.width - drawW) / 2;
+    const offsetY = (box.height - drawH) / 2;
+    const left = Math.max(rect.left, offsetX);
+    const top = Math.max(rect.top, offsetY);
+    const right = Math.min(rect.left + rect.width, offsetX + drawW);
+    const bottom = Math.min(rect.top + rect.height, offsetY + drawH);
+    if (right - left < 20 || bottom - top < 20) return null;
+    return {
+      x: Math.max(0, Math.min(1, (left - offsetX) / drawW)),
+      y: Math.max(0, Math.min(1, (top - offsetY) / drawH)),
+      w: Math.max(0, Math.min(1, (right - left) / drawW)),
+      h: Math.max(0, Math.min(1, (bottom - top) / drawH))
+    };
+  },
+
+  searchSelectedRegion() {
+    if (!this.data.localImage || this.data.searching) return;
+    this.ensureRegionBox(() => {
+      const crop = this.buildCropRatio();
+      if (!crop) {
+        wx.showToast({ title: "请框选更大的区域", icon: "none" });
+        return;
+      }
+      this.search(this.data.localImage, { crop });
+    });
   },
 
   goPrintPage() {
@@ -183,12 +327,18 @@ Page({
         }
         this.setData({
           localImage: file.tempFilePath,
+          imageInfo: null,
+          regionMode: false,
+          regionBox: null,
+          cropRect: null,
+          cropStart: null,
           hasSearched: false,
           errorMessage: "",
           results: [],
           isAmbiguous: false,
           confidenceBand: "low"
         });
+        this.loadLocalImageInfo(file.tempFilePath);
         this.search(file.tempFilePath);
       },
       fail: () => {
@@ -197,10 +347,10 @@ Page({
     });
   },
 
-  async search(filePath) {
+  async search(filePath, options = {}) {
     this.setData({ searching: true, errorMessage: "" });
     try {
-      const resp = await uploadAndSearch(filePath);
+      const resp = await uploadAndSearch(filePath, options);
       const topCodes = resp.topk_style_codes || [];
       const byImage = {};
       topCodes.forEach((item, idx) => {

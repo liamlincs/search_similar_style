@@ -32,13 +32,22 @@ function shouldRetryHttp(statusCode) {
   return statusCode >= 500;
 }
 
-function doUpload(filePath) {
+function doUpload(filePath, options = {}) {
+  const formData = {};
+  const crop = options.crop || null;
+  if (crop) {
+    formData.crop_x = String(crop.x || 0);
+    formData.crop_y = String(crop.y || 0);
+    formData.crop_w = String(crop.w || 0);
+    formData.crop_h = String(crop.h || 0);
+  }
   return new Promise((resolve, reject) => {
     wx.uploadFile({
       url: buildSearchUrl(),
       filePath,
       name: "file",
       timeout: config.timeout,
+      formData,
       header: {
         "X-API-Key": config.apiKey
       },
@@ -345,14 +354,14 @@ function recolorAiUpload(filePath, options = {}) {
   });
 }
 
-async function uploadAndSearch(filePath) {
+async function uploadAndSearch(filePath, options = {}) {
   const retryCfg = config.retry || {};
   const maxRetries = Number(retryCfg.maxRetries || 0);
 
   let lastError = null;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
     try {
-      return await doUpload(filePath);
+      return await doUpload(filePath, options);
     } catch (err) {
       lastError = err;
       const statusCode = Number(err.statusCode || 0);

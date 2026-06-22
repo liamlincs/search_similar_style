@@ -58,8 +58,21 @@
   </view>
 
   <view wx:if="{{pageMode === 'image'}}" class="panel">
-    <view wx:if="{{localImage}}" class="query-wrap">
-      <image class="query-image" src="{{localImage}}" mode="aspectFill" />
+    <view
+      wx:if="{{localImage}}"
+      class="query-wrap {{regionMode ? 'region-active' : ''}}"
+      bindtouchstart="onRegionTouchStart"
+      bindtouchmove="onRegionTouchMove"
+      bindtouchend="onRegionTouchEnd"
+      bindtouchcancel="onRegionTouchEnd"
+    >
+      <image class="query-image" src="{{localImage}}" mode="aspectFit" />
+      <view wx:if="{{regionMode}}" class="region-mask"></view>
+      <view
+        wx:if="{{regionMode && cropRect}}"
+        class="region-rect"
+        style="left: {{cropRect.left}}px; top: {{cropRect.top}}px; width: {{cropRect.width}}px; height: {{cropRect.height}}px;"
+      ></view>
     </view>
     <view wx:else class="placeholder">
       <view class="placeholder-icon">IMG</view>
@@ -69,6 +82,14 @@
     <view class="actions">
       <button class="btn btn-main" bindtap="chooseFromAlbum" loading="{{searching}}">从相册上传</button>
       <button class="btn btn-sub" bindtap="takePhoto" loading="{{searching}}">拍照搜款</button>
+    </view>
+    <view wx:if="{{localImage}}" class="region-actions">
+      <button wx:if="{{!regionMode}}" class="region-btn" bindtap="enableRegionSelect" disabled="{{searching}}">圈选区域</button>
+      <block wx:else>
+        <button class="region-btn primary" bindtap="searchSelectedRegion" loading="{{searching}}">按区域搜索</button>
+        <button class="region-btn" bindtap="cancelRegionSelect" disabled="{{searching}}">取消圈选</button>
+        <button class="region-btn" bindtap="clearRegionSelect" disabled="{{searching}}">清除</button>
+      </block>
     </view>
   </view>
 
