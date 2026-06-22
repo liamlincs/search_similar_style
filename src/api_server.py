@@ -29,6 +29,11 @@ from pydantic import BaseModel
 from PIL import Image
 from zoneinfo import ZoneInfo
 
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 THIS_DIR = Path(__file__).resolve().parent
 if str(THIS_DIR) not in sys.path:
     sys.path.insert(0, str(THIS_DIR))
@@ -240,6 +245,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_min_score = float(search_cfg.get("accent_pattern_min_score", 0.42))
     accent_pattern_max_injected = int(search_cfg.get("accent_pattern_max_injected", 24))
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
+    accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
+    checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
+    checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -937,7 +945,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _extract_fg_shape(path: Path) -> tuple[float, float] | None:
         try:
             with Image.open(path) as im0:
-                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+                im = im0.convert("RGB")
+                if accent_pattern_max_edge > 0:
+                    edge = max(160, int(accent_pattern_max_edge))
+                    im.thumbnail((edge, edge), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
         except Exception:
             return None
         if rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -1184,6 +1196,64 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 best = prof
         return best
 
+    def _filter_accent_motif_components(mask: np.ndarray) -> np.ndarray:
+        if mask.ndim != 2 or int(mask.sum()) <= 0:
+            return mask
+        h, w = mask.shape
+        img_area = float(max(1, h * w))
+        seen = np.zeros(mask.shape, dtype=bool)
+        out = np.zeros(mask.shape, dtype=bool)
+        min_comp = max(3, int(img_area * 0.00004))
+        max_comp = max(32, int(img_area * 0.045))
+        max_bbox_area = max(64, int(img_area * 0.16))
+        max_fill = 0.72
+
+        if cv2 is not None:
+            n_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 4)
+            for label in range(1, int(n_labels)):
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < min_comp:
+                    continue
+                bw = int(stats[label, cv2.CC_STAT_WIDTH])
+                bh = int(stats[label, cv2.CC_STAT_HEIGHT])
+                bbox_area = max(1, bw * bh)
+                fill = area / float(bbox_area)
+                if area > max_comp and (bbox_area > max_bbox_area or fill > max_fill):
+                    continue
+                out[labels == label] = True
+            return out
+
+        for sy, sx in zip(*np.where(mask & ~seen)):
+            stack = [(int(sy), int(sx))]
+            seen[sy, sx] = True
+            pts: List[tuple[int, int]] = []
+            while stack:
+                cy, cx = stack.pop()
+                pts.append((cy, cx))
+                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                    if ny < 0 or ny >= h or nx < 0 or nx >= w:
+                        continue
+                    if seen[ny, nx] or not bool(mask[ny, nx]):
+                        continue
+                    seen[ny, nx] = True
+                    stack.append((ny, nx))
+
+            area = len(pts)
+            if area < min_comp:
+                continue
+            ys = [p[0] for p in pts]
+            xs = [p[1] for p in pts]
+            y0, y1 = min(ys), max(ys)
+            x0, x1 = min(xs), max(xs)
+            bbox_area = max(1, (y1 - y0 + 1) * (x1 - x0 + 1))
+            fill = area / float(bbox_area)
+            # Large solid blocks are usually garment body colors or labels, not local motifs.
+            if area > max_comp and (bbox_area > max_bbox_area or fill > max_fill):
+                continue
+            for py, px in pts:
+                out[py, px] = True
+        return out
+
     def _extract_accent_pattern_sig(path: Path, grid: int = 12) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -1206,6 +1276,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         valid = np.ones((h, w), dtype=bool)
         valid[: min(int(h * 0.10), 100), :] = False
         colorful = valid & (chroma >= 38.0) & (sat >= 0.22) & (gray >= 35.0) & (gray <= 235.0)
+        colorful = _filter_accent_motif_components(colorful)
         if int(colorful.sum()) < max(8, accent_pattern_min_pixels):
             return None
 
@@ -1526,8 +1597,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accent_pattern",
+                "version": 4,
                 "grid": 12,
                 "min_pixels": int(accent_pattern_min_pixels),
+                "max_edge": int(accent_pattern_max_edge),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -3173,6 +3246,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            q_accent_sig = None
+            if accent_pattern_enabled:
+                q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
+                if q_accent_sig is not None:
+                    accent_debug = "1"
             if checker_consistency_enabled:
                 q_checker_profile = _extract_checker_profile(query_path, grid=10)
                 if q_checker_profile:
@@ -3181,6 +3259,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         f"{float(q_checker_profile.get('stripe', 0.0)):.3f}/"
                         f"{float(q_checker_profile.get('bw_mix', 0.0)):.3f}"
                     )
+                    if (
+                        checker_suppress_when_accent
+                        and q_accent_sig is not None
+                        and float(q_checker_profile.get("checker", 0.0)) < checker_accent_suppress_below
+                    ):
+                        q_checker_profile = None
                 ranked_images, checker_code_boost, checker_candidates_debug = _apply_checker_consistency(
                     ranked_images,
                     q_checker_profile,
@@ -3202,9 +3286,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
             if accent_pattern_enabled:
-                q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
                 if q_accent_sig is not None:
-                    accent_debug = "1"
                     ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
                         ranked_images,
                         q_accent_sig,
