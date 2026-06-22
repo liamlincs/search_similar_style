@@ -47,20 +47,24 @@
   "paths": {
     "standard_dir": "data/standard_samples",
     "standard_pattern": "*",
-    "image_exts": ["png", "jpg", "jpeg"],
+    "image_exts": [
+      "png",
+      "jpg",
+      "jpeg"
+    ],
     "test_dir": "data/test_samples"
   },
   "search": {
-    "top_k": 5,
+    "top_k": 6,
     "candidate_multiplier": 12,
     "recall_topn_cap": 768,
     "min_score": 0.64,
     "code_agg_top_n": 3,
-    "code_agg_alpha": 0.70,
+    "code_agg_alpha": 0.7,
     "query_multicrop": true,
     "query_crop_ratio": 0.72,
     "query_component_views": true,
-    "query_view_consensus_weight": 0.20,
+    "query_view_consensus_weight": 0.2,
     "standard_multicrop": false,
     "standard_crop_ratio": 0.72,
     "ocr_hint_enabled": false,
@@ -75,7 +79,7 @@
     "preload_rerank_candidate_cache": false,
     "label_memory_enabled": true,
     "label_memory_path": "data/query_labels.json",
-    "label_memory_sim_threshold": 0.90,
+    "label_memory_sim_threshold": 0.9,
     "label_memory_max_boost": 0.09,
     "feature_cache_enabled": true,
     "db_feature_dtype": "float16",
@@ -84,9 +88,10 @@
     "feature_backend": "hybrid",
     "hybrid_weights": {
       "clip": 0.55,
-      "shape": 0.30,
+      "shape": 0.3,
       "color": 0.15,
-      "stripe": 0.10
-    }
+      "stripe": 0.1
+    },
+    "similar_images_topn": 6
   }
 }
