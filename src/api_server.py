@@ -40,10 +40,10 @@ if str(THIS_DIR) not in sys.path:
 
 from search_similar_return_code import (
     DEFAULT_CONFIG,
-    build_feature_db,
     build_feature_db_with_cache,
     build_label_memory_prior_from_refs,
     collect_images,
+    extract_embedding,
     filename_to_style_code,
     merge_scene_text_candidates,
     merge_ranked_image_lists,
@@ -339,6 +339,70 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"region_feature_cache_{backend}_{safe}.npz"
 
+    def _region_standard_views(img: Image.Image, max_component_views: int = 3) -> List[tuple[str, Image.Image]]:
+        w, h = img.size
+        if w < 40 or h < 40:
+            return [("full", img)]
+        boxes: List[tuple[str, tuple[int, int, int, int]]] = [
+            ("full", (0, 0, w, h)),
+            ("center", (int(w * 0.15), int(h * 0.15), int(w * 0.85), int(h * 0.85))),
+            ("left", (0, 0, int(w * 0.58), h)),
+            ("right", (int(w * 0.42), 0, w, h)),
+            ("top", (0, 0, w, int(h * 0.58))),
+            ("bottom", (0, int(h * 0.42), w, h)),
+            ("mid_band", (0, int(h * 0.22), w, int(h * 0.82))),
+            ("upper_band", (0, int(h * 0.08), w, int(h * 0.55))),
+            ("lower_band", (0, int(h * 0.45), w, int(h * 0.95))),
+            ("tl", (0, 0, int(w * 0.62), int(h * 0.62))),
+            ("tr", (int(w * 0.38), 0, w, int(h * 0.62))),
+            ("bl", (0, int(h * 0.38), int(w * 0.62), h)),
+            ("br", (int(w * 0.38), int(h * 0.38), w, h)),
+        ]
+
+        views: List[tuple[str, Image.Image]] = []
+        seen = set()
+        for tag, (x0, y0, x1, y1) in boxes:
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(w, x1), min(h, y1)
+            if x1 - x0 < 32 or y1 - y0 < 32:
+                continue
+            key = (x0, y0, x1, y1)
+            if key in seen:
+                continue
+            seen.add(key)
+            views.append((tag, img.crop(key)))
+
+        if cv2 is not None:
+            arr = np.asarray(img.convert("RGB"), dtype=np.uint8)
+            gray = (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]).astype(np.float32)
+            maxc = arr.max(axis=-1).astype(np.float32)
+            minc = arr.min(axis=-1).astype(np.float32)
+            sat = (maxc - minc) / np.maximum(maxc, 1.0)
+            fg = ((gray < 235.0) & ((sat > 0.08) | (gray < 170.0))).astype(np.uint8)
+            fg[: min(int(h * 0.10), 80), :] = 0
+            num, _labels, stats, _centers = cv2.connectedComponentsWithStats(fg, connectivity=8)
+            comps: List[tuple[int, tuple[int, int, int, int]]] = []
+            min_area = max(80, int(w * h * 0.015))
+            for i in range(1, num):
+                x, y, ww, hh, area = stats[i]
+                if int(area) < min_area or int(ww) < 24 or int(hh) < 24:
+                    continue
+                comps.append((int(area), (int(x), int(y), int(ww), int(hh))))
+            comps.sort(key=lambda item: item[0], reverse=True)
+            for idx, (_area, (x, y, ww, hh)) in enumerate(comps[:max_component_views]):
+                pad_x = max(8, int(ww * 0.12))
+                pad_y = max(8, int(hh * 0.12))
+                x0 = max(0, x - pad_x)
+                y0 = max(0, y - pad_y)
+                x1 = min(w, x + ww + pad_x)
+                y1 = min(h, y + hh + pad_y)
+                key = (x0, y0, x1, y1)
+                if x1 - x0 < 32 or y1 - y0 < 32 or key in seen:
+                    continue
+                seen.add(key)
+                views.append((f"comp{idx}", img.crop(key)))
+        return views
+
     def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
         files = collect_images(standard_dir, standard_pattern, image_exts)
         sigs = []
@@ -348,10 +412,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "region_crop_recall",
-                "version": 1,
+                "version": 2,
                 "backend": region_crop_recall_backend,
                 "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
-                "standard_multicrop": True,
+                "standard_views": "grid_halves_bands_components",
                 "standard_crop_ratio": float(region_standard_crop_ratio),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
@@ -376,18 +440,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass
 
         t0 = time.perf_counter()
-        cache_names, cache_feats = build_feature_db(
-            standard_dir,
-            standard_pattern,
-            region_crop_recall_backend,
-            image_exts,
-            region_w_clip,
-            region_w_shape,
-            region_w_color,
-            region_w_stripe,
-            standard_multicrop=True,
-            standard_crop_ratio=region_standard_crop_ratio,
-        )
+        cache_names: List[str] = []
+        feat_list: List[np.ndarray] = []
+        for fp in files:
+            try:
+                img = Image.open(fp).convert("RGB")
+            except Exception:
+                continue
+            for idx, (tag, view) in enumerate(_region_standard_views(img)):
+                cache_names.append(f"{fp.name}@r{idx}_{tag}")
+                feat_list.append(
+                    extract_embedding(
+                        view,
+                        region_crop_recall_backend,
+                        region_w_clip,
+                        region_w_shape,
+                        region_w_color,
+                        region_w_stripe,
+                    )
+                )
+        cache_feats = np.vstack(feat_list).astype(np.float32) if feat_list else np.zeros((0, 1), dtype=np.float32)
         if str(db_feature_dtype).lower() == "float16":
             cache_feats = cache_feats.astype(np.float16)
         else:
@@ -3623,12 +3695,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         secondary_weight=secondary_recall_weight,
                     )
                 if crop_active and region_crop_recall_enabled and region_feats is not None and len(region_names) == len(region_feats):
-                    region_topk = min(
-                        len(region_names),
-                        max(top_k * max(cand_multiplier, 1), top_k),
-                    )
                     if region_crop_recall_topn_cap > 0:
-                        region_topk = min(region_topk, region_crop_recall_topn_cap)
+                        region_topk = min(len(region_names), region_crop_recall_topn_cap)
+                    else:
+                        region_topk = min(
+                            len(region_names),
+                            max(top_k * max(cand_multiplier, 1), top_k),
+                        )
                     ranked_region = search_topk_images(
                         query_path,
                         region_names,
