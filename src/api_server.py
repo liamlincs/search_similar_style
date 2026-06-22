@@ -234,6 +234,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     checker_apply_topn = int(search_cfg.get("checker_apply_topn", 160))
     checker_code_boost_weight = float(search_cfg.get("checker_code_boost_weight", 0.12))
     checker_code_boost_topn = int(search_cfg.get("checker_code_boost_topn", 24))
+    accent_pattern_enabled = bool(search_cfg.get("accent_pattern_enabled", False))
+    accent_pattern_seed_score_base = float(search_cfg.get("accent_pattern_seed_score_base", 0.90))
+    accent_pattern_boost_scale = float(search_cfg.get("accent_pattern_boost_scale", 0.24))
+    accent_pattern_min_score = float(search_cfg.get("accent_pattern_min_score", 0.42))
+    accent_pattern_max_injected = int(search_cfg.get("accent_pattern_max_injected", 24))
+    accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1178,6 +1184,114 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 best = prof
         return best
 
+    def _extract_accent_pattern_sig(path: Path, grid: int = 12) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+        except Exception:
+            return None
+        if rgb.ndim != 3 or rgb.shape[0] < 32 or rgb.shape[1] < 32:
+            return None
+
+        h, w = rgb.shape[:2]
+        arr = rgb.astype(np.float32)
+        mx = arr.max(axis=-1)
+        mn = arr.min(axis=-1)
+        chroma = mx - mn
+        gray = (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]).astype(np.float32)
+        sat = chroma / np.clip(mx, 1.0, None)
+
+        # Local colorful embroidery/printing is usually high-chroma and small-area.
+        # Drop top labels and very bright/white backgrounds so the motif drives matching.
+        valid = np.ones((h, w), dtype=bool)
+        valid[: min(int(h * 0.10), 100), :] = False
+        colorful = valid & (chroma >= 38.0) & (sat >= 0.22) & (gray >= 35.0) & (gray <= 235.0)
+        if int(colorful.sum()) < max(8, accent_pattern_min_pixels):
+            return None
+
+        ys, xs = np.where(colorful)
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        bw = max(1, x1 - x0 + 1)
+        bh = max(1, y1 - y0 + 1)
+        pad_x = max(8, int(bw * 0.35))
+        pad_y = max(8, int(bh * 0.35))
+        x0 = max(0, x0 - pad_x)
+        x1 = min(w, x1 + pad_x + 1)
+        y0 = max(0, y0 - pad_y)
+        y1 = min(h, y1 + pad_y + 1)
+
+        crop_rgb = rgb[y0:y1, x0:x1]
+        crop_mask = colorful[y0:y1, x0:x1]
+        if crop_rgb.shape[0] < 16 or crop_rgb.shape[1] < 16 or int(crop_mask.sum()) < max(8, accent_pattern_min_pixels):
+            return None
+
+        mask_img = Image.fromarray((crop_mask.astype(np.uint8) * 255), mode="L").resize((grid, grid), Image.BILINEAR)
+        rgb_img = Image.fromarray(crop_rgb, mode="RGB").resize((grid, grid), Image.BILINEAR)
+        mask_grid = np.asarray(mask_img, dtype=np.float32) / 255.0
+        rgb_grid = np.asarray(rgb_img, dtype=np.float32) / 255.0
+
+        weighted_rgb = (rgb_grid * mask_grid[..., None]).reshape(-1)
+        mask_vec = mask_grid.reshape(-1)
+
+        selected = arr[colorful]
+        color_hist_parts: List[np.ndarray] = []
+        if selected.shape[0] > 0:
+            sel = selected / 255.0
+            for ci in range(3):
+                hist, _ = np.histogram(sel[:, ci], bins=8, range=(0.0, 1.0))
+                color_hist_parts.append(hist.astype(np.float32))
+            chroma_hist, _ = np.histogram((chroma[colorful] / 255.0), bins=8, range=(0.0, 1.0))
+            color_hist_parts.append(chroma_hist.astype(np.float32))
+        hist_vec = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(32, dtype=np.float32)
+        hist_vec = hist_vec / (float(hist_vec.sum()) + 1e-6)
+
+        # Geometry keeps diamond/vertical-bar layouts separate from generic colorful blocks.
+        proj_x = mask_grid.sum(axis=0)
+        proj_y = mask_grid.sum(axis=1)
+        proj_x = proj_x / (float(np.linalg.norm(proj_x)) + 1e-8)
+        proj_y = proj_y / (float(np.linalg.norm(proj_y)) + 1e-8)
+
+        v = np.concatenate([
+            mask_vec * 0.75,
+            weighted_rgb * 0.55,
+            hist_vec * 1.25,
+            proj_x * 0.80,
+            proj_y * 0.80,
+        ]).astype(np.float32)
+        n = float(np.linalg.norm(v)) + 1e-8
+        return (v / n).astype(np.float32)
+
+    def _merge_accent_pattern_candidates(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> tuple[List[tuple[str, float]], str]:
+        if not ranked or query_sig is None or not accent_pattern_cache:
+            return ranked, ""
+        scored: List[tuple[str, float]] = []
+        for file_name, sig in accent_pattern_cache.items():
+            sim = float(query_sig @ sig)
+            if sim >= accent_pattern_min_score:
+                scored.append((file_name, sim))
+        if not scored:
+            return ranked, ""
+        scored.sort(key=lambda x: x[1], reverse=True)
+        injected = scored[: max(1, accent_pattern_max_injected)]
+
+        merged: Dict[str, float] = {}
+        for name, score in ranked:
+            merged[name] = max(float(score), merged.get(name, -1e9))
+        for file_name, sim in injected:
+            seed = accent_pattern_seed_score_base + accent_pattern_boost_scale * max(0.0, sim)
+            merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+
+        debug_items = [
+            f"{filename_to_style_code(file_name)}:{sim:.3f}/{accent_pattern_seed_score_base + accent_pattern_boost_scale * max(0.0, sim):.3f}"
+            for file_name, sim in injected[:6]
+        ]
+        out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
+        return out, ",".join(debug_items)
+
     def _extract_phash_bits(path: Path, size: int = 32, keep: int = 8) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -1397,11 +1511,70 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             out_fp.write_bytes(buf.getvalue())
         return out_fp
 
+    def _local_file_sig(p: Path) -> str:
+        st = p.stat()
+        return f"{p.name}|{st.st_size}|{int(st.st_mtime)}"
+
+    def _accent_pattern_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"accent_pattern_cache_{safe}.npz"
+
+    def _load_or_build_accent_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "accent_pattern",
+                "grid": 12,
+                "min_pixels": int(accent_pattern_min_pixels),
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _accent_pattern_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    feats = arr["feats"].astype(np.float32)
+                    out = {name: feats[i] for i, name in enumerate(cached_names)}
+                    logging.info("accent pattern cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+
+        t0 = time.perf_counter()
+        out: Dict[str, np.ndarray] = {}
+        for fp in files:
+            sig = _extract_accent_pattern_sig(fp, grid=12)
+            if sig is not None:
+                out[fp.name] = sig.astype(np.float32)
+
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            feats_arr = np.vstack([out[n] for n in out.keys()]).astype(np.float32) if out else np.zeros((0, 1), dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                feats=feats_arr,
+            )
+            logging.info("accent pattern cache write: %s", cache_path)
+        logging.info("accent pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
+    accent_pattern_cache: Dict[str, np.ndarray] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
@@ -1453,6 +1626,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if cp is not None:
                 checker_profile_cache[file_name] = cp
         logging.info("api preloaded checker cache: %d", len(checker_profile_cache))
+    if accent_pattern_enabled:
+        accent_pattern_cache = _load_or_build_accent_pattern_cache(names)
+        logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
     if phash_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -2774,6 +2950,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             scene_text_tokens: List[str] = []
             checker_debug = ""
             checker_candidates_debug = ""
+            accent_debug = ""
+            accent_candidates_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -3023,6 +3201,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            if accent_pattern_enabled:
+                q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
+                if q_accent_sig is not None:
+                    accent_debug = "1"
+                    ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
+                        ranked_images,
+                        q_accent_sig,
+                    )
+                    if accent_candidates_debug:
+                        rows = topk_style_codes(
+                            ranked_images,
+                            top_k,
+                            min_score=min_score,
+                            code_agg_top_n=code_agg_top_n,
+                            code_agg_alpha=code_agg_alpha,
+                            query_hint_code=query_hint_code,
+                            query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                            code_prior_boost=code_prior_boost,
+                            display_score_scale=display_score_scale,
+                            display_score_bias=display_score_bias,
+                        )
             if phash_enabled:
                 q_bits = _extract_phash_bits(query_path, size=32, keep=8)
                 if q_bits is not None:
@@ -3115,7 +3314,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -3125,6 +3324,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             use_strip_mode,
             checker_debug,
             checker_candidates_debug,
+            accent_debug,
+            accent_candidates_debug,
             ",".join(scene_text_tokens[:6]),
             time.perf_counter() - t_all,
         )
