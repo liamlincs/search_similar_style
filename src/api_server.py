@@ -1832,20 +1832,48 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cord_score = min(1.0, cord_cols / 10.0)
         top_mass = float(bits[: int(size * 0.45), :].mean())
         lower_mass = float(lower.mean())
+        bottom_mass = float(bits[int(size * 0.70) :, :].mean())
+        lower_col = col_strength.astype(np.float32)
+        lower_col = lower_col / (float(np.linalg.norm(lower_col)) + 1e-8)
+        lower_row = lower.mean(axis=1).astype(np.float32)
+        lower_row = lower_row / (float(np.linalg.norm(lower_row)) + 1e-8)
+        gray_crop = gray[y0 : y1 + 1, x0 : x1 + 1]
+        rgb_crop = rgb[y0 : y1 + 1, x0 : x1 + 1]
+        crop_mask = crop.astype(bool)
+        color_hist_parts: List[np.ndarray] = []
+        if np.any(crop_mask):
+            selected_rgb = rgb_crop[crop_mask].astype(np.float32) / 255.0
+            for ci in range(3):
+                hist, _ = np.histogram(selected_rgb[:, ci], bins=8, range=(0.0, 1.0))
+                color_hist_parts.append(hist.astype(np.float32))
+            selected_gray = gray_crop[crop_mask].astype(np.float32) / 255.0
+            hist, _ = np.histogram(selected_gray, bins=8, range=(0.0, 1.0))
+            color_hist_parts.append(hist.astype(np.float32))
+        color_hist = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(32, dtype=np.float32)
+        color_hist = color_hist / (float(color_hist.sum()) + 1e-6)
+        cord_gap = 0.0
+        active_cols = np.where(col_strength > 0.10)[0]
+        if active_cols.size >= 2:
+            cord_gap = min(1.0, float(active_cols.max() - active_cols.min()) / float(max(1, size)))
         aspect = float((x1 - x0 + 1) / max(1, (y1 - y0 + 1)))
         aspect_vec = np.array([
             min(1.0, aspect / 1.8),
             min(1.0, 1.8 / max(0.1, aspect)),
             top_mass,
             lower_mass,
+            bottom_mass,
             cord_score,
+            cord_gap,
         ], dtype=np.float32)
 
         v = np.concatenate([
-            mask.reshape(-1) * 0.70,
-            proj_x * 1.20,
-            proj_y * 1.20,
-            aspect_vec * 2.00,
+            mask.reshape(-1) * 0.45,
+            proj_x * 1.00,
+            proj_y * 1.00,
+            lower_col * 3.00,
+            lower_row * 2.40,
+            color_hist * 1.80,
+            aspect_vec * 3.20,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -2374,7 +2402,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accessory_pattern",
-                "version": 1,
+                "version": 2,
                 "size": 48,
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
