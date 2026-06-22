@@ -1716,6 +1716,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ],
             dtype=np.float32,
         )
+        sleeve_row_profile = np.concatenate([row_light, row_dark, row_color]).astype(np.float32)
+        sleeve_row_profile = sleeve_row_profile / (float(np.linalg.norm(sleeve_row_profile)) + 1e-8)
 
         aspect = float((x1 - x0) / max(1, (y1 - y0)))
         coverage = float(grid_mask.mean())
@@ -1728,15 +1730,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ], dtype=np.float32)
 
         v = np.concatenate([
-            grid_gray.reshape(-1) * 0.30,
+            grid_gray.reshape(-1) * 0.20,
             grid_mask.reshape(-1) * 0.45,
-            edge_y * 2.00,
+            edge_y * 2.30,
             edge_x * 0.70,
-            band_profile * 1.80,
+            band_profile * 2.80,
+            sleeve_row_profile * 4.80,
             proj_y * 1.20,
             proj_x * 0.80,
-            hist_vec * 0.70,
-            sleeve_structure * 3.20,
+            hist_vec * 0.45,
+            sleeve_structure * 7.00,
             shape_vec * 0.90,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
@@ -2158,7 +2161,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "sleeve_pattern",
-                "version": 4,
+                "version": 5,
                 "size": 32,
                 "standard_views": "grid_halves_bands_components",
                 "pattern": standard_pattern,
