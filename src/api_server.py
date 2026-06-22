@@ -1374,6 +1374,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         hist_vec = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(32, dtype=np.float32)
         hist_vec = hist_vec / (float(hist_vec.sum()) + 1e-6)
         diversity_scalar = np.array([_hue_diversity(colorful)], dtype=np.float32)
+        motif_coverage = float(crop_mask.mean())
+        coverage_centers = np.array([0.015, 0.04, 0.08, 0.16, 0.32], dtype=np.float32)
+        coverage_vec = np.exp(-((motif_coverage - coverage_centers) ** 2) / (2.0 * (0.045 ** 2))).astype(np.float32)
+        coverage_vec = coverage_vec / (float(np.linalg.norm(coverage_vec)) + 1e-8)
+        crop_gray = (
+            0.299 * crop_rgb[..., 0].astype(np.float32)
+            + 0.587 * crop_rgb[..., 1].astype(np.float32)
+            + 0.114 * crop_rgb[..., 2].astype(np.float32)
+        )
+        bg = ~crop_mask
+        dark_base = float(np.mean(crop_gray[bg] < 112.0)) if np.any(bg) else 0.0
+        dark_base_scalar = np.array([dark_base], dtype=np.float32)
 
         # Geometry keeps diamond/vertical-bar layouts separate from generic colorful blocks.
         proj_x = mask_grid.sum(axis=0)
@@ -1388,6 +1400,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             proj_x * 0.80,
             proj_y * 0.80,
             diversity_scalar * 1.50,
+            coverage_vec * 1.20,
+            dark_base_scalar * 0.80,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -1656,7 +1670,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accent_pattern",
-                "version": 5,
+                "version": 6,
                 "grid": 12,
                 "min_pixels": int(accent_pattern_min_pixels),
                 "max_edge": int(accent_pattern_max_edge),
