@@ -945,11 +945,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _extract_fg_shape(path: Path) -> tuple[float, float] | None:
         try:
             with Image.open(path) as im0:
-                im = im0.convert("RGB")
-                if accent_pattern_max_edge > 0:
-                    edge = max(160, int(accent_pattern_max_edge))
-                    im.thumbnail((edge, edge), Image.Resampling.BILINEAR)
-                rgb = np.asarray(im, dtype=np.uint8)
+                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
         except Exception:
             return None
         if rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -1257,7 +1253,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _extract_accent_pattern_sig(path: Path, grid: int = 12) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
-                rgb = np.asarray(im0.convert("RGB"), dtype=np.uint8)
+                im = im0.convert("RGB")
+                if accent_pattern_max_edge > 0:
+                    edge = max(128, int(accent_pattern_max_edge))
+                    im.thumbnail((edge, edge), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
         except Exception:
             return None
         if rgb.ndim != 3 or rgb.shape[0] < 32 or rgb.shape[1] < 32:
@@ -1278,6 +1278,61 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         colorful = valid & (chroma >= 38.0) & (sat >= 0.22) & (gray >= 35.0) & (gray <= 235.0)
         colorful = _filter_accent_motif_components(colorful)
         if int(colorful.sum()) < max(8, accent_pattern_min_pixels):
+            return None
+
+        def _hue_diversity(mask: np.ndarray) -> float:
+            if int(mask.sum()) < 8:
+                return 0.0
+            pix = rgb[mask].astype(np.uint8)
+            if cv2 is not None:
+                hsv = cv2.cvtColor(pix.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV).reshape(-1, 3)
+                hue = hsv[:, 0].astype(np.float32) / 180.0
+            else:
+                vals = pix.astype(np.float32) / 255.0
+                mxv = vals.max(axis=1)
+                mnv = vals.min(axis=1)
+                delta = np.clip(mxv - mnv, 1e-6, None)
+                hue = np.zeros(vals.shape[0], dtype=np.float32)
+                r, g, b = vals[:, 0], vals[:, 1], vals[:, 2]
+                idx = mxv == r
+                hue[idx] = ((g[idx] - b[idx]) / delta[idx]) % 6.0
+                idx = mxv == g
+                hue[idx] = ((b[idx] - r[idx]) / delta[idx]) + 2.0
+                idx = mxv == b
+                hue[idx] = ((r[idx] - g[idx]) / delta[idx]) + 4.0
+                hue = (hue / 6.0) % 1.0
+            hist, _ = np.histogram(hue, bins=10, range=(0.0, 1.0))
+            active = int(np.count_nonzero(hist >= max(3, int(mask.sum() * 0.04))))
+            return min(1.0, active / 5.0)
+
+        windows = [
+            (0.00, 0.00, 1.00, 1.00, 0.60),
+            (0.12, 0.12, 0.88, 0.92, 0.90),
+            (0.18, 0.25, 0.82, 0.92, 1.15),
+            (0.24, 0.32, 0.76, 0.92, 1.45),
+            (0.30, 0.38, 0.72, 0.90, 1.70),
+        ]
+        best_mask = colorful
+        best_score = -1.0
+        local_min = max(8, min(accent_pattern_min_pixels, int(h * w * 0.0015)))
+        for x0r, y0r, x1r, y1r, weight in windows:
+            wx0, wy0 = int(w * x0r), int(h * y0r)
+            wx1, wy1 = max(wx0 + 1, int(w * x1r)), max(wy0 + 1, int(h * y1r))
+            win_mask = np.zeros_like(colorful, dtype=bool)
+            win_mask[wy0:wy1, wx0:wx1] = colorful[wy0:wy1, wx0:wx1]
+            count = int(win_mask.sum())
+            if count < local_min:
+                continue
+            win_area = float(max(1, (wx1 - wx0) * (wy1 - wy0)))
+            density = min(1.0, count / max(1.0, win_area * 0.08))
+            diversity = _hue_diversity(win_mask)
+            score = float(weight) * (0.55 + diversity) * (0.35 + density)
+            if score > best_score:
+                best_score = score
+                best_mask = win_mask
+
+        colorful = best_mask
+        if int(colorful.sum()) < local_min:
             return None
 
         ys, xs = np.where(colorful)
@@ -1305,17 +1360,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         weighted_rgb = (rgb_grid * mask_grid[..., None]).reshape(-1)
         mask_vec = mask_grid.reshape(-1)
 
-        selected = arr[colorful]
+        selected = crop_rgb[crop_mask]
         color_hist_parts: List[np.ndarray] = []
         if selected.shape[0] > 0:
-            sel = selected / 255.0
+            sel = selected.astype(np.float32) / 255.0
             for ci in range(3):
                 hist, _ = np.histogram(sel[:, ci], bins=8, range=(0.0, 1.0))
                 color_hist_parts.append(hist.astype(np.float32))
-            chroma_hist, _ = np.histogram((chroma[colorful] / 255.0), bins=8, range=(0.0, 1.0))
+            local_selected = selected.astype(np.float32)
+            local_chroma = (local_selected.max(axis=-1) - local_selected.min(axis=-1)) / 255.0
+            chroma_hist, _ = np.histogram(local_chroma, bins=8, range=(0.0, 1.0))
             color_hist_parts.append(chroma_hist.astype(np.float32))
         hist_vec = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(32, dtype=np.float32)
         hist_vec = hist_vec / (float(hist_vec.sum()) + 1e-6)
+        diversity_scalar = np.array([_hue_diversity(colorful)], dtype=np.float32)
 
         # Geometry keeps diamond/vertical-bar layouts separate from generic colorful blocks.
         proj_x = mask_grid.sum(axis=0)
@@ -1329,6 +1387,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             hist_vec * 1.25,
             proj_x * 0.80,
             proj_y * 0.80,
+            diversity_scalar * 1.50,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -1358,7 +1417,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         debug_items = [
             f"{filename_to_style_code(file_name)}:{sim:.3f}/{accent_pattern_seed_score_base + accent_pattern_boost_scale * max(0.0, sim):.3f}"
-            for file_name, sim in injected[:6]
+            for file_name, sim in injected[:12]
         ]
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
@@ -1597,7 +1656,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accent_pattern",
-                "version": 4,
+                "version": 5,
                 "grid": 12,
                 "min_pixels": int(accent_pattern_min_pixels),
                 "max_edge": int(accent_pattern_max_edge),
