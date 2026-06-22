@@ -271,6 +271,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
     accessory_pattern_min_score = float(search_cfg.get("accessory_pattern_min_score", 0.50))
     accessory_pattern_max_injected = int(search_cfg.get("accessory_pattern_max_injected", 16))
+    accessory_hat_prior_boost = float(search_cfg.get("accessory_hat_prior_boost", 0.10))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1804,21 +1805,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         h, w = rgb.shape[:2]
         arr = rgb.astype(np.float32)
         gray = (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]).astype(np.float32)
-        local_contrast = np.zeros_like(gray, dtype=np.float32)
-        local_contrast[1:-1, 1:-1] = (
-            np.abs(gray[1:-1, 1:-1] - gray[:-2, 1:-1])
-            + np.abs(gray[1:-1, 1:-1] - gray[2:, 1:-1])
-            + np.abs(gray[1:-1, 1:-1] - gray[1:-1, :-2])
-            + np.abs(gray[1:-1, 1:-1] - gray[1:-1, 2:])
-        ) * 0.25
         # Prefer non-background foreground; model photos still keep hat/cord high contrast.
-        maxc = arr.max(axis=-1)
-        minc = arr.min(axis=-1)
-        sat = (maxc - minc) / np.maximum(maxc, 1.0)
-        fg = (
-            ((gray < 225.0) & ((sat > 0.055) | (local_contrast > 5.0)))
-            | (gray < 120.0)
-        )
+        fg = (gray < 235.0) & (np.any(rgb < 245, axis=-1))
         fg[: min(int(h * 0.08), 32), :] = False
         if int(fg.sum()) < 64:
             return None
@@ -1862,13 +1850,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             selected_gray = gray_crop[crop_mask].astype(np.float32) / 255.0
             hist, _ = np.histogram(selected_gray, bins=8, range=(0.0, 1.0))
             color_hist_parts.append(hist.astype(np.float32))
-            selected_chroma = (selected_rgb.max(axis=1) - selected_rgb.min(axis=1)).astype(np.float32)
-            hist, _ = np.histogram(selected_chroma, bins=8, range=(0.0, 1.0))
-            color_hist_parts.append(hist.astype(np.float32))
-        color_hist = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(40, dtype=np.float32)
+        color_hist = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(32, dtype=np.float32)
         color_hist = color_hist / (float(color_hist.sum()) + 1e-6)
-        neutral_gray = ((gray_crop >= 90.0) & (gray_crop <= 220.0) & ((rgb_crop.max(axis=-1) - rgb_crop.min(axis=-1)) <= 42.0) & crop_mask)
-        neutral_gray_ratio = float(neutral_gray.sum()) / float(max(1, int(crop_mask.sum())))
         cord_gap = 0.0
         active_cols = np.where(col_strength > 0.10)[0]
         if active_cols.size >= 2:
@@ -1882,17 +1865,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             bottom_mass,
             cord_score,
             cord_gap,
-            neutral_gray_ratio,
         ], dtype=np.float32)
 
         v = np.concatenate([
-            mask.reshape(-1) * 0.20,
-            proj_x * 0.55,
-            proj_y * 0.55,
+            mask.reshape(-1) * 0.45,
+            proj_x * 1.00,
+            proj_y * 1.00,
             lower_col * 3.00,
             lower_row * 2.40,
-            color_hist * 4.60,
-            aspect_vec * 4.20,
+            color_hist * 1.80,
+            aspect_vec * 3.20,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -1916,10 +1898,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for name, score in ranked:
             merged[name] = max(float(score), merged.get(name, -1e9))
         for file_name, sim in injected:
-            seed = accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim)
+            base_name = file_name.split("@", 1)[0]
+            hat_prior = float(accessory_hat_prior_cache.get(base_name, 0.0))
+            seed = (
+                accessory_pattern_seed_score_base
+                + accessory_pattern_boost_scale * max(0.0, sim)
+                + max(0.0, accessory_hat_prior_boost) * hat_prior
+            )
             merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
         debug_items = [
-            f"{filename_to_style_code(file_name)}:{sim:.3f}/{accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim):.3f}"
+            (
+                f"{filename_to_style_code(file_name)}:{sim:.3f}/"
+                f"{accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim) + max(0.0, accessory_hat_prior_boost) * float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.3f}/"
+                f"{float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.2f}"
+            )
             for file_name, sim in injected[:12]
         ]
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
@@ -2163,6 +2155,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _accessory_pattern_cache_path() -> Path:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accessory_pattern_cache_{safe}.npz"
+
+    def _accessory_hat_prior_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"accessory_hat_prior_cache_{safe}.npz"
 
     def _load_or_build_accent_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
@@ -2421,7 +2417,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accessory_pattern",
-                "version": 3,
+                "version": 4,
                 "size": 48,
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
@@ -2463,6 +2459,97 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("accessory pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
+    def _extract_accessory_hat_prior(path: Path) -> float:
+        try:
+            with Image.open(path) as im0:
+                im = im0.convert("RGB")
+                im.thumbnail((256, 256), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
+        except Exception:
+            return 0.0
+        if rgb.ndim != 3 or rgb.shape[0] < 40 or rgb.shape[1] < 40:
+            return 0.0
+        h, w = rgb.shape[:2]
+        arr = rgb.astype(np.float32)
+        gray = 0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]
+        fg = (gray < 235.0) & (np.any(rgb < 245, axis=-1))
+        fg[: min(int(h * 0.08), 32), :] = False
+        if int(fg.sum()) < max(48, int(h * w * 0.004)):
+            return 0.0
+        ys, xs = np.where(fg)
+        x0, x1 = int(xs.min()), int(xs.max())
+        y0, y1 = int(ys.min()), int(ys.max())
+        crop = fg[y0 : y1 + 1, x0 : x1 + 1]
+        if crop.shape[0] < 24 or crop.shape[1] < 24:
+            return 0.0
+        mask = np.asarray(
+            Image.fromarray((crop.astype(np.uint8) * 255), mode="L").resize((48, 48), Image.BILINEAR),
+            dtype=np.float32,
+        ) / 255.0
+        bits = mask > 0.35
+        top = bits[:20, :]
+        lower = bits[18:, :]
+        top_mass = float(top.mean())
+        lower_mass = float(lower.mean())
+        col_strength = lower.mean(axis=0)
+        active_cols = np.where(col_strength > 0.10)[0]
+        cord_cols = int(active_cols.size)
+        cord_gap = 0.0
+        if active_cols.size >= 2:
+            cord_gap = float(active_cols.max() - active_cols.min()) / 48.0
+        sparse_cords = min(1.0, cord_cols / 10.0) * max(0.0, 1.0 - max(0.0, lower_mass - 0.35) * 2.0)
+        body_score = min(1.0, top_mass * 4.0)
+        aspect = float((x1 - x0 + 1) / max(1, (y1 - y0 + 1)))
+        aspect_score = 1.0 - min(1.0, abs(aspect - 1.0) / 1.4)
+        return float(max(0.0, min(1.0, 0.40 * body_score + 0.35 * sparse_cords + 0.15 * cord_gap + 0.10 * aspect_score)))
+
+    def _load_or_build_accessory_hat_prior_cache(file_names: List[str]) -> Dict[str, float]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "accessory_hat_prior",
+                "version": 1,
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _accessory_hat_prior_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    scores = arr["scores"].astype(np.float32)
+                    out = {name: float(scores[i]) for i, name in enumerate(cached_names)}
+                    logging.info("accessory hat prior cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+        t0 = time.perf_counter()
+        out: Dict[str, float] = {}
+        for fp in files:
+            score = _extract_accessory_hat_prior(fp)
+            if score > 0.0:
+                out[fp.name] = score
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            scores_arr = np.array([out[n] for n in out.keys()], dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                scores=scores_arr,
+            )
+            logging.info("accessory hat prior cache write: %s", cache_path)
+        logging.info("accessory hat prior cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
@@ -2472,6 +2559,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pattern_cache: Dict[str, np.ndarray] = {}
     sleeve_pair_prior_cache: Dict[str, float] = {}
     accessory_pattern_cache: Dict[str, np.ndarray] = {}
+    accessory_hat_prior_cache: Dict[str, float] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
@@ -2535,6 +2623,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if accessory_pattern_enabled:
         accessory_pattern_cache = _load_or_build_accessory_pattern_cache(names)
         logging.info("api preloaded accessory pattern cache: %d", len(accessory_pattern_cache))
+        if accessory_hat_prior_boost > 0.0:
+            accessory_hat_prior_cache = _load_or_build_accessory_hat_prior_cache(names)
+            logging.info("api preloaded accessory hat prior cache: %d", len(accessory_hat_prior_cache))
     if phash_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:

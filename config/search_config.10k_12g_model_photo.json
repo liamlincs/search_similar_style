@@ -128,6 +128,7 @@
     "accessory_pattern_boost_scale": 0.24,
     "accessory_pattern_min_score": 0.50,
     "accessory_pattern_max_injected": 16,
+    "accessory_hat_prior_boost": 0.10,
     "checker_suppress_when_accent": true,
     "checker_accent_suppress_below": 0.14,
     "phash_enabled": true,
