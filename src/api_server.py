@@ -1804,8 +1804,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         h, w = rgb.shape[:2]
         arr = rgb.astype(np.float32)
         gray = (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]).astype(np.float32)
+        local_contrast = np.zeros_like(gray, dtype=np.float32)
+        local_contrast[1:-1, 1:-1] = (
+            np.abs(gray[1:-1, 1:-1] - gray[:-2, 1:-1])
+            + np.abs(gray[1:-1, 1:-1] - gray[2:, 1:-1])
+            + np.abs(gray[1:-1, 1:-1] - gray[1:-1, :-2])
+            + np.abs(gray[1:-1, 1:-1] - gray[1:-1, 2:])
+        ) * 0.25
         # Prefer non-background foreground; model photos still keep hat/cord high contrast.
-        fg = (gray < 235.0) & (np.any(rgb < 245, axis=-1))
+        maxc = arr.max(axis=-1)
+        minc = arr.min(axis=-1)
+        sat = (maxc - minc) / np.maximum(maxc, 1.0)
+        fg = (
+            ((gray < 225.0) & ((sat > 0.055) | (local_contrast > 5.0)))
+            | (gray < 120.0)
+        )
         fg[: min(int(h * 0.08), 32), :] = False
         if int(fg.sum()) < 64:
             return None
@@ -1849,8 +1862,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             selected_gray = gray_crop[crop_mask].astype(np.float32) / 255.0
             hist, _ = np.histogram(selected_gray, bins=8, range=(0.0, 1.0))
             color_hist_parts.append(hist.astype(np.float32))
-        color_hist = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(32, dtype=np.float32)
+            selected_chroma = (selected_rgb.max(axis=1) - selected_rgb.min(axis=1)).astype(np.float32)
+            hist, _ = np.histogram(selected_chroma, bins=8, range=(0.0, 1.0))
+            color_hist_parts.append(hist.astype(np.float32))
+        color_hist = np.concatenate(color_hist_parts).astype(np.float32) if color_hist_parts else np.zeros(40, dtype=np.float32)
         color_hist = color_hist / (float(color_hist.sum()) + 1e-6)
+        neutral_gray = ((gray_crop >= 90.0) & (gray_crop <= 220.0) & ((rgb_crop.max(axis=-1) - rgb_crop.min(axis=-1)) <= 42.0) & crop_mask)
+        neutral_gray_ratio = float(neutral_gray.sum()) / float(max(1, int(crop_mask.sum())))
         cord_gap = 0.0
         active_cols = np.where(col_strength > 0.10)[0]
         if active_cols.size >= 2:
@@ -1864,16 +1882,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             bottom_mass,
             cord_score,
             cord_gap,
+            neutral_gray_ratio,
         ], dtype=np.float32)
 
         v = np.concatenate([
-            mask.reshape(-1) * 0.45,
-            proj_x * 1.00,
-            proj_y * 1.00,
+            mask.reshape(-1) * 0.20,
+            proj_x * 0.55,
+            proj_y * 0.55,
             lower_col * 3.00,
             lower_row * 2.40,
-            color_hist * 1.80,
-            aspect_vec * 3.20,
+            color_hist * 4.60,
+            aspect_vec * 4.20,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -2402,7 +2421,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accessory_pattern",
-                "version": 2,
+                "version": 3,
                 "size": 48,
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
