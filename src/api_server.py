@@ -1609,14 +1609,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
-    def _extract_sleeve_pattern_sig(path: Path, size: int = 32) -> np.ndarray | None:
-        try:
-            with Image.open(path) as im0:
-                im = im0.convert("RGB")
-                im.thumbnail((320, 320), Image.Resampling.BILINEAR)
-                rgb = np.asarray(im, dtype=np.uint8)
-        except Exception:
-            return None
+    def _extract_sleeve_pattern_sig_from_image(image: Image.Image, size: int = 32) -> np.ndarray | None:
+        im = image.convert("RGB")
+        im.thumbnail((320, 320), Image.Resampling.BILINEAR)
+        rgb = np.asarray(im, dtype=np.uint8)
         if rgb.ndim != 3 or rgb.shape[0] < 40 or rgb.shape[1] < 40:
             return None
 
@@ -1705,6 +1701,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
+
+    def _extract_sleeve_pattern_sig(path: Path, size: int = 32) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                return _extract_sleeve_pattern_sig_from_image(im0, size=size)
+        except Exception:
+            return None
 
     def _merge_sleeve_pattern_candidates(
         ranked: List[tuple[str, float]],
@@ -2115,8 +2118,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "sleeve_pattern",
-                "version": 2,
+                "version": 3,
                 "size": 32,
+                "standard_views": "grid_halves_bands_components",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -2139,9 +2143,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         t0 = time.perf_counter()
         out: Dict[str, np.ndarray] = {}
         for fp in files:
-            sig = _extract_sleeve_pattern_sig(fp, size=32)
-            if sig is not None:
-                out[fp.name] = sig.astype(np.float32)
+            try:
+                img = Image.open(fp).convert("RGB")
+            except Exception:
+                continue
+            for idx, (tag, view) in enumerate(_region_standard_views(img)):
+                sig = _extract_sleeve_pattern_sig_from_image(view, size=32)
+                if sig is not None:
+                    out[f"{fp.name}@s{idx}_{tag}"] = sig.astype(np.float32)
         if feature_cache_enabled:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             names_arr = np.array(list(out.keys()), dtype=object)
@@ -3884,7 +3893,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
             q_accent_sig = None
-            if accent_pattern_enabled:
+            if accent_pattern_enabled and not crop_active:
                 q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
                 if q_accent_sig is not None:
                     accent_debug = "1"
@@ -3922,7 +3931,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
-            if accent_pattern_enabled:
+            if accent_pattern_enabled and not crop_active:
                 if q_accent_sig is not None:
                     ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
                         ranked_images,
