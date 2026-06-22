@@ -1648,6 +1648,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         grid_rgb = np.asarray(rgb_img, dtype=np.float32) / 255.0
         grid_mask = np.asarray(mask_img, dtype=np.float32) / 255.0
         grid_gray = 0.299 * grid_rgb[..., 0] + 0.587 * grid_rgb[..., 1] + 0.114 * grid_rgb[..., 2]
+        grid_gray_raw = grid_gray.copy()
         grid_chroma = grid_rgb.max(axis=-1) - grid_rgb.min(axis=-1)
         dark_band = (grid_gray < 0.26).astype(np.float32).mean(axis=1)
         light_band = (grid_gray > 0.72).astype(np.float32).mean(axis=1)
@@ -1679,6 +1680,43 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         hist_vec = np.concatenate(hist_parts).astype(np.float32) if hist_parts else np.zeros(24, dtype=np.float32)
         hist_vec = hist_vec / (float(hist_vec.sum()) + 1e-6)
 
+        def _run_count(flags: np.ndarray) -> float:
+            if flags.size == 0:
+                return 0.0
+            vals = flags.astype(np.uint8)
+            starts = vals.copy()
+            starts[1:] = np.maximum(0, vals[1:] - vals[:-1])
+            return float(starts.sum())
+
+        neutral_light = ((grid_gray_raw > 0.70) & (grid_chroma < 0.26)).astype(np.float32)
+        row_light = neutral_light.mean(axis=1).astype(np.float32)
+        row_dark = (grid_gray_raw < 0.30).astype(np.float32).mean(axis=1)
+        row_color = (grid_chroma > 0.14).astype(np.float32).mean(axis=1)
+        light_runs = _run_count(row_light > 0.16)
+        dark_runs = _run_count(row_dark > 0.22)
+        color_runs = _run_count(row_color > 0.18)
+        row_band_delta = np.diff(row_dark - row_light).astype(np.float32)
+        stripe_strength = (
+            min(1.0, light_runs / 3.0)
+            * min(1.0, float(row_light.max(initial=0.0)) * 3.0)
+            * min(1.0, float(row_dark.max(initial=0.0)) * 2.5)
+        )
+        colored_panel = min(1.0, color_runs / 2.0) * min(1.0, float(row_color.max(initial=0.0)) * 2.2)
+        band_alternation = min(1.0, float(np.mean(np.abs(row_band_delta))) * 4.0) if row_band_delta.size else 0.0
+        sleeve_structure = np.array(
+            [
+                stripe_strength,
+                min(1.0, light_runs / 5.0),
+                min(1.0, dark_runs / 4.0),
+                colored_panel,
+                band_alternation,
+                float(row_light.max(initial=0.0)),
+                float(row_dark.max(initial=0.0)),
+                float(row_color.max(initial=0.0)),
+            ],
+            dtype=np.float32,
+        )
+
         aspect = float((x1 - x0) / max(1, (y1 - y0)))
         coverage = float(grid_mask.mean())
         horizontal_strength = float(np.mean(edge_y > (edge_y.mean() + edge_y.std()))) if edge_y.size else 0.0
@@ -1698,6 +1736,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             proj_y * 1.20,
             proj_x * 0.80,
             hist_vec * 0.70,
+            sleeve_structure * 3.20,
             shape_vec * 0.90,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
@@ -2119,7 +2158,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "sleeve_pattern",
-                "version": 3,
+                "version": 4,
                 "size": 32,
                 "standard_views": "grid_halves_bands_components",
                 "pattern": standard_pattern,
