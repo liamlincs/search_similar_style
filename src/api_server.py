@@ -265,6 +265,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pattern_boost_scale = float(search_cfg.get("sleeve_pattern_boost_scale", 0.25))
     sleeve_pattern_min_score = float(search_cfg.get("sleeve_pattern_min_score", 0.48))
     sleeve_pattern_max_injected = int(search_cfg.get("sleeve_pattern_max_injected", 16))
+    sleeve_pair_prior_boost = float(search_cfg.get("sleeve_pair_prior_boost", 0.08))
     accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
     accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
@@ -1771,10 +1772,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for name, score in ranked:
             merged[name] = max(float(score), merged.get(name, -1e9))
         for file_name, sim in injected:
-            seed = sleeve_pattern_seed_score_base + sleeve_pattern_boost_scale * max(0.0, sim)
+            base_name = file_name.split("@", 1)[0]
+            pair_prior = float(sleeve_pair_prior_cache.get(base_name, 0.0))
+            seed = (
+                sleeve_pattern_seed_score_base
+                + sleeve_pattern_boost_scale * max(0.0, sim)
+                + max(0.0, sleeve_pair_prior_boost) * pair_prior
+            )
             merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
         debug_items = [
-            f"{filename_to_style_code(file_name)}:{sim:.3f}/{sleeve_pattern_seed_score_base + sleeve_pattern_boost_scale * max(0.0, sim):.3f}"
+            (
+                f"{filename_to_style_code(file_name)}:{sim:.3f}/"
+                f"{sleeve_pattern_seed_score_base + sleeve_pattern_boost_scale * max(0.0, sim) + max(0.0, sleeve_pair_prior_boost) * float(sleeve_pair_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.3f}/"
+                f"{float(sleeve_pair_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.2f}"
+            )
             for file_name, sim in injected[:40]
         ]
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
@@ -2098,6 +2109,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"sleeve_pattern_cache_{safe}.npz"
 
+    def _sleeve_pair_prior_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"sleeve_pair_prior_cache_{safe}.npz"
+
     def _accessory_pattern_cache_path() -> Path:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accessory_pattern_cache_{safe}.npz"
@@ -2209,6 +2224,149 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("sleeve pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
+    def _extract_sleeve_pair_prior(path: Path) -> float:
+        try:
+            with Image.open(path) as im0:
+                im = im0.convert("RGB")
+                im.thumbnail((256, 256), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
+        except Exception:
+            return 0.0
+        if rgb.ndim != 3 or rgb.shape[0] < 40 or rgb.shape[1] < 40:
+            return 0.0
+        h, w = rgb.shape[:2]
+        arr = rgb.astype(np.float32)
+        gray = 0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]
+        maxc = arr.max(axis=-1)
+        minc = arr.min(axis=-1)
+        sat = (maxc - minc) / np.maximum(maxc, 1.0)
+
+        # Ignore top labels; sleeve pieces are usually dark/colored regions on a gray floor.
+        fg = ((sat > 0.10) | (gray < 82.0)) & (gray < 245.0)
+        fg[: min(int(h * 0.12), 36), :] = False
+        min_area = max(40, int(h * w * 0.006))
+        comps: List[tuple[int, int, int, int, int]] = []
+        if cv2 is not None:
+            n_labels, labels, stats, _centers = cv2.connectedComponentsWithStats(fg.astype(np.uint8), 8)
+            for label in range(1, int(n_labels)):
+                x = int(stats[label, cv2.CC_STAT_LEFT])
+                y = int(stats[label, cv2.CC_STAT_TOP])
+                ww = int(stats[label, cv2.CC_STAT_WIDTH])
+                hh = int(stats[label, cv2.CC_STAT_HEIGHT])
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < min_area or ww < 12 or hh < 18:
+                    continue
+                comps.append((x, y, ww, hh, area))
+        else:
+            seen = np.zeros(fg.shape, dtype=bool)
+            for sy, sx in zip(*np.where(fg & ~seen)):
+                stack = [(int(sy), int(sx))]
+                seen[sy, sx] = True
+                pts: List[tuple[int, int]] = []
+                while stack:
+                    cy, cx = stack.pop()
+                    pts.append((cy, cx))
+                    for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                        if ny < 0 or ny >= h or nx < 0 or nx >= w:
+                            continue
+                        if seen[ny, nx] or not bool(fg[ny, nx]):
+                            continue
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+                if len(pts) < min_area:
+                    continue
+                ys = [p[0] for p in pts]
+                xs = [p[1] for p in pts]
+                x0, x1 = min(xs), max(xs)
+                y0, y1 = min(ys), max(ys)
+                ww, hh = x1 - x0 + 1, y1 - y0 + 1
+                if ww < 12 or hh < 18:
+                    continue
+                comps.append((x0, y0, ww, hh, len(pts)))
+
+        comps.sort(key=lambda item: item[4], reverse=True)
+        comps = comps[:6]
+        pair_score = 0.0
+        for i in range(len(comps)):
+            x1, y1, w1, h1, a1 = comps[i]
+            c1 = x1 + w1 / 2.0
+            for j in range(i + 1, len(comps)):
+                x2, y2, w2, h2, a2 = comps[j]
+                c2 = x2 + w2 / 2.0
+                if abs(c1 - c2) < max(16.0, 0.16 * w):
+                    continue
+                height_sim = min(h1, h2) / max(h1, h2, 1)
+                width_sim = min(w1, w2) / max(w1, w2, 1)
+                y_overlap = max(0, min(y1 + h1, y2 + h2) - max(y1, y2)) / max(1, min(h1, h2))
+                vertical = min(1.0, ((h1 / max(1, w1)) + (h2 / max(1, w2))) / 3.2)
+                score = height_sim * width_sim * y_overlap * vertical
+                pair_score = max(pair_score, float(score))
+
+        neutral_light = ((gray > 178.0) & (sat < 0.16)).astype(np.float32)
+        dark = (gray < 82.0).astype(np.float32)
+        row_light = neutral_light.mean(axis=1)
+        row_dark = dark.mean(axis=1)
+
+        def _run_count(flags: np.ndarray) -> float:
+            vals = flags.astype(np.uint8)
+            if vals.size == 0:
+                return 0.0
+            starts = vals.copy()
+            starts[1:] = np.maximum(0, vals[1:] - vals[:-1])
+            return float(starts.sum())
+
+        light_runs = _run_count(row_light > 0.10)
+        dark_runs = _run_count(row_dark > 0.12)
+        stripe_score = min(1.0, light_runs / 4.0) * min(1.0, dark_runs / 4.0)
+        return float(max(0.0, min(1.0, 0.65 * pair_score + 0.35 * stripe_score)))
+
+    def _load_or_build_sleeve_pair_prior_cache(file_names: List[str]) -> Dict[str, float]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "sleeve_pair_prior",
+                "version": 1,
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _sleeve_pair_prior_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    scores = arr["scores"].astype(np.float32)
+                    out = {name: float(scores[i]) for i, name in enumerate(cached_names)}
+                    logging.info("sleeve pair prior cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+        t0 = time.perf_counter()
+        out: Dict[str, float] = {}
+        for fp in files:
+            score = _extract_sleeve_pair_prior(fp)
+            if score > 0.0:
+                out[fp.name] = float(score)
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            scores_arr = np.array([out[n] for n in out.keys()], dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                scores=scores_arr,
+            )
+            logging.info("sleeve pair prior cache write: %s", cache_path)
+        logging.info("sleeve pair prior cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
     def _load_or_build_accessory_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
         files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
@@ -2265,6 +2423,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
     sleeve_pattern_cache: Dict[str, np.ndarray] = {}
+    sleeve_pair_prior_cache: Dict[str, float] = {}
     accessory_pattern_cache: Dict[str, np.ndarray] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
@@ -2323,6 +2482,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if sleeve_pattern_enabled:
         sleeve_pattern_cache = _load_or_build_sleeve_pattern_cache(names)
         logging.info("api preloaded sleeve pattern cache: %d", len(sleeve_pattern_cache))
+        if sleeve_pair_prior_boost > 0.0:
+            sleeve_pair_prior_cache = _load_or_build_sleeve_pair_prior_cache(names)
+            logging.info("api preloaded sleeve pair prior cache: %d", len(sleeve_pair_prior_cache))
     if accessory_pattern_enabled:
         accessory_pattern_cache = _load_or_build_accessory_pattern_cache(names)
         logging.info("api preloaded accessory pattern cache: %d", len(accessory_pattern_cache))
