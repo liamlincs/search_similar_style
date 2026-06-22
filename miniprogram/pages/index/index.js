@@ -383,8 +383,7 @@ Page({
           scoreText: `${(scoreNum * 100).toFixed(2)}%`,
           rankScore: Number(row.rank_score || 0)
         };
-      }).sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
-        .map((item, idx) => ({ ...item, rank: idx + 1 }));
+      });
 
       this.setData({
         hasSearched: true,
