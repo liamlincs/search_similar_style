@@ -272,6 +272,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_pattern_min_score = float(search_cfg.get("accessory_pattern_min_score", 0.50))
     accessory_pattern_max_injected = int(search_cfg.get("accessory_pattern_max_injected", 16))
     accessory_hat_prior_boost = float(search_cfg.get("accessory_hat_prior_boost", 0.10))
+    accessory_hat_code_prefixes = [
+        str(x).strip().upper()
+        for x in search_cfg.get("accessory_hat_code_prefixes", ["BM"])
+        if str(x).strip()
+    ]
+    accessory_hat_code_boost = float(search_cfg.get("accessory_hat_code_boost", 0.16))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1895,8 +1901,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         scored.sort(key=lambda x: x[1], reverse=True)
         injected = scored[: max(1, accessory_pattern_max_injected)]
         merged: Dict[str, float] = {}
+
+        def _hat_code_boost(name: str) -> float:
+            if accessory_hat_code_boost <= 0.0 or not accessory_hat_code_prefixes:
+                return 0.0
+            code = filename_to_style_code(name.split("@", 1)[0]).strip().upper()
+            if any(code.startswith(prefix) for prefix in accessory_hat_code_prefixes):
+                return float(accessory_hat_code_boost)
+            return 0.0
+
         for name, score in ranked:
-            merged[name] = max(float(score), merged.get(name, -1e9))
+            merged[name] = max(float(score) + _hat_code_boost(name), merged.get(name, -1e9))
         for file_name, sim in injected:
             base_name = file_name.split("@", 1)[0]
             hat_prior = float(accessory_hat_prior_cache.get(base_name, 0.0))
@@ -1904,13 +1919,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 accessory_pattern_seed_score_base
                 + accessory_pattern_boost_scale * max(0.0, sim)
                 + max(0.0, accessory_hat_prior_boost) * hat_prior
+                + _hat_code_boost(file_name)
             )
             merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
         debug_items = [
             (
                 f"{filename_to_style_code(file_name)}:{sim:.3f}/"
-                f"{accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim) + max(0.0, accessory_hat_prior_boost) * float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.3f}/"
-                f"{float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.2f}"
+                f"{accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim) + max(0.0, accessory_hat_prior_boost) * float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)) + _hat_code_boost(file_name):.3f}/"
+                f"{float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.2f}/"
+                f"{_hat_code_boost(file_name):.2f}"
             )
             for file_name, sim in injected[:12]
         ]
