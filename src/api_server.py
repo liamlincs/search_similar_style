@@ -40,8 +40,10 @@ if str(THIS_DIR) not in sys.path:
 
 from search_similar_return_code import (
     DEFAULT_CONFIG,
+    build_feature_db,
     build_feature_db_with_cache,
     build_label_memory_prior_from_refs,
+    collect_images,
     filename_to_style_code,
     merge_scene_text_candidates,
     merge_ranked_image_lists,
@@ -205,6 +207,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
     result_image_max_edge = int(search_cfg.get("result_image_max_edge", 0))
     result_image_quality = int(search_cfg.get("result_image_quality", 82))
+    region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
+    region_crop_recall_backend = str(search_cfg.get("region_crop_recall_backend", secondary_feature_backend or feature_backend)).strip().lower()
+    region_crop_recall_weight = float(search_cfg.get("region_crop_recall_weight", 1.12))
+    region_crop_recall_topn_cap = int(search_cfg.get("region_crop_recall_topn_cap", 1200))
+    region_standard_crop_ratio = float(search_cfg.get("region_standard_crop_ratio", 0.55))
+    region_hybrid_weights = search_cfg.get("region_hybrid_weights", secondary_hybrid_weights or hybrid_weights)
+    region_w_clip = float(region_hybrid_weights.get("clip", secondary_w_clip))
+    region_w_shape = float(region_hybrid_weights.get("shape", secondary_w_shape))
+    region_w_color = float(region_hybrid_weights.get("color", secondary_w_color))
+    region_w_stripe = float(region_hybrid_weights.get("stripe", secondary_w_stripe))
     adaptive_second_pass_enabled = bool(search_cfg.get("adaptive_second_pass_enabled", False))
     adaptive_trigger_top1_below = float(search_cfg.get("adaptive_trigger_top1_below", 0.72))
     adaptive_trigger_margin_below = float(search_cfg.get("adaptive_trigger_margin_below", 0.02))
@@ -323,6 +335,76 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_web_session_ttl_sec = int(catalog_web_auth_cfg.get("session_ttl_sec", 43200))
     catalog_web_cookie_name = str(catalog_web_auth_cfg.get("cookie_name", "catalog_session")).strip() or "catalog_session"
 
+    def _region_feature_cache_path(backend: str) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"region_feature_cache_{backend}_{safe}.npz"
+
+    def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
+        files = collect_images(standard_dir, standard_pattern, image_exts)
+        sigs = []
+        for fp in files:
+            st = fp.stat()
+            sigs.append(f"{fp.name}|{st.st_size}|{int(st.st_mtime)}")
+        cache_key = json.dumps(
+            {
+                "kind": "region_crop_recall",
+                "version": 1,
+                "backend": region_crop_recall_backend,
+                "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
+                "standard_multicrop": True,
+                "standard_crop_ratio": float(region_standard_crop_ratio),
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+                "db_feature_dtype": str(db_feature_dtype),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _region_feature_cache_path(region_crop_recall_backend)
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cache_names = [str(x) for x in arr["names"]]
+                    if str(db_feature_dtype).lower() == "float16":
+                        cache_feats = arr["feats"].astype(np.float16)
+                    else:
+                        cache_feats = arr["feats"].astype(np.float32)
+                    logging.info("region feature cache hit: %s (%d items)", cache_path, len(cache_names))
+                    return cache_names, cache_feats
+            except Exception:
+                pass
+
+        t0 = time.perf_counter()
+        cache_names, cache_feats = build_feature_db(
+            standard_dir,
+            standard_pattern,
+            region_crop_recall_backend,
+            image_exts,
+            region_w_clip,
+            region_w_shape,
+            region_w_color,
+            region_w_stripe,
+            standard_multicrop=True,
+            standard_crop_ratio=region_standard_crop_ratio,
+        )
+        if str(db_feature_dtype).lower() == "float16":
+            cache_feats = cache_feats.astype(np.float16)
+        else:
+            cache_feats = cache_feats.astype(np.float32)
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=np.array(cache_names, dtype=object),
+                feats=cache_feats,
+            )
+            logging.info("region feature cache write: %s", cache_path)
+        logging.info("build region feature db done: backend=%s items=%d in %.2fs", region_crop_recall_backend, len(cache_names), time.perf_counter() - t0)
+        return cache_names, cache_feats
+
     _setup_logging()
     names, feats = build_feature_db_with_cache(
         standard_dir,
@@ -360,6 +442,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "api preloaded secondary db: backend=%s items=%d",
             secondary_feature_backend,
             len(secondary_names),
+        )
+    region_names: List[str] = []
+    region_feats: np.ndarray | None = None
+    if region_crop_recall_enabled:
+        region_names, region_feats = _build_region_feature_db_with_cache()
+        logging.info(
+            "api preloaded region crop db: backend=%s items=%d",
+            region_crop_recall_backend,
+            len(region_names),
         )
     rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
     if rerank_enabled and preload_rerank_candidate_cache:
@@ -3415,6 +3506,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 except Exception:
                     pass
             crop_debug = ""
+            crop_active = False
             if crop_w > 0.02 and crop_h > 0.02:
                 try:
                     with Image.open(query_path) as crop_im0:
@@ -3431,6 +3523,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         if right - left >= 32 and bottom - top >= 32:
                             crop_im.crop((left, top, right, bottom)).save(query_path, format="JPEG", quality=92)
                             crop_debug = f"{x:.3f},{y:.3f},{cw:.3f},{ch:.3f}"
+                            crop_active = True
                 except Exception:
                     crop_debug = ""
             query_width = 0
@@ -3462,6 +3555,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             sleeve_candidates_debug = ""
             accessory_debug = ""
             accessory_candidates_debug = ""
+            region_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -3487,6 +3581,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_w_color: float,
                 pass_w_stripe: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
+                nonlocal region_debug
                 t0 = time.perf_counter()
                 image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
                 if recall_cap > 0:
@@ -3527,6 +3622,38 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         ranked_secondary,
                         secondary_weight=secondary_recall_weight,
                     )
+                if crop_active and region_crop_recall_enabled and region_feats is not None and len(region_names) == len(region_feats):
+                    region_topk = min(
+                        len(region_names),
+                        max(top_k * max(cand_multiplier, 1), top_k),
+                    )
+                    if region_crop_recall_topn_cap > 0:
+                        region_topk = min(region_topk, region_crop_recall_topn_cap)
+                    ranked_region = search_topk_images(
+                        query_path,
+                        region_names,
+                        region_feats,
+                        region_topk,
+                        region_crop_recall_backend,
+                        region_w_clip,
+                        region_w_shape,
+                        region_w_color,
+                        region_w_stripe,
+                        query_multicrop=False,
+                        query_crop_ratio=query_crop_ratio,
+                        query_component_views=False,
+                        query_view_consensus_weight=0.0,
+                    )
+                    if ranked_region:
+                        region_debug = ",".join(
+                            f"{filename_to_style_code(n)}:{float(s):.3f}"
+                            for n, s in ranked_region[:8]
+                        )
+                        ranked = merge_ranked_image_lists(
+                            ranked,
+                            ranked_region,
+                            secondary_weight=region_crop_recall_weight,
+                        )
                 t_recall_local = time.perf_counter() - t0
                 if rerank_enabled:
                     t1 = time.perf_counter()
@@ -3875,7 +4002,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s region=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -3883,6 +4010,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             t_post,
             second_pass_used,
             use_strip_mode,
+            region_debug,
             checker_debug,
             checker_candidates_debug,
             accent_debug,

@@ -162,6 +162,17 @@
     "db_feature_dtype": "float16",
     "result_image_max_edge": 640,
     "result_image_quality": 80,
+    "region_crop_recall_enabled": true,
+    "region_crop_recall_backend": "hybrid",
+    "region_crop_recall_weight": 1.12,
+    "region_crop_recall_topn_cap": 1200,
+    "region_standard_crop_ratio": 0.55,
+    "region_hybrid_weights": {
+      "clip": 0.45,
+      "shape": 0.25,
+      "color": 0.15,
+      "stripe": 0.15
+    },
     "feature_backend": "clip",
     "secondary_feature_backend": "hybrid",
     "secondary_recall_weight": 0.94,
