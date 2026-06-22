@@ -248,6 +248,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
+    sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
+    sleeve_pattern_seed_score_base = float(search_cfg.get("sleeve_pattern_seed_score_base", 0.91))
+    sleeve_pattern_boost_scale = float(search_cfg.get("sleeve_pattern_boost_scale", 0.25))
+    sleeve_pattern_min_score = float(search_cfg.get("sleeve_pattern_min_score", 0.48))
+    sleeve_pattern_max_injected = int(search_cfg.get("sleeve_pattern_max_injected", 16))
     accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
     accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
@@ -1441,6 +1446,124 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
+    def _extract_sleeve_pattern_sig(path: Path, size: int = 32) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                im = im0.convert("RGB")
+                im.thumbnail((320, 320), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
+        except Exception:
+            return None
+        if rgb.ndim != 3 or rgb.shape[0] < 40 or rgb.shape[1] < 40:
+            return None
+
+        h, w = rgb.shape[:2]
+        arr = rgb.astype(np.float32)
+        maxc = arr.max(axis=-1)
+        minc = arr.min(axis=-1)
+        gray = 0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]
+        sat = (maxc - minc) / np.maximum(maxc, 1.0)
+        # Sleeve details in model photos are usually colored blocks plus white/dark stripe bands.
+        colorful = (sat > 0.20) & (maxc > 70.0) & (minc < 245.0)
+        colorful[: min(int(h * 0.08), 32), :] = False
+        if int(colorful.sum()) < 80:
+            return None
+
+        ys, xs = np.where(colorful)
+        y0, y1 = int(ys.min()), int(ys.max())
+        x0, x1 = int(xs.min()), int(xs.max())
+        pad_x = max(8, int((x1 - x0 + 1) * 0.45))
+        pad_y = max(8, int((y1 - y0 + 1) * 0.55))
+        x0 = max(0, x0 - pad_x)
+        x1 = min(w, x1 + pad_x + 1)
+        y0 = max(0, y0 - pad_y)
+        y1 = min(h, y1 + pad_y + 1)
+        crop_rgb = rgb[y0:y1, x0:x1]
+        crop_mask = colorful[y0:y1, x0:x1]
+        if crop_rgb.shape[0] < 20 or crop_rgb.shape[1] < 20 or int(crop_mask.sum()) < 60:
+            return None
+
+        rgb_img = Image.fromarray(crop_rgb, mode="RGB").resize((size, size), Image.BILINEAR)
+        mask_img = Image.fromarray((crop_mask.astype(np.uint8) * 255), mode="L").resize((size, size), Image.BILINEAR)
+        grid_rgb = np.asarray(rgb_img, dtype=np.float32) / 255.0
+        grid_mask = np.asarray(mask_img, dtype=np.float32) / 255.0
+        grid_gray = 0.299 * grid_rgb[..., 0] + 0.587 * grid_rgb[..., 1] + 0.114 * grid_rgb[..., 2]
+        grid_gray = (grid_gray - float(grid_gray.mean())) / (float(grid_gray.std()) + 1e-6)
+        grid_gray = np.clip(grid_gray / 3.0, -1.0, 1.0)
+
+        edge_y = np.abs(np.diff(grid_gray, axis=0)).mean(axis=1).astype(np.float32)
+        edge_x = np.abs(np.diff(grid_gray, axis=1)).mean(axis=0).astype(np.float32)
+        edge_y = edge_y / (float(np.linalg.norm(edge_y)) + 1e-8)
+        edge_x = edge_x / (float(np.linalg.norm(edge_x)) + 1e-8)
+        proj_y = grid_mask.mean(axis=1).astype(np.float32)
+        proj_x = grid_mask.mean(axis=0).astype(np.float32)
+        proj_y = proj_y / (float(np.linalg.norm(proj_y)) + 1e-8)
+        proj_x = proj_x / (float(np.linalg.norm(proj_x)) + 1e-8)
+
+        selected = crop_rgb[crop_mask]
+        hist_parts: List[np.ndarray] = []
+        if selected.shape[0] > 0:
+            sel = selected.astype(np.float32) / 255.0
+            for ci in range(3):
+                hist, _ = np.histogram(sel[:, ci], bins=6, range=(0.0, 1.0))
+                hist_parts.append(hist.astype(np.float32))
+            chroma = sel.max(axis=-1) - sel.min(axis=-1)
+            hist, _ = np.histogram(chroma, bins=6, range=(0.0, 1.0))
+            hist_parts.append(hist.astype(np.float32))
+        hist_vec = np.concatenate(hist_parts).astype(np.float32) if hist_parts else np.zeros(24, dtype=np.float32)
+        hist_vec = hist_vec / (float(hist_vec.sum()) + 1e-6)
+
+        aspect = float((x1 - x0) / max(1, (y1 - y0)))
+        coverage = float(grid_mask.mean())
+        horizontal_strength = float(np.mean(edge_y > (edge_y.mean() + edge_y.std()))) if edge_y.size else 0.0
+        shape_vec = np.array([
+            min(1.0, aspect / 2.4),
+            min(1.0, 2.4 / max(0.1, aspect)),
+            coverage,
+            horizontal_strength,
+        ], dtype=np.float32)
+
+        v = np.concatenate([
+            grid_gray.reshape(-1) * 0.40,
+            grid_mask.reshape(-1) * 0.45,
+            edge_y * 2.00,
+            edge_x * 0.70,
+            proj_y * 1.20,
+            proj_x * 0.80,
+            hist_vec * 0.90,
+            shape_vec * 1.60,
+        ]).astype(np.float32)
+        n = float(np.linalg.norm(v)) + 1e-8
+        return (v / n).astype(np.float32)
+
+    def _merge_sleeve_pattern_candidates(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> tuple[List[tuple[str, float]], str]:
+        if not ranked or query_sig is None or not sleeve_pattern_cache:
+            return ranked, ""
+        scored: List[tuple[str, float]] = []
+        for file_name, sig in sleeve_pattern_cache.items():
+            sim = float(query_sig @ sig)
+            if sim >= sleeve_pattern_min_score:
+                scored.append((file_name, sim))
+        if not scored:
+            return ranked, ""
+        scored.sort(key=lambda x: x[1], reverse=True)
+        injected = scored[: max(1, sleeve_pattern_max_injected)]
+        merged: Dict[str, float] = {}
+        for name, score in ranked:
+            merged[name] = max(float(score), merged.get(name, -1e9))
+        for file_name, sim in injected:
+            seed = sleeve_pattern_seed_score_base + sleeve_pattern_boost_scale * max(0.0, sim)
+            merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+        debug_items = [
+            f"{filename_to_style_code(file_name)}:{sim:.3f}/{sleeve_pattern_seed_score_base + sleeve_pattern_boost_scale * max(0.0, sim):.3f}"
+            for file_name, sim in injected[:12]
+        ]
+        out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
+        return out, ",".join(debug_items)
+
     def _extract_accessory_pattern_sig(path: Path, size: int = 48) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -1755,6 +1878,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accent_pattern_cache_{safe}.npz"
 
+    def _sleeve_pattern_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"sleeve_pattern_cache_{safe}.npz"
+
     def _accessory_pattern_cache_path() -> Path:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accessory_pattern_cache_{safe}.npz"
@@ -1809,6 +1936,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             logging.info("accent pattern cache write: %s", cache_path)
         logging.info("accent pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
+    def _load_or_build_sleeve_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "sleeve_pattern",
+                "version": 1,
+                "size": 32,
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _sleeve_pattern_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    feats = arr["feats"].astype(np.float32)
+                    out = {name: feats[i] for i, name in enumerate(cached_names)}
+                    logging.info("sleeve pattern cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+
+        t0 = time.perf_counter()
+        out: Dict[str, np.ndarray] = {}
+        for fp in files:
+            sig = _extract_sleeve_pattern_sig(fp, size=32)
+            if sig is not None:
+                out[fp.name] = sig.astype(np.float32)
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            feats_arr = np.vstack([out[n] for n in out.keys()]).astype(np.float32) if out else np.zeros((0, 1), dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                feats=feats_arr,
+            )
+            logging.info("sleeve pattern cache write: %s", cache_path)
+        logging.info("sleeve pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
     def _load_or_build_accessory_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
@@ -1866,6 +2042,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
+    sleeve_pattern_cache: Dict[str, np.ndarray] = {}
     accessory_pattern_cache: Dict[str, np.ndarray] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
@@ -1921,6 +2098,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if accent_pattern_enabled:
         accent_pattern_cache = _load_or_build_accent_pattern_cache(names)
         logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
+    if sleeve_pattern_enabled:
+        sleeve_pattern_cache = _load_or_build_sleeve_pattern_cache(names)
+        logging.info("api preloaded sleeve pattern cache: %d", len(sleeve_pattern_cache))
     if accessory_pattern_enabled:
         accessory_pattern_cache = _load_or_build_accessory_pattern_cache(names)
         logging.info("api preloaded accessory pattern cache: %d", len(accessory_pattern_cache))
@@ -3247,6 +3427,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             checker_candidates_debug = ""
             accent_debug = ""
             accent_candidates_debug = ""
+            sleeve_debug = ""
+            sleeve_candidates_debug = ""
             accessory_debug = ""
             accessory_candidates_debug = ""
             base_code_prior_boost = (
@@ -3528,6 +3710,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
+            if sleeve_pattern_enabled:
+                q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
+                if q_sleeve_sig is not None:
+                    sleeve_debug = "1"
+                    ranked_images, sleeve_candidates_debug = _merge_sleeve_pattern_candidates(
+                        ranked_images,
+                        q_sleeve_sig,
+                    )
+                    if sleeve_candidates_debug:
+                        rows = topk_style_codes(
+                            ranked_images,
+                            top_k,
+                            min_score=min_score,
+                            code_agg_top_n=code_agg_top_n,
+                            code_agg_alpha=code_agg_alpha,
+                            query_hint_code=query_hint_code,
+                            query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                            code_prior_boost=code_prior_boost,
+                            display_score_scale=display_score_scale,
+                            display_score_bias=display_score_bias,
+                        )
             if accessory_pattern_enabled:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
@@ -3641,7 +3844,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -3653,6 +3856,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             checker_candidates_debug,
             accent_debug,
             accent_candidates_debug,
+            sleeve_debug,
+            sleeve_candidates_debug,
             accessory_debug,
             accessory_candidates_debug,
             ",".join(scene_text_tokens[:6]),
