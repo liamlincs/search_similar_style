@@ -248,6 +248,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
+    accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
+    accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
+    accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
+    accessory_pattern_min_score = float(search_cfg.get("accessory_pattern_min_score", 0.50))
+    accessory_pattern_max_injected = int(search_cfg.get("accessory_pattern_max_injected", 16))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1436,6 +1441,93 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
+    def _extract_accessory_pattern_sig(path: Path, size: int = 48) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                im = im0.convert("RGB")
+                im.thumbnail((320, 320), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
+        except Exception:
+            return None
+        if rgb.ndim != 3 or rgb.shape[0] < 40 or rgb.shape[1] < 40:
+            return None
+        h, w = rgb.shape[:2]
+        arr = rgb.astype(np.float32)
+        gray = (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]).astype(np.float32)
+        # Prefer non-background foreground; model photos still keep hat/cord high contrast.
+        fg = (gray < 235.0) & (np.any(rgb < 245, axis=-1))
+        fg[: min(int(h * 0.08), 32), :] = False
+        if int(fg.sum()) < 64:
+            return None
+
+        ys, xs = np.where(fg)
+        y0, y1 = int(ys.min()), int(ys.max())
+        x0, x1 = int(xs.min()), int(xs.max())
+        crop = fg[y0 : y1 + 1, x0 : x1 + 1]
+        if crop.shape[0] < 24 or crop.shape[1] < 24:
+            return None
+
+        mask_img = Image.fromarray((crop.astype(np.uint8) * 255), mode="L").resize((size, size), Image.BILINEAR)
+        mask = np.asarray(mask_img, dtype=np.float32) / 255.0
+        bits = mask > 0.35
+        if int(bits.sum()) < 24:
+            return None
+
+        proj_x = bits.mean(axis=0).astype(np.float32)
+        proj_y = bits.mean(axis=1).astype(np.float32)
+        lower = bits[int(size * 0.38) :, :]
+        col_strength = lower.mean(axis=0)
+        cord_cols = int(np.count_nonzero(col_strength > 0.10))
+        # Hats with hanging cords have sparse, separated vertical foreground in lower half.
+        cord_score = min(1.0, cord_cols / 10.0)
+        top_mass = float(bits[: int(size * 0.45), :].mean())
+        lower_mass = float(lower.mean())
+        aspect = float((x1 - x0 + 1) / max(1, (y1 - y0 + 1)))
+        aspect_vec = np.array([
+            min(1.0, aspect / 1.8),
+            min(1.0, 1.8 / max(0.1, aspect)),
+            top_mass,
+            lower_mass,
+            cord_score,
+        ], dtype=np.float32)
+
+        v = np.concatenate([
+            mask.reshape(-1) * 0.70,
+            proj_x * 1.20,
+            proj_y * 1.20,
+            aspect_vec * 2.00,
+        ]).astype(np.float32)
+        n = float(np.linalg.norm(v)) + 1e-8
+        return (v / n).astype(np.float32)
+
+    def _merge_accessory_pattern_candidates(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> tuple[List[tuple[str, float]], str]:
+        if not ranked or query_sig is None or not accessory_pattern_cache:
+            return ranked, ""
+        scored: List[tuple[str, float]] = []
+        for file_name, sig in accessory_pattern_cache.items():
+            sim = float(query_sig @ sig)
+            if sim >= accessory_pattern_min_score:
+                scored.append((file_name, sim))
+        if not scored:
+            return ranked, ""
+        scored.sort(key=lambda x: x[1], reverse=True)
+        injected = scored[: max(1, accessory_pattern_max_injected)]
+        merged: Dict[str, float] = {}
+        for name, score in ranked:
+            merged[name] = max(float(score), merged.get(name, -1e9))
+        for file_name, sim in injected:
+            seed = accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim)
+            merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+        debug_items = [
+            f"{filename_to_style_code(file_name)}:{sim:.3f}/{accessory_pattern_seed_score_base + accessory_pattern_boost_scale * max(0.0, sim):.3f}"
+            for file_name, sim in injected[:12]
+        ]
+        out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
+        return out, ",".join(debug_items)
+
     def _extract_phash_bits(path: Path, size: int = 32, keep: int = 8) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -1663,6 +1755,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accent_pattern_cache_{safe}.npz"
 
+    def _accessory_pattern_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"accessory_pattern_cache_{safe}.npz"
+
     def _load_or_build_accent_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
         files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
@@ -1715,12 +1811,62 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("accent pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
+    def _load_or_build_accessory_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "accessory_pattern",
+                "version": 1,
+                "size": 48,
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _accessory_pattern_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    feats = arr["feats"].astype(np.float32)
+                    out = {name: feats[i] for i, name in enumerate(cached_names)}
+                    logging.info("accessory pattern cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+
+        t0 = time.perf_counter()
+        out: Dict[str, np.ndarray] = {}
+        for fp in files:
+            sig = _extract_accessory_pattern_sig(fp, size=48)
+            if sig is not None:
+                out[fp.name] = sig.astype(np.float32)
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            feats_arr = np.vstack([out[n] for n in out.keys()]).astype(np.float32) if out else np.zeros((0, 1), dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                feats=feats_arr,
+            )
+            logging.info("accessory pattern cache write: %s", cache_path)
+        logging.info("accessory pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
+    accessory_pattern_cache: Dict[str, np.ndarray] = {}
     phash_cache: Dict[str, np.ndarray] = {}
     if shape_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
@@ -1775,6 +1921,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if accent_pattern_enabled:
         accent_pattern_cache = _load_or_build_accent_pattern_cache(names)
         logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
+    if accessory_pattern_enabled:
+        accessory_pattern_cache = _load_or_build_accessory_pattern_cache(names)
+        logging.info("api preloaded accessory pattern cache: %d", len(accessory_pattern_cache))
     if phash_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -3098,6 +3247,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             checker_candidates_debug = ""
             accent_debug = ""
             accent_candidates_debug = ""
+            accessory_debug = ""
+            accessory_candidates_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -3377,6 +3528,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
+            if accessory_pattern_enabled:
+                q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
+                if q_accessory_sig is not None:
+                    accessory_debug = "1"
+                    ranked_images, accessory_candidates_debug = _merge_accessory_pattern_candidates(
+                        ranked_images,
+                        q_accessory_sig,
+                    )
+                    if accessory_candidates_debug:
+                        rows = topk_style_codes(
+                            ranked_images,
+                            top_k,
+                            min_score=min_score,
+                            code_agg_top_n=code_agg_top_n,
+                            code_agg_alpha=code_agg_alpha,
+                            query_hint_code=query_hint_code,
+                            query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                            code_prior_boost=code_prior_boost,
+                            display_score_scale=display_score_scale,
+                            display_score_bias=display_score_bias,
+                        )
             if phash_enabled:
                 q_bits = _extract_phash_bits(query_path, size=32, keep=8)
                 if q_bits is not None:
@@ -3469,7 +3641,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -3481,6 +3653,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             checker_candidates_debug,
             accent_debug,
             accent_candidates_debug,
+            accessory_debug,
+            accessory_candidates_debug,
             ",".join(scene_text_tokens[:6]),
             time.perf_counter() - t_all,
         )
