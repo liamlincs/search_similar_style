@@ -1488,6 +1488,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         grid_rgb = np.asarray(rgb_img, dtype=np.float32) / 255.0
         grid_mask = np.asarray(mask_img, dtype=np.float32) / 255.0
         grid_gray = 0.299 * grid_rgb[..., 0] + 0.587 * grid_rgb[..., 1] + 0.114 * grid_rgb[..., 2]
+        grid_chroma = grid_rgb.max(axis=-1) - grid_rgb.min(axis=-1)
+        dark_band = (grid_gray < 0.26).astype(np.float32).mean(axis=1)
+        light_band = (grid_gray > 0.72).astype(np.float32).mean(axis=1)
+        chroma_band = grid_chroma.mean(axis=1).astype(np.float32)
+        band_profile = np.concatenate([dark_band, light_band, chroma_band]).astype(np.float32)
+        band_profile = band_profile / (float(np.linalg.norm(band_profile)) + 1e-8)
         grid_gray = (grid_gray - float(grid_gray.mean())) / (float(grid_gray.std()) + 1e-6)
         grid_gray = np.clip(grid_gray / 3.0, -1.0, 1.0)
 
@@ -1524,14 +1530,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ], dtype=np.float32)
 
         v = np.concatenate([
-            grid_gray.reshape(-1) * 0.40,
+            grid_gray.reshape(-1) * 0.30,
             grid_mask.reshape(-1) * 0.45,
             edge_y * 2.00,
             edge_x * 0.70,
+            band_profile * 1.80,
             proj_y * 1.20,
             proj_x * 0.80,
-            hist_vec * 0.90,
-            shape_vec * 1.60,
+            hist_vec * 0.70,
+            shape_vec * 0.90,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -1945,7 +1952,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "sleeve_pattern",
-                "version": 1,
+                "version": 2,
                 "size": 32,
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
@@ -3731,7 +3738,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-            if accessory_pattern_enabled:
+            if accessory_pattern_enabled and not sleeve_candidates_debug:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
