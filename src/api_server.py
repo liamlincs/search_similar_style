@@ -1386,6 +1386,38 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         bg = ~crop_mask
         dark_base = float(np.mean(crop_gray[bg] < 112.0)) if np.any(bg) else 0.0
         dark_base_scalar = np.array([dark_base], dtype=np.float32)
+        comp_vec = np.zeros(4, dtype=np.float32)
+        if cv2 is not None and int(crop_mask.sum()) > 0:
+            n_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(crop_mask.astype(np.uint8), 4)
+            total_area = float(max(1, int(crop_mask.sum())))
+            slender_area = 0.0
+            vertical_area = 0.0
+            sparse_line_area = 0.0
+            useful_components = 0
+            for label in range(1, int(n_labels)):
+                area = float(stats[label, cv2.CC_STAT_AREA])
+                if area < 2:
+                    continue
+                cw = float(max(1, stats[label, cv2.CC_STAT_WIDTH]))
+                ch = float(max(1, stats[label, cv2.CC_STAT_HEIGHT]))
+                fill = area / max(1.0, cw * ch)
+                aspect = max(cw, ch) / max(1.0, min(cw, ch))
+                useful_components += 1
+                if aspect >= 2.0:
+                    slender_area += area
+                if ch / cw >= 1.8:
+                    vertical_area += area
+                if aspect >= 1.8 and fill <= 0.62:
+                    sparse_line_area += area
+            comp_vec = np.array(
+                [
+                    min(1.0, slender_area / total_area),
+                    min(1.0, vertical_area / total_area),
+                    min(1.0, sparse_line_area / total_area),
+                    min(1.0, useful_components / 10.0),
+                ],
+                dtype=np.float32,
+            )
 
         # Geometry keeps diamond/vertical-bar layouts separate from generic colorful blocks.
         proj_x = mask_grid.sum(axis=0)
@@ -1402,6 +1434,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             diversity_scalar * 1.50,
             coverage_vec * 1.20,
             dark_base_scalar * 0.80,
+            comp_vec * 2.00,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -1670,7 +1703,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accent_pattern",
-                "version": 6,
+                "version": 7,
                 "grid": 12,
                 "min_pixels": int(accent_pattern_min_pixels),
                 "max_edge": int(accent_pattern_max_edge),
