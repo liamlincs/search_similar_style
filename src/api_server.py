@@ -4155,7 +4155,38 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-            if sleeve_pattern_enabled:
+            accessory_like_region = False
+            if crop_active:
+                try:
+                    with Image.open(query_path) as q_im:
+                        qw, qh = q_im.size
+                    accessory_like_region = qh > 0 and (float(qw) / float(qh)) >= 1.10
+                except Exception:
+                    accessory_like_region = False
+
+            if accessory_pattern_enabled and accessory_like_region:
+                q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
+                if q_accessory_sig is not None:
+                    accessory_debug = "1"
+                    ranked_images, accessory_candidates_debug = _merge_accessory_pattern_candidates(
+                        ranked_images,
+                        q_accessory_sig,
+                    )
+                    if accessory_candidates_debug:
+                        rows = topk_style_codes(
+                            ranked_images,
+                            top_k,
+                            min_score=min_score,
+                            code_agg_top_n=code_agg_top_n,
+                            code_agg_alpha=code_agg_alpha,
+                            query_hint_code=query_hint_code,
+                            query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                            code_prior_boost=code_prior_boost,
+                            display_score_scale=display_score_scale,
+                            display_score_bias=display_score_bias,
+                        )
+
+            if sleeve_pattern_enabled and not accessory_like_region:
                 q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
                 if q_sleeve_sig is not None:
                     sleeve_debug = "1"
@@ -4176,7 +4207,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-            if accessory_pattern_enabled and not sleeve_candidates_debug:
+            if accessory_pattern_enabled and not accessory_like_region and not sleeve_candidates_debug:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
