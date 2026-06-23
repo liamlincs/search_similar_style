@@ -291,6 +291,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if str(x).strip()
     ]
     accessory_hat_code_boost = float(search_cfg.get("accessory_hat_code_boost", 0.16))
+    accessory_near_square_crop_enabled = bool(search_cfg.get("accessory_near_square_crop_enabled", True))
+    accessory_near_square_crop_min_aspect = float(search_cfg.get("accessory_near_square_crop_min_aspect", 0.65))
+    accessory_near_square_crop_max_aspect = float(search_cfg.get("accessory_near_square_crop_max_aspect", 1.25))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -4320,6 +4323,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
             q_accent_sig = None
+            q_checker_profile = None
             accent_pattern_allowed = accent_pattern_enabled and (not crop_active or accent_pattern_crop_enabled)
             if accent_pattern_allowed:
                 q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
@@ -4390,18 +4394,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_bias=display_score_bias,
                         )
             accessory_like_region = False
+            accessory_near_square_region = False
             if crop_active:
                 try:
                     with Image.open(query_path) as q_im:
                         qw, qh = q_im.size
-                    accessory_like_region = qh > 0 and (float(qw) / float(qh)) >= 1.10
+                    crop_aspect = float(qw) / float(qh) if qh > 0 else 0.0
+                    accessory_like_region = crop_aspect >= 1.10
+                    checker_is_strong = (
+                        q_checker_profile is not None
+                        and float(q_checker_profile.get("checker", 0.0)) >= checker_suppress_sleeve_threshold
+                        and float(q_checker_profile.get("bw_mix", 0.0)) >= checker_suppress_sleeve_bw_mix
+                    )
+                    accessory_near_square_region = (
+                        accessory_near_square_crop_enabled
+                        and not checker_is_strong
+                        and accessory_near_square_crop_min_aspect <= crop_aspect <= accessory_near_square_crop_max_aspect
+                    )
                 except Exception:
                     accessory_like_region = False
+                    accessory_near_square_region = False
             suppress_accessory_for_region_hit = crop_active and (
-                bool(region_strong_code) or bool(accent_candidates_debug)
+                bool(region_strong_code)
+                or (bool(accent_candidates_debug) and not accessory_near_square_region)
             )
 
-            if accessory_pattern_enabled and accessory_like_region and not suppress_accessory_for_region_hit:
+            if (
+                accessory_pattern_enabled
+                and (accessory_like_region or accessory_near_square_region)
+                and not suppress_accessory_for_region_hit
+            ):
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
@@ -4437,11 +4459,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and float(q_checker_profile.get("checker", 0.0)) >= checker_suppress_sleeve_threshold
                 and float(q_checker_profile.get("bw_mix", 0.0)) >= checker_suppress_sleeve_bw_mix
             )
+            suppress_sleeve_for_accessory_query = (
+                crop_active
+                and accessory_near_square_region
+                and bool(accessory_candidates_debug)
+            )
             if (
                 sleeve_pattern_enabled
                 and not accessory_like_region
                 and not suppress_sleeve_for_accent_query
                 and not suppress_sleeve_for_checker_query
+                and not suppress_sleeve_for_accessory_query
             ):
                 q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
                 if q_sleeve_sig is not None:
@@ -4463,7 +4491,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-            if accessory_pattern_enabled and not accessory_like_region and not sleeve_candidates_debug:
+            if (
+                accessory_pattern_enabled
+                and not accessory_like_region
+                and not sleeve_candidates_debug
+                and not accessory_candidates_debug
+            ):
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"

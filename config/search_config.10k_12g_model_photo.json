@@ -142,6 +142,9 @@
       "BM"
     ],
     "accessory_hat_code_boost": 0.16,
+    "accessory_near_square_crop_enabled": true,
+    "accessory_near_square_crop_min_aspect": 0.65,
+    "accessory_near_square_crop_max_aspect": 1.25,
     "checker_suppress_when_accent": true,
     "checker_accent_suppress_below": 0.14,
     "phash_enabled": true,
