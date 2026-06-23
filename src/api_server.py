@@ -232,6 +232,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_color_consistency_enabled = bool(search_cfg.get("region_crop_color_consistency_enabled", True))
     region_crop_color_consistency_weight = float(search_cfg.get("region_crop_color_consistency_weight", 0.14))
     region_crop_color_consistency_apply_topn = int(search_cfg.get("region_crop_color_consistency_apply_topn", 256))
+    region_crop_order_by_region_enabled = bool(search_cfg.get("region_crop_order_by_region_enabled", True))
     region_standard_crop_ratio = float(search_cfg.get("region_standard_crop_ratio", 0.55))
     region_hybrid_weights = search_cfg.get("region_hybrid_weights", secondary_hybrid_weights or hybrid_weights)
     region_w_clip = float(region_hybrid_weights.get("clip", secondary_w_clip))
@@ -4165,6 +4166,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_code_best_images: Dict[str, str] = {}
             region_boost_debug = ""
             region_rescue_debug = ""
+            region_order_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -4303,6 +4305,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 keep_n = max(0, top_k - len(rescue_rows))
                 return (kept_rows[:keep_n] + rescue_rows)[:top_k]
+
+            def _order_region_primary_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                nonlocal region_order_debug
+                if not (
+                    crop_active
+                    and region_crop_order_by_region_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and region_code_scores
+                    and rows_in
+                ):
+                    return rows_in
+                ordered = sorted(
+                    rows_in,
+                    key=lambda row: (
+                        float(region_code_scores.get(str(row.get("style_code", "")), -1.0)),
+                        float(row.get("rank_score", 0.0)),
+                    ),
+                    reverse=True,
+                )
+                region_order_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(region_code_scores.get(str(row.get('style_code', '')), -1.0)):.3f}"
+                    for row in ordered[:top_k]
+                )
+                return ordered[:top_k]
 
             def _run_search_pass(
                 cand_multiplier: int,
@@ -4839,6 +4866,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
 
             rows = _rescue_region_rows(rows, ranked_images)
+            rows = _order_region_primary_rows(rows)
 
             if low_confidence_enabled and rows:
                 top1 = float(rows[0].get("score", 0.0))
@@ -4918,7 +4946,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s region_order=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -4932,6 +4960,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_debug,
             region_boost_debug,
             region_rescue_debug,
+            region_order_debug,
             checker_debug,
             checker_candidates_debug,
             accent_debug,

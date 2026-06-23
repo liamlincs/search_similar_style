@@ -215,6 +215,7 @@
     "region_crop_color_consistency_enabled": true,
     "region_crop_color_consistency_weight": 0.14,
     "region_crop_color_consistency_apply_topn": 256,
+    "region_crop_order_by_region_enabled": true,
     "region_standard_crop_ratio": 0.55,
     "region_hybrid_weights": {
       "clip": 0.45,
