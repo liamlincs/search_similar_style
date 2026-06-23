@@ -4811,25 +4811,51 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         similar_images: List[Dict[str, Any]] = []
         seen = set()
         max_n = max(1, region_similar_images_topn if crop_active else similar_images_topn)
-        for name, score in ranked_images:
-            file_name = name.split("@", 1)[0]
-            style_code = filename_to_style_code(file_name)
-            seen_key = style_code if crop_active else file_name
-            if seen_key in seen:
-                continue
+
+        def _append_similar_image(
+            image_name: str,
+            style_code: str,
+            rank_score: float,
+            display_score: float | None = None,
+        ) -> None:
+            file_name = image_name.split("@", 1)[0]
+            code = style_code or filename_to_style_code(file_name)
+            seen_key = code if crop_active else file_name
+            if not file_name or seen_key in seen:
+                return
             seen.add(seen_key)
-            z = float(display_score_scale) * (float(score) - float(display_score_bias))
-            disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
-            disp = min(0.9999, max(0.0, float(disp)))
+            if display_score is None:
+                z = float(display_score_scale) * (float(rank_score) - float(display_score_bias))
+                display_score = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                display_score = min(0.9999, max(0.0, float(display_score)))
             similar_images.append(
                 {
                     "image_name": file_name,
-                    "style_code": style_code,
+                    "style_code": code,
                     "image_url": _build_image_url(base_url, file_name),
-                    "rank_score": round(float(score), 6),
-                    "score": round(disp, 4),
+                    "rank_score": round(float(rank_score), 6),
+                    "score": round(float(display_score), 4),
                 }
             )
+
+        if crop_active:
+            for row in rows:
+                img = str(row.get("best_standard_image", "")).strip()
+                if not img:
+                    continue
+                _append_similar_image(
+                    img,
+                    str(row.get("style_code", "")).strip(),
+                    float(row.get("rank_score", 0.0)),
+                    float(row.get("score", 0.0)),
+                )
+                if len(similar_images) >= max_n:
+                    break
+
+        for name, score in ranked_images:
+            file_name = name.split("@", 1)[0]
+            style_code = filename_to_style_code(file_name)
+            _append_similar_image(file_name, style_code, float(score))
             if len(similar_images) >= max_n:
                 break
         similar_images = _enrich_similar_images(base_url, similar_images)
@@ -4843,7 +4869,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s region=%s region_boost=%s region_rescue=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -4852,6 +4878,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             second_pass_used,
             use_strip_mode,
             search_strategy,
+            ",".join(str(row.get("style_code", "")) for row in rows[:top_k]),
+            ",".join(str(item.get("style_code", "")) for item in similar_images[:max_n]),
             region_debug,
             region_boost_debug,
             region_rescue_debug,
