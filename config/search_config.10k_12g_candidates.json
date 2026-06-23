@@ -123,6 +123,9 @@
     "db_feature_dtype": "float16",
     "result_image_max_edge": 640,
     "result_image_quality": 80,
+    "region_crop_color_consistency_enabled": true,
+    "region_crop_color_consistency_weight": 0.14,
+    "region_crop_color_consistency_apply_topn": 256,
     "feature_backend": "hybrid",
     "hybrid_weights": {
       "clip": 0.55,

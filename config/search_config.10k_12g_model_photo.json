@@ -212,6 +212,9 @@
     "region_crop_result_rescue_min_score": 0.74,
     "region_crop_result_rescue_topn": 8,
     "region_crop_result_rescue_scan_codes": 80,
+    "region_crop_color_consistency_enabled": true,
+    "region_crop_color_consistency_weight": 0.14,
+    "region_crop_color_consistency_apply_topn": 256,
     "region_standard_crop_ratio": 0.55,
     "region_hybrid_weights": {
       "clip": 0.45,

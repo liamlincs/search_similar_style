@@ -55,6 +55,7 @@ from search_similar_return_code import (
     topk_style_codes,
     try_extract_query_style_code,
 )
+from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
 from catalog_store import CatalogStore
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
@@ -228,6 +229,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_result_rescue_min_score = float(search_cfg.get("region_crop_result_rescue_min_score", 0.74))
     region_crop_result_rescue_topn = int(search_cfg.get("region_crop_result_rescue_topn", 8))
     region_crop_result_rescue_scan_codes = int(search_cfg.get("region_crop_result_rescue_scan_codes", 80))
+    region_crop_color_consistency_enabled = bool(search_cfg.get("region_crop_color_consistency_enabled", True))
+    region_crop_color_consistency_weight = float(search_cfg.get("region_crop_color_consistency_weight", 0.14))
+    region_crop_color_consistency_apply_topn = int(search_cfg.get("region_crop_color_consistency_apply_topn", 256))
     region_standard_crop_ratio = float(search_cfg.get("region_standard_crop_ratio", 0.55))
     region_hybrid_weights = search_cfg.get("region_hybrid_weights", secondary_hybrid_weights or hybrid_weights)
     region_w_clip = float(region_hybrid_weights.get("clip", secondary_w_clip))
@@ -1230,6 +1234,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         fx = _fft_mag(proj_x, keep)
         return np.concatenate([fy, fx]).astype(np.float32)
 
+    def _extract_color_sig(path: Path) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                feat = extract_garment_color_feature(im0.convert("RGB")).astype(np.float32)
+        except Exception:
+            return None
+        norm = float(np.linalg.norm(feat)) + 1e-8
+        return (feat / norm).astype(np.float32)
+
     def _extract_pattern_sig(path: Path, size: int = 14) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
@@ -2083,6 +2096,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         adjusted.sort(key=lambda x: x[1], reverse=True)
         return adjusted + tail
 
+    def _apply_region_color_consistency(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+    ) -> List[tuple[str, float]]:
+        if not ranked or query_sig is None or not color_sig_cache:
+            return ranked
+        head_n = min(len(ranked), max(1, region_crop_color_consistency_apply_topn))
+        head = ranked[:head_n]
+        tail = ranked[head_n:]
+        w = max(0.0, float(region_crop_color_consistency_weight))
+        adjusted: List[tuple[str, float]] = []
+        for name, score in head:
+            file_name = name.split("@", 1)[0]
+            cs = color_sig_cache.get(file_name)
+            if cs is None:
+                adjusted.append((name, score))
+                continue
+            sim = float(query_sig @ cs)
+            adjusted.append((name, float(score) + w * max(0.0, sim)))
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted + tail
+
     def _apply_pattern_consistency(
         ranked: List[tuple[str, float]],
         query_sig: np.ndarray | None,
@@ -2677,6 +2712,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
+    color_sig_cache: Dict[str, np.ndarray] = {}
     stripe_sig_cache: Dict[str, np.ndarray] = {}
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
@@ -2706,6 +2742,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if mv is not None:
                 fg_mask_cache[file_name] = mv
         logging.info("api preloaded mask cache: %d", len(fg_mask_cache))
+    if region_crop_color_consistency_enabled:
+        uniq = sorted({n.split("@", 1)[0] for n in names})
+        for file_name in uniq:
+            fp = standard_dir / file_name
+            if not fp.exists() or not fp.is_file():
+                continue
+            cv = _extract_color_sig(fp)
+            if cv is not None:
+                color_sig_cache[file_name] = cv
+        logging.info("api preloaded color cache: %d", len(color_sig_cache))
     if stripe_consistency_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
@@ -4336,6 +4382,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_view_consensus_weight=0.0,
                     )
                     if ranked_region:
+                        if region_crop_color_consistency_enabled:
+                            q_region_color_sig = _extract_color_sig(query_path)
+                            ranked_region = _apply_region_color_consistency(ranked_region, q_region_color_sig)
                         region_best_score = max(float(s) for _n, s in ranked_region[: max(1, min(len(ranked_region), 10))])
                         if region_best_score >= region_crop_suppress_accessory_wide_min_score:
                             region_has_confident_match = True
