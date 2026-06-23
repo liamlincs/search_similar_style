@@ -262,6 +262,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_max_injected = int(search_cfg.get("accent_pattern_max_injected", 24))
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
+    accent_pattern_crop_enabled = bool(search_cfg.get("accent_pattern_crop_enabled", True))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -4271,7 +4272,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
             q_accent_sig = None
-            if accent_pattern_enabled and not crop_active:
+            accent_pattern_allowed = accent_pattern_enabled and (not crop_active or accent_pattern_crop_enabled)
+            if accent_pattern_allowed:
                 q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
                 if q_accent_sig is not None:
                     accent_debug = "1"
@@ -4309,7 +4311,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
-            if accent_pattern_enabled and not crop_active:
+            if accent_pattern_allowed:
                 if q_accent_sig is not None:
                     ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
                         ranked_images,
@@ -4336,7 +4338,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     accessory_like_region = qh > 0 and (float(qw) / float(qh)) >= 1.10
                 except Exception:
                     accessory_like_region = False
-            suppress_accessory_for_region_hit = crop_active and bool(region_strong_code)
+            suppress_accessory_for_region_hit = crop_active and (
+                bool(region_strong_code) or bool(accent_candidates_debug)
+            )
 
             if accessory_pattern_enabled and accessory_like_region and not suppress_accessory_for_region_hit:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
