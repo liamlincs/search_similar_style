@@ -4454,7 +4454,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             suppress_accessory_for_region_hit = crop_active and (
                 bool(region_strong_code)
                 or (bool(accent_candidates_debug) and not accessory_near_square_region)
-                or (accessory_like_region and region_best_score >= region_crop_suppress_accessory_wide_min_score)
+                or (region_best_score >= region_crop_suppress_accessory_wide_min_score)
             )
 
             if (
@@ -4540,6 +4540,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and not accessory_like_region
                 and not sleeve_candidates_debug
                 and not accessory_candidates_debug
+                and not (not crop_active and bool(accent_candidates_debug))
             ):
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
