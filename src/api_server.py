@@ -216,6 +216,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_suppress_accessory_wide_min_score = float(search_cfg.get("region_crop_suppress_accessory_wide_min_score", 0.74))
     region_crop_suppress_accessory_topn = int(search_cfg.get("region_crop_suppress_accessory_topn", 10))
     region_crop_suppress_accessory_min_hits = int(search_cfg.get("region_crop_suppress_accessory_min_hits", 3))
+    region_crop_code_prior_enabled = bool(search_cfg.get("region_crop_code_prior_enabled", True))
+    region_crop_code_prior_min_score = float(search_cfg.get("region_crop_code_prior_min_score", 0.74))
+    region_crop_code_prior_boost = float(search_cfg.get("region_crop_code_prior_boost", 0.08))
+    region_crop_code_prior_topn = int(search_cfg.get("region_crop_code_prior_topn", 8))
+    region_crop_result_rescue_enabled = bool(search_cfg.get("region_crop_result_rescue_enabled", True))
+    region_crop_result_rescue_min_score = float(search_cfg.get("region_crop_result_rescue_min_score", 0.74))
+    region_crop_result_rescue_topn = int(search_cfg.get("region_crop_result_rescue_topn", 8))
+    region_crop_result_rescue_scan_codes = int(search_cfg.get("region_crop_result_rescue_scan_codes", 80))
     region_standard_crop_ratio = float(search_cfg.get("region_standard_crop_ratio", 0.55))
     region_hybrid_weights = search_cfg.get("region_hybrid_weights", secondary_hybrid_weights or hybrid_weights)
     region_w_clip = float(region_hybrid_weights.get("clip", secondary_w_clip))
@@ -4093,6 +4101,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_strong_code = ""
             region_best_score = 0.0
             region_has_confident_match = False
+            region_code_scores: Dict[str, float] = {}
+            region_boost_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -4104,6 +4114,79 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 else {}
             )
             code_prior_boost = dict(base_code_prior_boost)
+
+            def _code_prior_key(code: str) -> str:
+                return re.sub(r"[^A-Za-z0-9_-]+", "", str(code).strip().upper())
+
+            def _apply_region_code_prior() -> None:
+                nonlocal region_boost_debug
+                if not (crop_active and region_crop_code_prior_enabled and region_code_scores):
+                    return
+                boosted_codes = []
+                for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True)[: max(1, region_crop_code_prior_topn)]:
+                    if float(score) < region_crop_code_prior_min_score:
+                        continue
+                    code_key = _code_prior_key(code)
+                    code_prior_boost[code_key] = max(
+                        float(code_prior_boost.get(code_key, 0.0)),
+                        float(region_crop_code_prior_boost),
+                    )
+                    boosted_codes.append(f"{code}:{float(score):.3f}")
+                if boosted_codes:
+                    region_boost_debug = ",".join(boosted_codes)
+
+            def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                if not (
+                    crop_active
+                    and region_crop_result_rescue_enabled
+                    and region_code_scores
+                    and rows_in
+                    and ranked_in
+                ):
+                    return rows_in
+                rescue_codes = [
+                    code
+                    for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True)[: max(1, region_crop_result_rescue_topn)]
+                    if float(score) >= region_crop_result_rescue_min_score
+                ]
+                if not rescue_codes:
+                    return rows_in
+                existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
+                missing_keys = [_code_prior_key(code) for code in rescue_codes if _code_prior_key(code) not in existing_keys]
+                if not missing_keys:
+                    return rows_in
+                scan_n = max(top_k, min(max(1, region_crop_result_rescue_scan_codes), max(len(ranked_in), top_k)))
+                broad_rows = topk_style_codes(
+                    ranked_in,
+                    scan_n,
+                    min_score=0.0,
+                    code_agg_top_n=code_agg_top_n,
+                    code_agg_alpha=code_agg_alpha,
+                    query_hint_code=query_hint_code,
+                    query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                    code_prior_boost=code_prior_boost,
+                    display_score_scale=display_score_scale,
+                    display_score_bias=display_score_bias,
+                )
+                broad_by_key = {
+                    _code_prior_key(str(row.get("style_code", ""))): row
+                    for row in broad_rows
+                }
+                rescue_rows: List[Dict[str, Any]] = []
+                for key in missing_keys:
+                    row = broad_by_key.get(key)
+                    if row is not None:
+                        rescue_rows.append(dict(row))
+                if not rescue_rows:
+                    return rows_in
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                keep_n = max(0, top_k - len(rescue_rows))
+                return (kept_rows[:keep_n] + rescue_rows)[:top_k]
 
             def _run_search_pass(
                 cand_multiplier: int,
@@ -4186,6 +4269,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         region_best_score = max(float(s) for _n, s in ranked_region[: max(1, min(len(ranked_region), 10))])
                         if region_best_score >= region_crop_suppress_accessory_wide_min_score:
                             region_has_confident_match = True
+                        region_code_scores.clear()
+                        for n, s in ranked_region[: max(1, region_crop_result_rescue_topn)]:
+                            code = filename_to_style_code(n)
+                            region_code_scores[code] = max(region_code_scores.get(code, -1e9), float(s))
                         region_debug = ",".join(
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
                             for n, s in ranked_region[:40]
@@ -4207,6 +4294,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             ranked_region,
                             secondary_weight=region_crop_recall_weight,
                         )
+                        _apply_region_code_prior()
                 t_recall_local = time.perf_counter() - t0
                 if rerank_enabled:
                     t1 = time.perf_counter()
@@ -4351,6 +4439,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         code_prior_boost = dict(base_code_prior_boost)
                         for code_key, boost in pattern_code_boost.items():
                             code_prior_boost[code_key] = code_prior_boost.get(code_key, 0.0) + float(boost)
+                        _apply_region_code_prior()
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
@@ -4627,6 +4716,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
 
+            rows = _rescue_region_rows(rows, ranked_images)
+
             if low_confidence_enabled and rows:
                 top1 = float(rows[0].get("score", 0.0))
                 top2 = float(rows[1].get("score", 0.0)) if len(rows) > 1 else 0.0
@@ -4679,7 +4770,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s region=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s region=%s region_boost=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -4688,6 +4779,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             second_pass_used,
             use_strip_mode,
             region_debug,
+            region_boost_debug,
             checker_debug,
             checker_candidates_debug,
             accent_debug,
