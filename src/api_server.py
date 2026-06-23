@@ -4116,7 +4116,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_best_score = 0.0
             region_has_confident_match = False
             region_code_scores: Dict[str, float] = {}
+            region_code_best_images: Dict[str, str] = {}
             region_boost_debug = ""
+            region_rescue_debug = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -4171,6 +4173,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     region_boost_debug = ",".join(boosted_codes)
 
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
                 if not (
                     crop_active
                     and region_crop_result_rescue_enabled
@@ -4207,6 +4210,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
                 def _fallback_rescue_row(key: str) -> Dict[str, Any] | None:
                     ranked_item = best_ranked_by_key.get(key)
+                    if ranked_item is None and key in region_code_best_images:
+                        ranked_item = (
+                            region_code_best_images[key],
+                            float(region_code_scores.get(region_code_best_images[key], 0.0)),
+                        )
                     if ranked_item is None:
                         return None
                     image_name, ranked_score = ranked_item
@@ -4237,6 +4245,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         rescue_rows.append(fallback_row)
                 if not rescue_rows:
                     return rows_in
+                region_rescue_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in rescue_rows
+                )
                 rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
                 kept_rows = [
                     row
@@ -4328,9 +4340,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         if region_best_score >= region_crop_suppress_accessory_wide_min_score:
                             region_has_confident_match = True
                         region_code_scores.clear()
+                        region_code_best_images.clear()
                         for n, s in ranked_region[: max(1, region_crop_result_rescue_topn)]:
                             code = filename_to_style_code(n)
-                            region_code_scores[code] = max(region_code_scores.get(code, -1e9), float(s))
+                            score = float(s)
+                            if score > region_code_scores.get(code, -1e9):
+                                region_code_scores[code] = score
+                                region_code_best_images[_code_prior_key(code)] = n.split("@", 1)[0]
                         region_debug = ",".join(
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
                             for n, s in ranked_region[:40]
@@ -4827,7 +4843,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s region=%s region_boost=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s region=%s region_boost=%s region_rescue=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -4838,6 +4854,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             search_strategy,
             region_debug,
             region_boost_debug,
+            region_rescue_debug,
             checker_debug,
             checker_candidates_debug,
             accent_debug,
