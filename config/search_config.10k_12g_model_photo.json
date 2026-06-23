@@ -123,7 +123,7 @@
     "sleeve_pattern_boost_scale": 0.38,
     "sleeve_pattern_min_score": 0.3,
     "sleeve_pattern_max_injected": 40,
-    "sleeve_pair_prior_boost": 0.08,
+    "sleeve_pair_prior_boost": 0.18,
     "sleeve_pattern_skip_when_full_accent": true,
     "accessory_pattern_enabled": true,
     "accessory_pattern_seed_score_base": 0.92,
