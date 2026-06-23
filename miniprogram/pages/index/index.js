@@ -81,6 +81,13 @@ Page({
     this.search(filePath);
   },
 
+  searchFullImage() {
+    const filePath = this.data.localImage;
+    if (!filePath || this.data.searching) return;
+    this.setData({ regionMode: false, cropStart: null });
+    this.search(filePath);
+  },
+
   loadLocalImageInfo(filePath) {
     wx.getImageInfo({
       src: filePath,
@@ -339,7 +346,6 @@ Page({
           confidenceBand: "low"
         });
         this.loadLocalImageInfo(file.tempFilePath);
-        this.search(file.tempFilePath);
       },
       fail: () => {
         wx.showToast({ title: "已取消选择", icon: "none" });

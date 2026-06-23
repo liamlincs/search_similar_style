@@ -237,6 +237,16 @@
   color: #ffffff;
 }
 
+.search-tip {
+  margin-top: 14rpx;
+  padding: 16rpx 18rpx;
+  border-radius: 14rpx;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 23rpx;
+  line-height: 1.45;
+}
+
 .btn {
   flex: 1 1 0;
   min-width: 0;

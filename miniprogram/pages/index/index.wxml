@@ -81,15 +81,21 @@
 
     <view class="actions">
       <button class="btn btn-main" bindtap="chooseFromAlbum" loading="{{searching}}">从相册上传</button>
-      <button class="btn btn-sub" bindtap="takePhoto" loading="{{searching}}">拍照搜款</button>
+      <button class="btn btn-sub" bindtap="takePhoto" loading="{{searching}}">拍照上传</button>
     </view>
     <view wx:if="{{localImage}}" class="region-actions">
-      <button wx:if="{{!regionMode}}" class="region-btn" bindtap="enableRegionSelect" disabled="{{searching}}">圈选区域</button>
+      <block wx:if="{{!regionMode}}">
+        <button class="region-btn primary" bindtap="searchFullImage" loading="{{searching}}">全图搜索</button>
+        <button class="region-btn" bindtap="enableRegionSelect" disabled="{{searching}}">圈选区域</button>
+      </block>
       <block wx:else>
         <button class="region-btn primary" bindtap="searchSelectedRegion" loading="{{searching}}">按区域搜索</button>
         <button class="region-btn" bindtap="cancelRegionSelect" disabled="{{searching}}">取消圈选</button>
         <button class="region-btn" bindtap="clearRegionSelect" disabled="{{searching}}">清除</button>
       </block>
+    </view>
+    <view wx:if="{{localImage && !hasSearched && !searching}}" class="search-tip">
+      商品较小或有多个商品时，建议先圈选目标区域；主体清晰时可直接全图搜索。
     </view>
   </view>
 
