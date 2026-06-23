@@ -4197,11 +4197,44 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     _code_prior_key(str(row.get("style_code", ""))): row
                     for row in broad_rows
                 }
+                best_ranked_by_key: Dict[str, tuple[str, float]] = {}
+                for img_name, score in ranked_in:
+                    code = filename_to_style_code(img_name)
+                    key = _code_prior_key(code)
+                    current = best_ranked_by_key.get(key)
+                    if current is None or float(score) > float(current[1]):
+                        best_ranked_by_key[key] = (img_name.split("@", 1)[0], float(score))
+
+                def _fallback_rescue_row(key: str) -> Dict[str, Any] | None:
+                    ranked_item = best_ranked_by_key.get(key)
+                    if ranked_item is None:
+                        return None
+                    image_name, ranked_score = ranked_item
+                    style_code = filename_to_style_code(image_name)
+                    region_score = float(region_code_scores.get(style_code, ranked_score))
+                    raw_score = max(
+                        ranked_score + float(code_prior_boost.get(key, 0.0)),
+                        region_score + float(region_crop_code_prior_boost),
+                    )
+                    z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    return {
+                        "style_code": style_code,
+                        "best_standard_image": image_name,
+                        "score": round(disp, 4),
+                        "rank_score": round(float(raw_score), 6),
+                    }
+
                 rescue_rows: List[Dict[str, Any]] = []
                 for key in missing_keys:
                     row = broad_by_key.get(key)
                     if row is not None:
                         rescue_rows.append(dict(row))
+                        continue
+                    fallback_row = _fallback_rescue_row(key)
+                    if fallback_row is not None:
+                        rescue_rows.append(fallback_row)
                 if not rescue_rows:
                     return rows_in
                 rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
