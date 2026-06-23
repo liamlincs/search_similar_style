@@ -4092,6 +4092,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_debug = ""
             region_strong_code = ""
             region_best_score = 0.0
+            region_has_confident_match = False
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -4117,7 +4118,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_w_color: float,
                 pass_w_stripe: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
-                nonlocal region_debug, region_strong_code, region_best_score
+                nonlocal region_debug, region_strong_code, region_best_score, region_has_confident_match
                 t0 = time.perf_counter()
                 image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
                 if recall_cap > 0:
@@ -4183,6 +4184,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     if ranked_region:
                         region_best_score = max(float(s) for _n, s in ranked_region[: max(1, min(len(ranked_region), 10))])
+                        if region_best_score >= region_crop_suppress_accessory_wide_min_score:
+                            region_has_confident_match = True
                         region_debug = ",".join(
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
                             for n, s in ranked_region[:40]
@@ -4452,20 +4455,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 except Exception:
                     accessory_like_region = False
                     accessory_near_square_region = False
-            if crop_active and region_best_score <= 0.0 and region_debug:
+            if crop_active and region_debug and not region_has_confident_match:
                 try:
-                    first_region = region_debug.split(",", 1)[0]
-                    region_best_score = float(first_region.rsplit(":", 1)[1])
+                    parsed_region_scores = [
+                        float(part.rsplit(":", 1)[1])
+                        for part in region_debug.split(",")[: max(1, region_crop_suppress_accessory_topn)]
+                        if ":" in part
+                    ]
+                    if parsed_region_scores:
+                        region_best_score = max(region_best_score, max(parsed_region_scores))
+                        if region_best_score >= region_crop_suppress_accessory_wide_min_score:
+                            region_has_confident_match = True
                 except Exception:
-                    region_best_score = 0.0
+                    pass
             suppress_accessory_for_region_hit = crop_active and (
                 bool(region_strong_code)
                 or (bool(accent_candidates_debug) and not accessory_near_square_region)
-                or (region_best_score >= region_crop_suppress_accessory_wide_min_score)
+                or region_has_confident_match
                 or (accessory_disable_wide_crop_enabled and accessory_like_region and not accessory_near_square_region)
             )
             if suppress_accessory_for_region_hit:
-                accessory_debug = "skip-region"
+                accessory_debug = f"skip-region:{region_best_score:.3f}"
 
             if (
                 accessory_pattern_enabled
@@ -4548,6 +4558,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if (
                 accessory_pattern_enabled
                 and not accessory_like_region
+                and not suppress_accessory_for_region_hit
                 and not sleeve_candidates_debug
                 and not accessory_candidates_debug
                 and not (not crop_active and bool(accent_candidates_debug))
