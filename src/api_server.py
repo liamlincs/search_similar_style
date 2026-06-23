@@ -255,6 +255,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     checker_apply_topn = int(search_cfg.get("checker_apply_topn", 160))
     checker_code_boost_weight = float(search_cfg.get("checker_code_boost_weight", 0.12))
     checker_code_boost_topn = int(search_cfg.get("checker_code_boost_topn", 24))
+    checker_seed_enabled = bool(search_cfg.get("checker_seed_enabled", True))
+    checker_seed_score_base = float(search_cfg.get("checker_seed_score_base", 1.30))
+    checker_seed_boost_scale = float(search_cfg.get("checker_seed_boost_scale", 0.75))
+    checker_seed_min_score = float(search_cfg.get("checker_seed_min_score", 0.08))
+    checker_seed_max_injected = int(search_cfg.get("checker_seed_max_injected", 24))
+    checker_suppress_sleeve_threshold = float(search_cfg.get("checker_suppress_sleeve_threshold", 0.14))
+    checker_suppress_sleeve_bw_mix = float(search_cfg.get("checker_suppress_sleeve_bw_mix", 0.55))
     accent_pattern_enabled = bool(search_cfg.get("accent_pattern_enabled", False))
     accent_pattern_seed_score_base = float(search_cfg.get("accent_pattern_seed_score_base", 0.90))
     accent_pattern_boost_scale = float(search_cfg.get("accent_pattern_boost_scale", 0.24))
@@ -2119,6 +2126,47 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 continue
             boosts[str(code).strip().upper()] = checker_code_boost_weight * (strength / max_checker)
         return adjusted + tail, boosts, debug_text
+
+    def _merge_checker_seed_candidates(
+        ranked: List[tuple[str, float]],
+        query_profile: Dict[str, float] | None,
+    ) -> tuple[List[tuple[str, float]], str]:
+        if not ranked or not query_profile or not checker_seed_enabled or not checker_profile_cache:
+            return ranked, ""
+        q_checker = float(query_profile.get("checker", 0.0))
+        q_bw_mix = float(query_profile.get("bw_mix", 0.0))
+        if q_checker < checker_query_threshold:
+            return ranked, ""
+        scored: List[tuple[str, float]] = []
+        for file_name, prof in checker_profile_cache.items():
+            c_checker = float(prof.get("checker", 0.0))
+            if c_checker <= 0.0:
+                continue
+            c_stripe = float(prof.get("stripe", 0.0))
+            c_bw_mix = float(prof.get("bw_mix", 0.0))
+            bw_close = 1.0 - min(1.0, abs(q_bw_mix - c_bw_mix))
+            stripe_penalty = 1.0 - min(0.45, max(0.0, c_stripe - c_checker) * 1.8)
+            score = c_checker * (0.55 + 0.45 * bw_close) * stripe_penalty
+            if score >= checker_seed_min_score:
+                scored.append((file_name, float(score)))
+        if not scored:
+            return ranked, ""
+        scored.sort(key=lambda x: x[1], reverse=True)
+        injected = scored[: max(1, checker_seed_max_injected)]
+
+        merged: Dict[str, float] = {}
+        for name, score in ranked:
+            merged[name] = max(float(score), merged.get(name, -1e9))
+        for file_name, score in injected:
+            seed = checker_seed_score_base + checker_seed_boost_scale * max(0.0, score)
+            merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+
+        debug_items = [
+            f"{filename_to_style_code(file_name)}:{score:.3f}/"
+            f"{checker_seed_score_base + checker_seed_boost_scale * max(0.0, score):.3f}"
+            for file_name, score in injected[:12]
+        ]
+        return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items)
 
     def _apply_phash_consistency(
         ranked: List[tuple[str, float]],
@@ -4295,10 +4343,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ranked_images,
                     q_checker_profile,
                 )
+                ranked_images, checker_seed_debug = _merge_checker_seed_candidates(
+                    ranked_images,
+                    q_checker_profile,
+                )
+                if checker_seed_debug:
+                    checker_candidates_debug = (
+                        f"{checker_candidates_debug}|seed={checker_seed_debug}"
+                        if checker_candidates_debug
+                        else f"seed={checker_seed_debug}"
+                    )
                 if checker_code_boost:
                     code_prior_boost = dict(code_prior_boost)
                     for code_key, boost in checker_code_boost.items():
                         code_prior_boost[code_key] = code_prior_boost.get(code_key, 0.0) + float(boost)
+                if checker_code_boost or checker_seed_debug:
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
@@ -4372,7 +4431,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and not crop_active
                 and bool(accent_candidates_debug)
             )
-            if sleeve_pattern_enabled and not accessory_like_region and not suppress_sleeve_for_accent_query:
+            suppress_sleeve_for_checker_query = (
+                crop_active
+                and q_checker_profile is not None
+                and float(q_checker_profile.get("checker", 0.0)) >= checker_suppress_sleeve_threshold
+                and float(q_checker_profile.get("bw_mix", 0.0)) >= checker_suppress_sleeve_bw_mix
+            )
+            if (
+                sleeve_pattern_enabled
+                and not accessory_like_region
+                and not suppress_sleeve_for_accent_query
+                and not suppress_sleeve_for_checker_query
+            ):
                 q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
                 if q_sleeve_sig is not None:
                     sleeve_debug = "1"
