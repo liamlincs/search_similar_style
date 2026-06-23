@@ -294,6 +294,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_near_square_crop_enabled = bool(search_cfg.get("accessory_near_square_crop_enabled", True))
     accessory_near_square_crop_min_aspect = float(search_cfg.get("accessory_near_square_crop_min_aspect", 0.65))
     accessory_near_square_crop_max_aspect = float(search_cfg.get("accessory_near_square_crop_max_aspect", 1.25))
+    accessory_hat_prior_seed_enabled = bool(search_cfg.get("accessory_hat_prior_seed_enabled", True))
+    accessory_hat_prior_query_threshold = float(search_cfg.get("accessory_hat_prior_query_threshold", 0.42))
+    accessory_hat_prior_seed_min_score = float(search_cfg.get("accessory_hat_prior_seed_min_score", 0.45))
+    accessory_hat_prior_seed_score_base = float(search_cfg.get("accessory_hat_prior_seed_score_base", 1.22))
+    accessory_hat_prior_seed_boost_scale = float(search_cfg.get("accessory_hat_prior_seed_boost_scale", 0.22))
+    accessory_hat_prior_seed_max_injected = int(search_cfg.get("accessory_hat_prior_seed_max_injected", 16))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -1904,6 +1910,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _merge_accessory_pattern_candidates(
         ranked: List[tuple[str, float]],
         query_sig: np.ndarray | None,
+        query_hat_prior: float = 0.0,
     ) -> tuple[List[tuple[str, float]], str]:
         if not ranked or query_sig is None or not accessory_pattern_cache:
             return ranked, ""
@@ -1938,6 +1945,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 + _hat_code_boost(file_name)
             )
             merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+        hat_injected: List[tuple[str, float]] = []
+        if (
+            accessory_hat_prior_seed_enabled
+            and query_hat_prior >= accessory_hat_prior_query_threshold
+            and accessory_hat_prior_cache
+        ):
+            for file_name, hat_prior in accessory_hat_prior_cache.items():
+                prior = float(hat_prior)
+                if prior < accessory_hat_prior_seed_min_score:
+                    continue
+                hat_injected.append((file_name, prior + _hat_code_boost(file_name)))
+            hat_injected.sort(key=lambda x: x[1], reverse=True)
+            for file_name, prior_score in hat_injected[: max(1, accessory_hat_prior_seed_max_injected)]:
+                base_name = file_name.split("@", 1)[0]
+                prior = float(accessory_hat_prior_cache.get(base_name, 0.0))
+                seed = (
+                    accessory_hat_prior_seed_score_base
+                    + accessory_hat_prior_seed_boost_scale * max(0.0, prior)
+                    + _hat_code_boost(file_name)
+                )
+                merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
         debug_items = [
             (
                 f"{filename_to_style_code(file_name)}:{sim:.3f}/"
@@ -1947,6 +1975,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             for file_name, sim in injected[:12]
         ]
+        if hat_injected:
+            debug_items.extend(
+                f"hat:{filename_to_style_code(file_name)}:{float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0)):.3f}/"
+                f"{accessory_hat_prior_seed_score_base + accessory_hat_prior_seed_boost_scale * max(0.0, float(accessory_hat_prior_cache.get(file_name.split('@', 1)[0], 0.0))) + _hat_code_boost(file_name):.3f}"
+                for file_name, _prior_score in hat_injected[:6]
+            )
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
@@ -4427,9 +4461,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
+                    q_accessory_hat_prior = _extract_accessory_hat_prior(query_path)
                     ranked_images, accessory_candidates_debug = _merge_accessory_pattern_candidates(
                         ranked_images,
                         q_accessory_sig,
+                        query_hat_prior=q_accessory_hat_prior,
                     )
                     if accessory_candidates_debug:
                         rows = topk_style_codes(
@@ -4500,9 +4536,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
+                    q_accessory_hat_prior = _extract_accessory_hat_prior(query_path)
                     ranked_images, accessory_candidates_debug = _merge_accessory_pattern_candidates(
                         ranked_images,
                         q_accessory_sig,
+                        query_hat_prior=q_accessory_hat_prior,
                     )
                     if accessory_candidates_debug:
                         rows = topk_style_codes(
