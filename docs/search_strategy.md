@@ -37,6 +37,11 @@ For region searches:
 5. Rescue high-scoring region codes into the final result list if generic
    post-processing pushes them out.
 
+In `similar_style:region_primary`, accessory/hat injection is also suppressed
+when the crop already has accent-pattern candidates. This keeps sleeve, collar,
+and scarf crops from being reinterpreted as hats just because the crop is close
+to square.
+
 This prevents local matches such as sleeves or scarves from being hidden by
 unrelated global/accessory heuristics.
 

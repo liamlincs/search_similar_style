@@ -316,6 +316,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_hat_prior_seed_max_injected = int(search_cfg.get("accessory_hat_prior_seed_max_injected", 16))
     accessory_region_requires_hat_prior = bool(search_cfg.get("accessory_region_requires_hat_prior", True))
     accessory_region_hat_prior_threshold = float(search_cfg.get("accessory_region_hat_prior_threshold", accessory_hat_prior_query_threshold))
+    accessory_region_suppress_when_accent = bool(search_cfg.get("accessory_region_suppress_when_accent", True))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -4579,6 +4580,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 or (
                     bool(accent_candidates_debug)
                     and (
+                        (active_match_mode == "similar_style" and accessory_region_suppress_when_accent)
+                        or
                         not accessory_near_square_region
                         or (
                             accessory_region_requires_hat_prior
