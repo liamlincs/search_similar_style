@@ -207,6 +207,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
     result_image_max_edge = int(search_cfg.get("result_image_max_edge", 0))
     result_image_quality = int(search_cfg.get("result_image_quality", 82))
+    default_match_mode = str(search_cfg.get("match_mode", "similar_style")).strip().lower()
+    region_primary_when_crop = bool(search_cfg.get("region_primary_when_crop", True))
+    exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
+    exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
     region_crop_recall_backend = str(search_cfg.get("region_crop_recall_backend", secondary_feature_backend or feature_backend)).strip().lower()
     region_crop_recall_weight = float(search_cfg.get("region_crop_recall_weight", 1.12))
@@ -4019,6 +4023,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         crop_y: float = Form(0.0),
         crop_w: float = Form(0.0),
         crop_h: float = Form(0.0),
+        match_mode: str = Form(""),
     ) -> Dict[str, Any]:
         t_all = time.perf_counter()
         if not file.filename:
@@ -4075,15 +4080,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     query_width, query_height = qim1.size
             except Exception:
                 pass
+            active_match_mode = (str(match_mode).strip().lower() or default_match_mode or "similar_style")
+            if active_match_mode not in {"similar_style", "exact"}:
+                active_match_mode = "similar_style"
+            search_scope = "region_primary" if crop_active and region_primary_when_crop else "full_context"
+            search_strategy = f"{active_match_mode}:{search_scope}"
             debug_saved = _save_debug_query_image(request, query_path, file.filename or "query")
             logging.info(
-                "search upload user=%s file=%s bytes=%d final_size=%sx%s crop=%s saved=%s",
+                "search upload user=%s file=%s bytes=%d final_size=%sx%s crop=%s strategy=%s saved=%s",
                 getattr(request.state, "api_user", "unknown"),
                 file.filename,
                 len(upload_bytes),
                 query_width,
                 query_height,
                 crop_debug,
+                search_strategy,
                 str(debug_saved or ""),
             )
 
@@ -4118,6 +4129,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             def _code_prior_key(code: str) -> str:
                 return re.sub(r"[^A-Za-z0-9_-]+", "", str(code).strip().upper())
 
+            def _rows_from_ranked(
+                ranked_in: List[tuple[str, float]],
+                topn: int = top_k,
+                score_floor: float = min_score,
+            ) -> List[Dict[str, Any]]:
+                return topk_style_codes(
+                    ranked_in,
+                    topn,
+                    min_score=score_floor,
+                    code_agg_top_n=code_agg_top_n,
+                    code_agg_alpha=code_agg_alpha,
+                    query_hint_code=query_hint_code,
+                    query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                    code_prior_boost=code_prior_boost,
+                    display_score_scale=display_score_scale,
+                    display_score_bias=display_score_bias,
+                )
+
             def _apply_region_code_prior() -> None:
                 nonlocal region_boost_debug
                 if not (crop_active and region_crop_code_prior_enabled and region_code_scores):
@@ -4127,11 +4156,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if float(score) < region_crop_code_prior_min_score:
                         continue
                     code_key = _code_prior_key(code)
+                    boost = float(region_crop_code_prior_boost)
+                    if active_match_mode == "exact":
+                        boost *= max(0.0, float(exact_region_code_prior_scale))
                     code_prior_boost[code_key] = max(
                         float(code_prior_boost.get(code_key, 0.0)),
-                        float(region_crop_code_prior_boost),
+                        boost,
                     )
-                    boosted_codes.append(f"{code}:{float(score):.3f}")
+                    boosted_codes.append(f"{code}:{float(score):.3f}/{boost:.3f}")
                 if boosted_codes:
                     region_boost_debug = ",".join(boosted_codes)
 
@@ -4139,6 +4171,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and region_crop_result_rescue_enabled
+                    and (active_match_mode != "exact" or exact_region_rescue_enabled)
                     and region_code_scores
                     and rows_in
                     and ranked_in
@@ -4156,18 +4189,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not missing_keys:
                     return rows_in
                 scan_n = max(top_k, min(max(1, region_crop_result_rescue_scan_codes), max(len(ranked_in), top_k)))
-                broad_rows = topk_style_codes(
-                    ranked_in,
-                    scan_n,
-                    min_score=0.0,
-                    code_agg_top_n=code_agg_top_n,
-                    code_agg_alpha=code_agg_alpha,
-                    query_hint_code=query_hint_code,
-                    query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
-                    code_prior_boost=code_prior_boost,
-                    display_score_scale=display_score_scale,
-                    display_score_bias=display_score_bias,
-                )
+                broad_rows = _rows_from_ranked(ranked_in, topn=scan_n, score_floor=0.0)
                 broad_by_key = {
                     _code_prior_key(str(row.get("style_code", ""))): row
                     for row in broad_rows
@@ -4317,18 +4339,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 else:
                     t_rerank_local = 0.0
                 t2 = time.perf_counter()
-                rows_local = topk_style_codes(
-                    ranked,
-                    top_k,
-                    min_score=min_score,
-                    code_agg_top_n=code_agg_top_n,
-                    code_agg_alpha=code_agg_alpha,
-                    query_hint_code=query_hint_code,
-                    query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
-                    code_prior_boost=code_prior_boost,
-                    display_score_scale=display_score_scale,
-                    display_score_bias=display_score_bias,
-                )
+                rows_local = _rows_from_ranked(ranked)
                 t_post_local = time.perf_counter() - t2
                 return ranked, rows_local, t_recall_local, t_rerank_local, t_post_local
 
@@ -4770,7 +4781,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s region=%s region_boost=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s region=%s region_boost=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -4778,6 +4789,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             t_post,
             second_pass_used,
             use_strip_mode,
+            search_strategy,
             region_debug,
             region_boost_debug,
             checker_debug,
