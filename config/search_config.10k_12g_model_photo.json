@@ -193,6 +193,7 @@
     "region_crop_recall_topn_cap": 1200,
     "region_crop_suppress_accessory_enabled": true,
     "region_crop_suppress_accessory_min_score": 0.68,
+    "region_crop_suppress_accessory_wide_min_score": 0.74,
     "region_crop_suppress_accessory_topn": 10,
     "region_crop_suppress_accessory_min_hits": 3,
     "region_standard_crop_ratio": 0.55,
