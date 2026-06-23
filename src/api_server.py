@@ -4317,6 +4317,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and rows_in
                 ):
                     return rows_in
+                accessory_hat_query = (
+                    accessory_near_square_region
+                    and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
+                    and bool(accessory_candidates_debug)
+                )
+                if accessory_hat_query:
+                    region_order_debug = "skip-accessory-hat"
+                    return rows_in
                 ordered = sorted(
                     rows_in,
                     key=lambda row: (
@@ -4717,6 +4725,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 or region_has_confident_match
                 or (accessory_disable_wide_crop_enabled and accessory_like_region and not accessory_near_square_region)
             )
+            if (
+                suppress_accessory_for_region_hit
+                and accessory_near_square_region
+                and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
+            ):
+                suppress_accessory_for_region_hit = False
             if suppress_accessory_for_region_hit:
                 accessory_debug = f"skip-region:{region_best_score:.3f}/{q_accessory_hat_prior:.3f}"
 
