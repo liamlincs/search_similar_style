@@ -295,6 +295,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_near_square_crop_enabled = bool(search_cfg.get("accessory_near_square_crop_enabled", True))
     accessory_near_square_crop_min_aspect = float(search_cfg.get("accessory_near_square_crop_min_aspect", 0.65))
     accessory_near_square_crop_max_aspect = float(search_cfg.get("accessory_near_square_crop_max_aspect", 1.25))
+    accessory_disable_wide_crop_enabled = bool(search_cfg.get("accessory_disable_wide_crop_enabled", True))
     accessory_hat_prior_seed_enabled = bool(search_cfg.get("accessory_hat_prior_seed_enabled", True))
     accessory_hat_prior_query_threshold = float(search_cfg.get("accessory_hat_prior_query_threshold", 0.42))
     accessory_hat_prior_seed_min_score = float(search_cfg.get("accessory_hat_prior_seed_min_score", 0.45))
@@ -4455,7 +4456,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 bool(region_strong_code)
                 or (bool(accent_candidates_debug) and not accessory_near_square_region)
                 or (region_best_score >= region_crop_suppress_accessory_wide_min_score)
+                or (accessory_disable_wide_crop_enabled and accessory_like_region and not accessory_near_square_region)
             )
+            if suppress_accessory_for_region_hit:
+                accessory_debug = "skip-region"
 
             if (
                 accessory_pattern_enabled
