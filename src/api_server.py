@@ -4452,6 +4452,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 except Exception:
                     accessory_like_region = False
                     accessory_near_square_region = False
+            if crop_active and region_best_score <= 0.0 and region_debug:
+                try:
+                    first_region = region_debug.split(",", 1)[0]
+                    region_best_score = float(first_region.rsplit(":", 1)[1])
+                except Exception:
+                    region_best_score = 0.0
             suppress_accessory_for_region_hit = crop_active and (
                 bool(region_strong_code)
                 or (bool(accent_candidates_debug) and not accessory_near_square_region)
