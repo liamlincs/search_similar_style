@@ -211,6 +211,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_recall_backend = str(search_cfg.get("region_crop_recall_backend", secondary_feature_backend or feature_backend)).strip().lower()
     region_crop_recall_weight = float(search_cfg.get("region_crop_recall_weight", 1.12))
     region_crop_recall_topn_cap = int(search_cfg.get("region_crop_recall_topn_cap", 1200))
+    region_crop_suppress_accessory_enabled = bool(search_cfg.get("region_crop_suppress_accessory_enabled", True))
+    region_crop_suppress_accessory_min_score = float(search_cfg.get("region_crop_suppress_accessory_min_score", 0.68))
+    region_crop_suppress_accessory_topn = int(search_cfg.get("region_crop_suppress_accessory_topn", 10))
+    region_crop_suppress_accessory_min_hits = int(search_cfg.get("region_crop_suppress_accessory_min_hits", 3))
     region_standard_crop_ratio = float(search_cfg.get("region_standard_crop_ratio", 0.55))
     region_hybrid_weights = search_cfg.get("region_hybrid_weights", secondary_hybrid_weights or hybrid_weights)
     region_w_clip = float(region_hybrid_weights.get("clip", secondary_w_clip))
@@ -3998,6 +4002,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             accessory_debug = ""
             accessory_candidates_debug = ""
             region_debug = ""
+            region_strong_code = ""
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -4023,7 +4028,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_w_color: float,
                 pass_w_stripe: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
-                nonlocal region_debug
+                nonlocal region_debug, region_strong_code
                 t0 = time.perf_counter()
                 image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
                 if recall_cap > 0:
@@ -4092,6 +4097,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
                             for n, s in ranked_region[:40]
                         )
+                        region_strong_code = ""
+                        if region_crop_suppress_accessory_enabled:
+                            code_hits: Dict[str, int] = {}
+                            for n, s in ranked_region[: max(1, region_crop_suppress_accessory_topn)]:
+                                if float(s) < region_crop_suppress_accessory_min_score:
+                                    continue
+                                code = filename_to_style_code(n)
+                                code_hits[code] = code_hits.get(code, 0) + 1
+                            if code_hits:
+                                best_code, best_hits = max(code_hits.items(), key=lambda item: item[1])
+                                if best_hits >= max(1, region_crop_suppress_accessory_min_hits):
+                                    region_strong_code = best_code
                         ranked = merge_ranked_image_lists(
                             ranked,
                             ranked_region,
@@ -4319,8 +4336,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     accessory_like_region = qh > 0 and (float(qw) / float(qh)) >= 1.10
                 except Exception:
                     accessory_like_region = False
+            suppress_accessory_for_region_hit = crop_active and bool(region_strong_code)
 
-            if accessory_pattern_enabled and accessory_like_region:
+            if accessory_pattern_enabled and accessory_like_region and not suppress_accessory_for_region_hit:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
