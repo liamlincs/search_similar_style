@@ -266,6 +266,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pattern_min_score = float(search_cfg.get("sleeve_pattern_min_score", 0.48))
     sleeve_pattern_max_injected = int(search_cfg.get("sleeve_pattern_max_injected", 16))
     sleeve_pair_prior_boost = float(search_cfg.get("sleeve_pair_prior_boost", 0.08))
+    sleeve_pattern_skip_when_full_accent = bool(search_cfg.get("sleeve_pattern_skip_when_full_accent", True))
     accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
     accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
@@ -4341,7 +4342,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_bias=display_score_bias,
                         )
 
-            if sleeve_pattern_enabled and not accessory_like_region:
+            # Full model/catalog photos with logo/letter/color-block accents often trigger a
+            # false sleeve match from small local regions. Keep sleeve matching for explicit
+            # region crops, but do not let it override strong full-image accent candidates.
+            suppress_sleeve_for_accent_query = (
+                sleeve_pattern_skip_when_full_accent
+                and not crop_active
+                and bool(accent_candidates_debug)
+            )
+            if sleeve_pattern_enabled and not accessory_like_region and not suppress_sleeve_for_accent_query:
                 q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
                 if q_sleeve_sig is not None:
                     sleeve_debug = "1"
