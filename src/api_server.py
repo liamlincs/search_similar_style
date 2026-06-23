@@ -314,6 +314,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_hat_prior_seed_score_base = float(search_cfg.get("accessory_hat_prior_seed_score_base", 1.22))
     accessory_hat_prior_seed_boost_scale = float(search_cfg.get("accessory_hat_prior_seed_boost_scale", 0.22))
     accessory_hat_prior_seed_max_injected = int(search_cfg.get("accessory_hat_prior_seed_max_injected", 16))
+    accessory_region_requires_hat_prior = bool(search_cfg.get("accessory_region_requires_hat_prior", True))
+    accessory_region_hat_prior_threshold = float(search_cfg.get("accessory_region_hat_prior_threshold", accessory_hat_prior_query_threshold))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -4536,6 +4538,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         )
             accessory_like_region = False
             accessory_near_square_region = False
+            q_accessory_hat_prior = 0.0
             if crop_active:
                 try:
                     with Image.open(query_path) as q_im:
@@ -4552,9 +4555,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         and not checker_is_strong
                         and accessory_near_square_crop_min_aspect <= crop_aspect <= accessory_near_square_crop_max_aspect
                     )
+                    if accessory_near_square_region:
+                        q_accessory_hat_prior = _extract_accessory_hat_prior(query_path)
                 except Exception:
                     accessory_like_region = False
                     accessory_near_square_region = False
+                    q_accessory_hat_prior = 0.0
             if crop_active and region_debug and not region_has_confident_match:
                 try:
                     parsed_region_scores = [
@@ -4570,12 +4576,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     pass
             suppress_accessory_for_region_hit = crop_active and (
                 bool(region_strong_code)
-                or (bool(accent_candidates_debug) and not accessory_near_square_region)
+                or (
+                    bool(accent_candidates_debug)
+                    and (
+                        not accessory_near_square_region
+                        or (
+                            accessory_region_requires_hat_prior
+                            and q_accessory_hat_prior < accessory_region_hat_prior_threshold
+                        )
+                    )
+                )
                 or region_has_confident_match
                 or (accessory_disable_wide_crop_enabled and accessory_like_region and not accessory_near_square_region)
             )
             if suppress_accessory_for_region_hit:
-                accessory_debug = f"skip-region:{region_best_score:.3f}"
+                accessory_debug = f"skip-region:{region_best_score:.3f}/{q_accessory_hat_prior:.3f}"
 
             if (
                 accessory_pattern_enabled
@@ -4585,11 +4600,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
                 if q_accessory_sig is not None:
                     accessory_debug = "1"
-                    q_accessory_hat_prior = (
-                        _extract_accessory_hat_prior(query_path)
-                        if accessory_near_square_region
-                        else 0.0
-                    )
                     ranked_images, accessory_candidates_debug = _merge_accessory_pattern_candidates(
                         ranked_images,
                         q_accessory_sig,

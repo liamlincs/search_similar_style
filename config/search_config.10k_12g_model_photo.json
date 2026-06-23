@@ -152,6 +152,8 @@
     "accessory_hat_prior_seed_score_base": 1.22,
     "accessory_hat_prior_seed_boost_scale": 0.22,
     "accessory_hat_prior_seed_max_injected": 16,
+    "accessory_region_requires_hat_prior": true,
+    "accessory_region_hat_prior_threshold": 0.42,
     "checker_suppress_when_accent": true,
     "checker_accent_suppress_below": 0.14,
     "phash_enabled": true,
