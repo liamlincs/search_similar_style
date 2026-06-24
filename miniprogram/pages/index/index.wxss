@@ -353,6 +353,12 @@
   gap: 18rpx;
 }
 
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16rpx;
+}
+
 .card {
   background: #fff;
   border-radius: 20rpx;
@@ -365,8 +371,21 @@
   height: 360rpx;
 }
 
+.result-card {
+  border-radius: 18rpx;
+}
+
+.result-image {
+  height: 260rpx;
+  background: #f1f5f9;
+}
+
 .card-body {
   padding: 16rpx 18rpx 20rpx;
+}
+
+.result-body {
+  padding: 12rpx 14rpx 14rpx;
 }
 
 .card-top {
@@ -383,10 +402,19 @@
   font-size: 22rpx;
 }
 
+.result-card .rank {
+  padding: 3rpx 11rpx;
+  font-size: 20rpx;
+}
+
 .score {
   color: #16a34a;
   font-size: 24rpx;
   font-weight: 600;
+}
+
+.result-card .score {
+  font-size: 22rpx;
 }
 
 .style-code {
@@ -395,6 +423,15 @@
   letter-spacing: 1rpx;
   color: #0f172a;
   font-weight: 700;
+}
+
+.result-style-code {
+  margin-top: 9rpx;
+  font-size: 27rpx;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hint {
@@ -410,12 +447,23 @@
   gap: 10rpx;
 }
 
+.result-grid-tags {
+  margin-top: 8rpx;
+  gap: 6rpx;
+  min-height: 28rpx;
+}
+
 .result-tag {
   padding: 4rpx 12rpx;
   border-radius: 999rpx;
   background: #eef2ff;
   color: #3730a3;
   font-size: 21rpx;
+}
+
+.result-card .result-tag {
+  padding: 3rpx 9rpx;
+  font-size: 18rpx;
 }
 
 .bottom-nav {

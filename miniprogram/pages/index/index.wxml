@@ -109,19 +109,18 @@
     <view class="section-title">匹配结果</view>
     <view wx:if="{{isAmbiguous}}" class="ambiguous-tip">结果接近，已按相似候选展示，建议人工复核。</view>
     <view wx:elif="{{confidenceBand === 'medium'}}" class="medium-tip">匹配置信度中等，建议对比前几项。</view>
-    <view class="card-list">
-      <view wx:for="{{results}}" wx:key="rank" class="card" bindtap="previewResult" data-url="{{item.imageUrl}}" data-index="{{index}}">
-        <image class="card-image" src="{{item.imageUrl}}" mode="aspectFill" binderror="onResultImageError" data-index="{{index}}" />
-        <view class="card-body">
-          <view class="card-top">
+    <view class="result-grid">
+      <view wx:for="{{results}}" wx:key="rank" class="card result-card" bindtap="previewResult" data-url="{{item.imageUrl}}" data-index="{{index}}">
+        <image class="card-image result-image" src="{{item.imageUrl}}" mode="aspectFill" binderror="onResultImageError" data-index="{{index}}" />
+        <view class="card-body result-body">
+          <view class="card-top result-top">
             <text class="rank">#{{item.rank}}</text>
             <text class="score">{{item.scoreText}}</text>
           </view>
-          <view class="style-code">{{item.styleCode}}</view>
-          <view class="result-tags">
+          <view class="style-code result-style-code">{{item.styleCode}}</view>
+          <view class="result-tags result-grid-tags">
             <text wx:for="{{item.tags}}" wx:key="*this" class="result-tag">{{item}}</text>
           </view>
-          <view class="hint">点击查看大图</view>
         </view>
       </view>
     </view>
