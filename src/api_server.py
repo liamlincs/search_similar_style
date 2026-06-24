@@ -229,6 +229,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_result_rescue_min_score = float(search_cfg.get("region_crop_result_rescue_min_score", 0.74))
     region_crop_result_rescue_topn = int(search_cfg.get("region_crop_result_rescue_topn", 8))
     region_crop_result_rescue_scan_codes = int(search_cfg.get("region_crop_result_rescue_scan_codes", 80))
+    region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
+    region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
+    region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
+    region_crop_sleeve_rescue_weight = float(search_cfg.get("region_crop_sleeve_rescue_weight", 0.18))
     region_crop_color_consistency_enabled = bool(search_cfg.get("region_crop_color_consistency_enabled", True))
     region_crop_color_consistency_weight = float(search_cfg.get("region_crop_color_consistency_weight", 0.14))
     region_crop_color_consistency_apply_topn = int(search_cfg.get("region_crop_color_consistency_apply_topn", 256))
@@ -4342,6 +4346,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 )
                 return ordered[:top_k]
 
+            def _apply_sleeve_region_rescue() -> None:
+                if not (
+                    crop_active
+                    and region_crop_sleeve_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and sleeve_candidates_debug
+                ):
+                    return
+                for part in sleeve_candidates_debug.split(","):
+                    fields = part.split(":")
+                    if len(fields) < 2:
+                        continue
+                    code = fields[0].strip()
+                    nums = fields[1].split("/")
+                    if len(nums) < 3 or not code:
+                        continue
+                    try:
+                        sim = float(nums[0])
+                        pair_prior = float(nums[2])
+                    except ValueError:
+                        continue
+                    if sim < region_crop_sleeve_rescue_min_sim or pair_prior < region_crop_sleeve_rescue_min_pair_prior:
+                        continue
+                    current = float(region_code_scores.get(code, -1.0))
+                    sleeve_score = sim + max(0.0, region_crop_sleeve_rescue_weight) * pair_prior
+                    if sleeve_score > current:
+                        region_code_scores[code] = sleeve_score
+
             def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
                 """Keep UI percentages consistent with the final ranked order."""
                 prev_score: float | None = None
@@ -4908,6 +4941,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
 
+            _apply_sleeve_region_rescue()
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _order_region_primary_rows(rows)
             _make_display_scores_follow_order(rows)

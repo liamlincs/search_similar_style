@@ -128,6 +128,10 @@
     "region_crop_color_consistency_apply_topn": 256,
     "region_crop_order_by_region_enabled": true,
     "accessory_hat_override_max_aspect": 1.1,
+    "region_crop_sleeve_rescue_enabled": true,
+    "region_crop_sleeve_rescue_min_sim": 0.7,
+    "region_crop_sleeve_rescue_min_pair_prior": 0.7,
+    "region_crop_sleeve_rescue_weight": 0.18,
     "region_hybrid_weights": {
       "clip": 0.5,
       "shape": 0.12,
