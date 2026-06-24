@@ -4939,6 +4939,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rank_score: float,
             display_score: float | None = None,
         ) -> None:
+            if len(similar_images) >= max_n:
+                return
             file_name = image_name.split("@", 1)[0]
             code = style_code or filename_to_style_code(file_name)
             seen_key = code if crop_active else file_name
@@ -4979,7 +4981,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             _append_similar_image(file_name, style_code, float(score))
             if len(similar_images) >= max_n:
                 break
-        similar_images = _enrich_similar_images(base_url, similar_images)
+        similar_images = _enrich_similar_images(base_url, similar_images[:max_n])
 
         if include_image_base64:
             n = len(rows) if base64_topn <= 0 else min(len(rows), base64_topn)
