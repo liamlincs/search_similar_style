@@ -10,6 +10,7 @@ import hashlib
 import io
 import math
 import datetime as dt
+import difflib
 import re
 import shutil
 import threading
@@ -345,6 +346,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_boost_scale = float(search_cfg.get("scene_text_boost_scale", 0.18))
     scene_text_max_candidates_per_token = int(search_cfg.get("scene_text_max_candidates_per_token", 64))
     scene_text_max_injected = int(search_cfg.get("scene_text_max_injected", 24))
+    scene_text_region_rescue_enabled = bool(search_cfg.get("scene_text_region_rescue_enabled", True))
+    scene_text_region_rescue_min_score = float(search_cfg.get("scene_text_region_rescue_min_score", 1.25))
+    scene_text_region_rescue_min_ratio = float(search_cfg.get("scene_text_region_rescue_min_ratio", 0.66))
+    scene_text_region_rescue_max_rows = int(search_cfg.get("scene_text_region_rescue_max_rows", 3))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -4454,6 +4459,117 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 return (sleeve_rows + kept_rows)[:top_k]
 
+            def _rescue_scene_text_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and scene_text_region_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and scene_text_tokens
+                    and isinstance(scene_text_index, dict)
+                    and rows_in
+                ):
+                    return rows_in
+                image_tokens = dict(scene_text_index.get("image_tokens", {}))
+                token_idf = dict(scene_text_index.get("token_idf", {}))
+                if not image_tokens:
+                    return rows_in
+                ranked_by_image = {name.split("@", 1)[0]: float(score) for name, score in ranked_in}
+                best_by_code: Dict[str, Dict[str, Any]] = {}
+                min_ratio = max(0.0, min(1.0, scene_text_region_rescue_min_ratio))
+                for image_name, toks_raw in image_tokens.items():
+                    toks = [str(tok).upper() for tok in toks_raw if str(tok).strip()]
+                    if not toks:
+                        continue
+                    code = filename_to_style_code(image_name)
+                    if not code:
+                        continue
+                    text_score = 0.0
+                    hit_count = 0
+                    for query_tok_raw in scene_text_tokens:
+                        query_tok = str(query_tok_raw).upper().strip()
+                        if len(query_tok) < scene_text_min_token_len:
+                            continue
+                        best_ratio = 0.0
+                        best_tok = ""
+                        for tok in toks:
+                            if len(tok) < scene_text_min_token_len:
+                                continue
+                            if query_tok == tok:
+                                ratio = 1.0
+                            elif len(query_tok) >= 6 and len(tok) >= 6 and (query_tok in tok or tok in query_tok):
+                                ratio = min(1.0, min(len(query_tok), len(tok)) / max(len(query_tok), len(tok)))
+                            else:
+                                ratio = difflib.SequenceMatcher(None, query_tok, tok).ratio()
+                            if ratio > best_ratio:
+                                best_ratio = float(ratio)
+                                best_tok = tok
+                        if best_ratio < min_ratio:
+                            continue
+                        idf = float(token_idf.get(best_tok, 1.0))
+                        text_score += best_ratio * max(1.0, idf)
+                        hit_count += 1
+                    if hit_count <= 0 or text_score < scene_text_region_rescue_min_score:
+                        continue
+                    key = _code_prior_key(code)
+                    current = best_by_code.get(key)
+                    if current is None or text_score > float(current.get("text_score", 0.0)):
+                        best_by_code[key] = {
+                            "code": code,
+                            "image_name": image_name,
+                            "text_score": text_score,
+                            "hit_count": hit_count,
+                        }
+                if not best_by_code:
+                    return rows_in
+                candidates = sorted(
+                    best_by_code.values(),
+                    key=lambda item: (float(item.get("text_score", 0.0)), int(item.get("hit_count", 0))),
+                    reverse=True,
+                )[: max(1, scene_text_region_rescue_max_rows)]
+                if not candidates:
+                    return rows_in
+                max_text_score = max(float(item.get("text_score", 0.0)) for item in candidates) + 1e-6
+                text_rows: List[Dict[str, Any]] = []
+                for item in candidates:
+                    image_name = str(item["image_name"])
+                    raw_score = max(
+                        float(ranked_by_image.get(image_name, -1e9)),
+                        scene_text_seed_score_base
+                        + scene_text_boost_scale * (float(item.get("text_score", 0.0)) / max_text_score)
+                        + 0.03 * min(3, max(0, int(item.get("hit_count", 1)) - 1)),
+                    )
+                    z = float(display_score_scale) * (raw_score - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    text_rows.append(
+                        {
+                            "style_code": str(item["code"]),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(raw_score, 6),
+                        }
+                    )
+                if not text_rows:
+                    return rows_in
+                text_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in text_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|text={text_debug}"
+                    if region_rescue_debug
+                    else f"text={text_debug}"
+                )
+                text_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in text_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in text_keys
+                ]
+                return (text_rows + kept_rows)[:top_k]
+
             def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
                 """Keep UI percentages consistent with the final ranked order."""
                 prev_score: float | None = None
@@ -5024,6 +5140,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _rescue_sleeve_region_rows(rows, ranked_images)
             rows = _order_region_primary_rows(rows)
+            rows = _rescue_scene_text_region_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
 
             if low_confidence_enabled and rows:
