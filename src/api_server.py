@@ -4375,6 +4375,85 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if sleeve_score > current:
                         region_code_scores[code] = sleeve_score
 
+            def _rescue_sleeve_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and region_crop_sleeve_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and sleeve_candidates_debug
+                    and rows_in
+                    and ranked_in
+                ):
+                    return rows_in
+                best_ranked_by_key: Dict[str, tuple[str, float]] = {}
+                for img_name, score in ranked_in:
+                    code = filename_to_style_code(img_name)
+                    key = _code_prior_key(code)
+                    current = best_ranked_by_key.get(key)
+                    if current is None or float(score) > float(current[1]):
+                        best_ranked_by_key[key] = (img_name.split("@", 1)[0], float(score))
+                sleeve_rows: List[Dict[str, Any]] = []
+                seen_keys = set()
+                for part in sleeve_candidates_debug.split(","):
+                    fields = part.split(":")
+                    if len(fields) < 2:
+                        continue
+                    code = fields[0].strip()
+                    key = _code_prior_key(code)
+                    if not key or key in seen_keys:
+                        continue
+                    nums = fields[1].split("/")
+                    if len(nums) < 3:
+                        continue
+                    try:
+                        sim = float(nums[0])
+                        seed_score = float(nums[1])
+                        pair_prior = float(nums[2])
+                    except ValueError:
+                        continue
+                    if sim < region_crop_sleeve_rescue_min_sim or pair_prior < region_crop_sleeve_rescue_min_pair_prior:
+                        continue
+                    ranked_item = best_ranked_by_key.get(key)
+                    if ranked_item is None:
+                        continue
+                    image_name, ranked_score = ranked_item
+                    raw_score = max(float(seed_score), float(ranked_score))
+                    z = float(display_score_scale) * (raw_score - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    sleeve_score = sim + max(0.0, region_crop_sleeve_rescue_weight) * pair_prior
+                    region_code_scores[code] = max(float(region_code_scores.get(code, -1.0)), sleeve_score)
+                    sleeve_rows.append(
+                        {
+                            "style_code": filename_to_style_code(image_name),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(raw_score, 6),
+                        }
+                    )
+                    seen_keys.add(key)
+                if not sleeve_rows:
+                    return rows_in
+                sleeve_rows.sort(key=lambda row: float(row.get("rank_score", 0.0)), reverse=True)
+                sleeve_debug_rescue = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in sleeve_rows[:top_k]
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|sleeve={sleeve_debug_rescue}"
+                    if region_rescue_debug
+                    else f"sleeve={sleeve_debug_rescue}"
+                )
+                sleeve_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in sleeve_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in sleeve_keys
+                ]
+                return (sleeve_rows + kept_rows)[:top_k]
+
             def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
                 """Keep UI percentages consistent with the final ranked order."""
                 prev_score: float | None = None
@@ -4943,6 +5022,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             _apply_sleeve_region_rescue()
             rows = _rescue_region_rows(rows, ranked_images)
+            rows = _rescue_sleeve_region_rows(rows, ranked_images)
             rows = _order_region_primary_rows(rows)
             _make_display_scores_follow_order(rows)
 
