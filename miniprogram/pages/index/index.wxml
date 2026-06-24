@@ -85,8 +85,7 @@
     </view>
     <view wx:if="{{localImage}}" class="region-actions">
       <block wx:if="{{!regionMode}}">
-        <button class="region-btn primary" bindtap="searchFullImage" loading="{{searching}}">全图搜索</button>
-        <button class="region-btn" bindtap="enableRegionSelect" disabled="{{searching}}">圈选区域</button>
+        <button class="region-btn primary" bindtap="enableRegionSelect" disabled="{{searching}}">圈选区域</button>
       </block>
       <block wx:else>
         <button class="region-btn primary" bindtap="searchSelectedRegion" loading="{{searching}}">按区域搜索</button>
@@ -95,7 +94,7 @@
       </block>
     </view>
     <view wx:if="{{localImage && !hasSearched && !searching}}" class="search-tip">
-      商品较小或有多个商品时，建议先圈选目标区域；主体清晰时可直接全图搜索。
+      建议圈选目标款式或局部细节后搜索，优先匹配纹理、材质和结构。
     </view>
   </view>
 
