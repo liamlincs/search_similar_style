@@ -87,14 +87,14 @@
     "adaptive_rerank_query_views_max": 2,
     "adaptive_rerank_max_unique_codes": 24,
     "shape_consistency_enabled": true,
-    "shape_consistency_aspect_weight": 0.08,
-    "shape_consistency_fill_weight": 0.02,
+    "shape_consistency_aspect_weight": 0.04,
+    "shape_consistency_fill_weight": 0.01,
     "shape_consistency_apply_topn": 120,
     "mask_consistency_enabled": true,
-    "mask_consistency_weight": 0.05,
+    "mask_consistency_weight": 0.03,
     "mask_consistency_apply_topn": 120,
     "stripe_consistency_enabled": true,
-    "stripe_consistency_weight": 0.06,
+    "stripe_consistency_weight": 0.12,
     "stripe_consistency_apply_topn": 120,
     "phash_enabled": true,
     "phash_boost_weight": 0.06,
@@ -124,16 +124,22 @@
     "result_image_max_edge": 640,
     "result_image_quality": 80,
     "region_crop_color_consistency_enabled": true,
-    "region_crop_color_consistency_weight": 0.14,
+    "region_crop_color_consistency_weight": 0.06,
     "region_crop_color_consistency_apply_topn": 256,
     "region_crop_order_by_region_enabled": true,
     "accessory_hat_override_max_aspect": 1.1,
+    "region_hybrid_weights": {
+      "clip": 0.5,
+      "shape": 0.12,
+      "color": 0.05,
+      "stripe": 0.33
+    },
     "feature_backend": "hybrid",
     "hybrid_weights": {
-      "clip": 0.55,
-      "shape": 0.3,
-      "color": 0.15,
-      "stripe": 0.1
+      "clip": 0.62,
+      "shape": 0.12,
+      "color": 0.06,
+      "stripe": 0.2
     },
     "query_max_edge": 768
   }
