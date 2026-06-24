@@ -355,8 +355,8 @@
 
 .result-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16rpx;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12rpx;
 }
 
 .card {
@@ -372,11 +372,11 @@
 }
 
 .result-card {
-  border-radius: 18rpx;
+  border-radius: 14rpx;
 }
 
 .result-image {
-  height: 260rpx;
+  height: 170rpx;
   background: #f1f5f9;
 }
 
@@ -385,7 +385,7 @@
 }
 
 .result-body {
-  padding: 12rpx 14rpx 14rpx;
+  padding: 9rpx 10rpx 11rpx;
 }
 
 .card-top {
@@ -403,8 +403,8 @@
 }
 
 .result-card .rank {
-  padding: 3rpx 11rpx;
-  font-size: 20rpx;
+  padding: 2rpx 8rpx;
+  font-size: 17rpx;
 }
 
 .score {
@@ -414,7 +414,7 @@
 }
 
 .result-card .score {
-  font-size: 22rpx;
+  font-size: 18rpx;
 }
 
 .style-code {
@@ -426,8 +426,8 @@
 }
 
 .result-style-code {
-  margin-top: 9rpx;
-  font-size: 27rpx;
+  margin-top: 7rpx;
+  font-size: 22rpx;
   line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -448,9 +448,9 @@
 }
 
 .result-grid-tags {
-  margin-top: 8rpx;
-  gap: 6rpx;
-  min-height: 28rpx;
+  margin-top: 6rpx;
+  gap: 4rpx;
+  min-height: 24rpx;
 }
 
 .result-tag {
@@ -462,8 +462,8 @@
 }
 
 .result-card .result-tag {
-  padding: 3rpx 9rpx;
-  font-size: 18rpx;
+  padding: 2rpx 7rpx;
+  font-size: 16rpx;
 }
 
 .bottom-nav {
