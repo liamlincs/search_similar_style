@@ -4322,6 +4322,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     accessory_near_square_region
                     and crop_aspect <= accessory_hat_override_max_aspect
                     and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
+                    and not region_has_confident_match
                     and bool(accessory_candidates_debug)
                 )
                 if accessory_hat_query:
@@ -4753,6 +4754,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             if (
                 suppress_accessory_for_region_hit
+                and not region_has_confident_match
                 and accessory_near_square_region
                 and crop_aspect <= accessory_hat_override_max_aspect
                 and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
