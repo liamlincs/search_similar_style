@@ -4339,6 +4339,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 )
                 return ordered[:top_k]
 
+            def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
+                """Keep UI percentages consistent with the final ranked order."""
+                prev_score: float | None = None
+                for row in rows_in:
+                    raw_score = float(row.get("score", 0.0))
+                    row.setdefault("score_raw", round(raw_score, 4))
+                    display_score = min(0.9999, max(0.0, raw_score))
+                    if prev_score is not None and display_score >= prev_score:
+                        display_score = max(0.0, prev_score - 0.0001)
+                        row["score_adjusted"] = True
+                    row["score"] = round(display_score, 4)
+                    prev_score = display_score
+
             def _run_search_pass(
                 cand_multiplier: int,
                 recall_cap: int,
@@ -4881,6 +4894,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _order_region_primary_rows(rows)
+            _make_display_scores_follow_order(rows)
 
             if low_confidence_enabled and rows:
                 top1 = float(rows[0].get("score", 0.0))
