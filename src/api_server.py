@@ -312,6 +312,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_near_square_crop_enabled = bool(search_cfg.get("accessory_near_square_crop_enabled", True))
     accessory_near_square_crop_min_aspect = float(search_cfg.get("accessory_near_square_crop_min_aspect", 0.65))
     accessory_near_square_crop_max_aspect = float(search_cfg.get("accessory_near_square_crop_max_aspect", 1.25))
+    accessory_hat_override_max_aspect = float(search_cfg.get("accessory_hat_override_max_aspect", 1.10))
     accessory_disable_wide_crop_enabled = bool(search_cfg.get("accessory_disable_wide_crop_enabled", True))
     accessory_hat_prior_seed_enabled = bool(search_cfg.get("accessory_hat_prior_seed_enabled", True))
     accessory_hat_prior_query_threshold = float(search_cfg.get("accessory_hat_prior_query_threshold", 0.42))
@@ -4261,7 +4262,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if ranked_item is None and key in region_code_best_images:
                         ranked_item = (
                             region_code_best_images[key],
-                            float(region_code_scores.get(region_code_best_images[key], 0.0)),
+                            float(region_code_scores.get(key, 0.0)),
                         )
                     if ranked_item is None:
                         return None
@@ -4319,6 +4320,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     return rows_in
                 accessory_hat_query = (
                     accessory_near_square_region
+                    and crop_aspect <= accessory_hat_override_max_aspect
                     and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
                     and bool(accessory_candidates_debug)
                 )
@@ -4438,7 +4440,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             region_has_confident_match = True
                         region_code_scores.clear()
                         region_code_best_images.clear()
-                        for n, s in ranked_region[: max(1, region_crop_result_rescue_topn)]:
+                        region_code_scan_n = min(
+                            len(ranked_region),
+                            max(
+                                1,
+                                region_crop_result_rescue_topn,
+                                region_crop_result_rescue_scan_codes,
+                                region_crop_code_prior_topn,
+                                region_crop_suppress_accessory_topn,
+                            ),
+                        )
+                        for n, s in ranked_region[:region_code_scan_n]:
                             code = filename_to_style_code(n)
                             score = float(s)
                             if score > region_code_scores.get(code, -1e9):
@@ -4685,6 +4697,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         )
             accessory_like_region = False
             accessory_near_square_region = False
+            crop_aspect = 0.0
             q_accessory_hat_prior = 0.0
             if crop_active:
                 try:
@@ -4741,6 +4754,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if (
                 suppress_accessory_for_region_hit
                 and accessory_near_square_region
+                and crop_aspect <= accessory_hat_override_max_aspect
                 and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
             ):
                 suppress_accessory_for_region_hit = False
