@@ -56,6 +56,11 @@ pattern injections and scene-text rescue are suppressed so the final ranking
 stays closer to direct region recall instead of being rewritten by generic
 local-pattern heuristics.
 
+Very wide strip-like crops such as collars, plackets, waistbands, or hems are
+handled separately. Their expansion height is capped so auto-expansion does not
+pull in unrelated chest graphics, and accent-pattern injection is disabled when
+the query is already in strip mode.
+
 ## Tuning Guidance
 
 - Increase `region_crop_code_prior_boost` if a correct region candidate appears
@@ -71,5 +76,8 @@ local-pattern heuristics.
 - Tune `region_crop_strict_small_max_orig_area` and
   `region_crop_strict_small_min_expand_ratio` when very small label-like crops
   should stay closer to raw region recall and avoid sleeve/accent overrides.
+- Tune `region_crop_wide_strip_max_h` when wide collar-like crops still include
+  too much body area after expansion, and `region_crop_disable_accent_when_strip`
+  if strip queries should ignore incidental logos or chest patches.
 - Do not add one-off style-code rules unless the failure is caused by bad data
   or a known catalog labeling issue.

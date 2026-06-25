@@ -73,6 +73,8 @@ def _expand_region_crop(
     min_area: float,
     context_pad_ratio: float,
     context_min_area: float,
+    wide_strip_aspect_threshold: float,
+    wide_strip_max_h: float,
 ) -> tuple[float, float, float, float, bool]:
     x = max(0.0, min(0.98, float(x)))
     y = max(0.0, min(0.98, float(y)))
@@ -84,6 +86,7 @@ def _expand_region_crop(
     target_w = max(w, min_w)
     target_h = max(h, min_h)
     needs_context = w < min_w or h < min_h or (w * h) < max(min_area, context_min_area)
+    orig_aspect = float(w) / max(1e-6, float(h))
 
     pad = max(0.0, float(context_pad_ratio))
     if needs_context and pad > 0.0:
@@ -98,6 +101,8 @@ def _expand_region_crop(
 
     target_w = max(0.02, min(1.0, target_w))
     target_h = max(0.02, min(1.0, target_h))
+    if orig_aspect >= max(1.0, float(wide_strip_aspect_threshold)):
+        target_h = min(target_h, max(h, min(1.0, float(wide_strip_max_h))))
     next_x = max(0.0, min(1.0 - target_w, cx - target_w * 0.5))
     next_y = max(0.0, min(1.0 - target_h, cy - target_h * 0.5))
     expanded = (
@@ -267,6 +272,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_strict_small_enabled = bool(search_cfg.get("region_crop_strict_small_enabled", True))
     region_crop_strict_small_max_orig_area = float(search_cfg.get("region_crop_strict_small_max_orig_area", 0.10))
     region_crop_strict_small_min_expand_ratio = float(search_cfg.get("region_crop_strict_small_min_expand_ratio", 1.6))
+    region_crop_wide_strip_aspect_threshold = float(search_cfg.get("region_crop_wide_strip_aspect_threshold", 1.8))
+    region_crop_wide_strip_max_h = float(search_cfg.get("region_crop_wide_strip_max_h", 0.42))
+    region_crop_disable_accent_when_strip = bool(search_cfg.get("region_crop_disable_accent_when_strip", True))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -4226,6 +4234,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 min_area=min_area,
                                 context_pad_ratio=max(0.0, min(1.0, region_crop_context_pad_ratio)),
                                 context_min_area=max(0.0, min(1.0, region_crop_context_min_area)),
+                                wide_strip_aspect_threshold=max(1.0, float(region_crop_wide_strip_aspect_threshold)),
+                                wide_strip_max_h=max(0.02, min(1.0, float(region_crop_wide_strip_max_h))),
                             )
                         crop_final_area = max(0.0, float(cw) * float(ch))
                         crop_expand_ratio = crop_final_area / max(1e-6, crop_orig_area)
@@ -5477,9 +5487,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
             q_accent_sig = None
             q_checker_profile = None
+            strip_crop_accent_disabled = bool(
+                crop_active and use_strip_mode and region_crop_disable_accent_when_strip
+            )
             accent_pattern_allowed = (
                 accent_pattern_enabled
                 and not strict_small_region_crop
+                and not strip_crop_accent_disabled
                 and (not crop_active or accent_pattern_crop_enabled)
             )
             if accent_pattern_allowed:
