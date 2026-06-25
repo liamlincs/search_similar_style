@@ -230,6 +230,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_result_rescue_min_score = float(search_cfg.get("region_crop_result_rescue_min_score", 0.74))
     region_crop_result_rescue_topn = int(search_cfg.get("region_crop_result_rescue_topn", 8))
     region_crop_result_rescue_scan_codes = int(search_cfg.get("region_crop_result_rescue_scan_codes", 80))
+    region_crop_force_top_enabled = bool(search_cfg.get("region_crop_force_top_enabled", True))
+    region_crop_force_top_min_score = float(search_cfg.get("region_crop_force_top_min_score", 0.80))
+    region_crop_force_topn = int(search_cfg.get("region_crop_force_topn", 1))
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
     region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
@@ -4337,6 +4340,62 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 keep_n = max(0, top_k - len(rescue_rows))
                 return (kept_rows[:keep_n] + rescue_rows)[:top_k]
 
+            def _force_top_region_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and region_crop_force_top_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and region_code_scores
+                    and region_code_best_images
+                    and rows_in
+                ):
+                    return rows_in
+                forced_rows: List[Dict[str, Any]] = []
+                for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
+                    if len(forced_rows) >= max(1, region_crop_force_topn):
+                        break
+                    if float(score) < region_crop_force_top_min_score:
+                        break
+                    key = _code_prior_key(code)
+                    image_name = region_code_best_images.get(key)
+                    if not image_name:
+                        continue
+                    raw_score = max(
+                        float(score) + float(region_crop_code_prior_boost),
+                        float(score),
+                    )
+                    z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    forced_rows.append(
+                        {
+                            "style_code": filename_to_style_code(image_name),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(float(raw_score), 6),
+                        }
+                    )
+                if not forced_rows:
+                    return rows_in
+                force_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in forced_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|force_region={force_debug}"
+                    if region_rescue_debug
+                    else f"force_region={force_debug}"
+                )
+                forced_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in forced_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in forced_keys
+                ]
+                return (forced_rows + kept_rows)[:top_k]
+
             def _order_region_primary_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 nonlocal region_order_debug
                 if not (
@@ -5480,6 +5539,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             _apply_sleeve_region_rescue()
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _rescue_sleeve_region_rows(rows, ranked_images)
+            rows = _force_top_region_rows(rows)
             rows = _order_region_primary_rows(rows)
             rows = _rescue_hat_region_rows(rows, ranked_images)
             rows = _rescue_hat_family_region_rows(rows)
