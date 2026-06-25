@@ -4420,14 +4420,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if accessory_hat_query:
                     region_order_debug = "skip-accessory-hat"
                     return rows_in
+                protected_rows = [row for row in rows_in if row.get("_force_keep")]
+                protected_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in protected_rows}
+                sortable_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in protected_keys
+                ]
                 ordered = sorted(
-                    rows_in,
+                    sortable_rows,
                     key=lambda row: (
                         float(region_code_scores.get(str(row.get("style_code", "")), -1.0)),
                         float(row.get("rank_score", 0.0)),
                     ),
                     reverse=True,
                 )
+                ordered = (protected_rows + ordered)[:top_k]
                 region_order_debug = ",".join(
                     f"{row.get('style_code', '')}:{float(region_code_scores.get(str(row.get('style_code', '')), -1.0)):.3f}"
                     for row in ordered[:top_k]
@@ -4519,6 +4527,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             "best_standard_image": image_name,
                             "score": round(disp, 4),
                             "rank_score": round(raw_score, 6),
+                            "_force_keep": True,
                         }
                     )
                     seen_keys.add(key)
@@ -5659,6 +5668,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         base_url = _external_base_url(request)
         for row in rows:
+            row.pop("_force_keep", None)
             img = str(row.get("best_standard_image", "")).strip()
             row["best_standard_image_url"] = _build_image_url(base_url, img)
         rows = _enrich_search_rows(base_url, rows)
