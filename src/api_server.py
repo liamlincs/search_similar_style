@@ -4442,6 +4442,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 )
                 return ordered[:top_k]
 
+            def _merge_rescue_rows_preserving_forced(
+                rescue_rows: List[Dict[str, Any]], rows_in: List[Dict[str, Any]]
+            ) -> List[Dict[str, Any]]:
+                """Keep deliberate rescue rows from being truncated by later generic rescues."""
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                forced_rows = [
+                    row
+                    for row in rows_in
+                    if row.get("_force_keep")
+                    and _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                forced_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in forced_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                    and _code_prior_key(str(row.get("style_code", ""))) not in forced_keys
+                ]
+                return (forced_rows + rescue_rows + kept_rows)[:top_k]
+
             def _apply_sleeve_region_rescue() -> None:
                 if not (
                     crop_active
@@ -4549,7 +4569,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in sleeve_keys
                 ]
-                return (sleeve_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(sleeve_rows, kept_rows)
 
             def _rescue_hat_from_sleeve_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
@@ -4643,7 +4663,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
                 ]
-                return (rescue_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(rescue_rows, kept_rows)
 
             def _rescue_checker_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
@@ -4721,7 +4741,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in checker_keys
                 ]
-                return (checker_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(checker_rows, kept_rows)
 
             def _rescue_hat_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
@@ -4801,7 +4821,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in hat_keys
                 ]
-                return (hat_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(hat_rows, kept_rows)
 
             def _rescue_hat_family_region_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
@@ -4886,7 +4906,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
                 ]
-                return (rescue_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(rescue_rows, kept_rows)
 
             def _rescue_accent_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
@@ -4963,7 +4983,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in accent_keys
                 ]
-                return (accent_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(accent_rows, kept_rows)
 
             def _rescue_scene_text_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
@@ -5074,7 +5094,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in text_keys
                 ]
-                return (text_rows + kept_rows)[:top_k]
+                return _merge_rescue_rows_preserving_forced(text_rows, kept_rows)
 
             def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
                 """Keep UI percentages consistent with the final ranked order."""
