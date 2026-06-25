@@ -284,6 +284,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     strict_small_w_shape = float(strict_small_query_weights.get("shape", 0.30))
     strict_small_w_color = float(strict_small_query_weights.get("color", 0.06))
     strict_small_w_stripe = float(strict_small_query_weights.get("stripe", 0.12))
+    strict_small_region_code_prior_min_score = float(search_cfg.get("strict_small_region_code_prior_min_score", 0.62))
+    strict_small_region_result_rescue_min_score = float(search_cfg.get("strict_small_region_result_rescue_min_score", 0.60))
+    strict_small_region_force_top_min_score = float(search_cfg.get("strict_small_region_force_top_min_score", 0.62))
+    strict_small_region_recall_topn_cap = int(search_cfg.get("strict_small_region_recall_topn_cap", 240))
+    strict_small_region_query_multicrop_enabled = bool(search_cfg.get("strict_small_region_query_multicrop_enabled", True))
+    strict_small_region_query_crop_ratio = float(search_cfg.get("strict_small_region_query_crop_ratio", 0.72))
+    strict_small_region_query_component_views = bool(search_cfg.get("strict_small_region_query_component_views", True))
+    strict_small_disable_consistency = bool(search_cfg.get("strict_small_disable_consistency", True))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -4428,8 +4436,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (crop_active and region_crop_code_prior_enabled and region_code_scores):
                     return
                 boosted_codes = []
+                min_region_code_prior_score = (
+                    strict_small_region_code_prior_min_score if strict_small_region_crop else region_crop_code_prior_min_score
+                )
                 for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True)[: max(1, region_crop_code_prior_topn)]:
-                    if float(score) < region_crop_code_prior_min_score:
+                    if float(score) < min_region_code_prior_score:
                         continue
                     code_key = _code_prior_key(code)
                     boost = float(region_crop_code_prior_boost)
@@ -4454,10 +4465,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and ranked_in
                 ):
                     return rows_in
+                min_region_rescue_score = (
+                    strict_small_region_result_rescue_min_score if strict_small_region_crop else region_crop_result_rescue_min_score
+                )
                 rescue_codes = [
                     code
                     for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True)[: max(1, region_crop_result_rescue_topn)]
-                    if float(score) >= region_crop_result_rescue_min_score
+                    if float(score) >= min_region_rescue_score
                 ]
                 if not rescue_codes:
                     return rows_in
@@ -4541,11 +4555,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and rows_in
                 ):
                     return rows_in
+                min_region_force_top_score = (
+                    strict_small_region_force_top_min_score if strict_small_region_crop else region_crop_force_top_min_score
+                )
                 forced_rows: List[Dict[str, Any]] = []
                 for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
                     if len(forced_rows) >= max(1, region_crop_force_topn):
                         break
-                    if float(score) < region_crop_force_top_min_score:
+                    if float(score) < min_region_force_top_score:
                         break
                     key = _code_prior_key(code)
                     image_name = region_code_best_images.get(key)
@@ -5369,8 +5386,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         secondary_weight=secondary_recall_weight,
                     )
                 if crop_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
-                    if region_crop_recall_topn_cap > 0:
-                        region_topk = min(len(req_region_names), region_crop_recall_topn_cap)
+                    effective_region_recall_topn_cap = (
+                        strict_small_region_recall_topn_cap if strict_small_region_crop else region_crop_recall_topn_cap
+                    )
+                    if effective_region_recall_topn_cap > 0:
+                        region_topk = min(len(req_region_names), effective_region_recall_topn_cap)
                     else:
                         region_topk = min(
                             len(req_region_names),
@@ -5492,13 +5512,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_w_shape=w_shape_pass,
                 pass_w_color=w_color_pass,
                 pass_w_stripe=w_stripe_pass,
-                pass_region_query_multicrop=bool(crop_active and use_strip_mode and region_strip_query_multicrop_enabled),
+                pass_region_query_multicrop=bool(
+                    (crop_active and use_strip_mode and region_strip_query_multicrop_enabled)
+                    or (strict_small_region_crop and strict_small_region_query_multicrop_enabled)
+                ),
                 pass_region_query_crop_ratio=(
                     float(region_strip_query_crop_ratio)
                     if (crop_active and use_strip_mode and region_strip_query_multicrop_enabled)
-                    else float(query_crop_ratio)
+                    else (
+                        float(strict_small_region_query_crop_ratio)
+                        if (strict_small_region_crop and strict_small_region_query_multicrop_enabled)
+                        else float(query_crop_ratio)
+                    )
                 ),
-                pass_region_query_component_views=bool(crop_active and use_strip_mode and region_strip_query_component_views),
+                pass_region_query_component_views=bool(
+                    (crop_active and use_strip_mode and region_strip_query_component_views)
+                    or (strict_small_region_crop and strict_small_region_query_component_views)
+                ),
                 pass_region_query_view_consensus_weight=(
                     float(region_strip_query_view_consensus_weight)
                     if (crop_active and use_strip_mode)
@@ -5540,7 +5570,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     t_rerank += t2_rerank
                     t_post += t2_post
                     second_pass_used = True
-            if shape_consistency_enabled and q_shape is not None:
+            if shape_consistency_enabled and q_shape is not None and not (strict_small_region_crop and strict_small_disable_consistency):
                 ranked_images = _apply_shape_consistency(ranked_images, q_shape)
                 rows = topk_style_codes(
                     ranked_images,
@@ -5554,7 +5584,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     display_score_scale=display_score_scale,
                     display_score_bias=display_score_bias,
                 )
-            if mask_consistency_enabled:
+            if mask_consistency_enabled and not (strict_small_region_crop and strict_small_disable_consistency):
                 q_mask_vec = _extract_fg_mask_vec(query_path, size=64)
                 if q_mask_vec is not None:
                     ranked_images = _apply_mask_consistency(ranked_images, q_mask_vec)
@@ -5570,7 +5600,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
-            if stripe_consistency_enabled:
+            if stripe_consistency_enabled and not (strict_small_region_crop and strict_small_disable_consistency):
                 q_stripe_sig = _extract_stripe_sig(query_path, keep=24)
                 if q_stripe_sig is not None:
                     ranked_images = _apply_stripe_consistency(ranked_images, q_stripe_sig)
@@ -5861,7 +5891,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-            if phash_enabled:
+            if phash_enabled and not (strict_small_region_crop and strict_small_disable_consistency):
                 q_bits = _extract_phash_bits(query_path, size=32, keep=8)
                 if q_bits is not None:
                     ranked_images = _apply_phash_consistency(ranked_images, q_bits)

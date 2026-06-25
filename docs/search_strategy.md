@@ -58,6 +58,10 @@ local-pattern heuristics.
 That strict-small path also uses query weights with lower stripe emphasis and
 higher shape emphasis, so collar-like local crops do not collapse into generic
 striped trim candidates as easily.
+It also lowers region rescue / force-top thresholds, enables region multicrop
+and component views, and skips shape/mask/stripe/phash consistency passes so
+weak-but-relevant local candidates can surface before global consistency logic
+overwrites them.
 
 Very wide strip-like crops such as collars, plackets, waistbands, or hems are
 handled separately. Their expansion height is capped so auto-expansion does not
