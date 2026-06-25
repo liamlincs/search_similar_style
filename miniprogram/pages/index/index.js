@@ -117,10 +117,6 @@ Page({
     });
   },
 
-  cancelRegionSelect() {
-    this.setData({ regionMode: false, cropStart: null });
-  },
-
   clearRegionSelect() {
     this.setData({ regionMode: false, cropRect: null, cropStart: null });
   },

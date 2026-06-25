@@ -89,8 +89,7 @@
       </block>
       <block wx:else>
         <button class="region-btn primary" bindtap="searchSelectedRegion" loading="{{searching}}">按区域搜索</button>
-        <button class="region-btn" bindtap="cancelRegionSelect" disabled="{{searching}}">取消圈选</button>
-        <button class="region-btn" bindtap="clearRegionSelect" disabled="{{searching}}">清除</button>
+        <button class="region-btn" bindtap="clearRegionSelect" disabled="{{searching}}">清除圈选</button>
       </block>
     </view>
     <view wx:if="{{localImage && !hasSearched && !searching}}" class="search-tip">
