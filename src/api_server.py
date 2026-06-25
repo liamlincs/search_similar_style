@@ -5415,6 +5415,41 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_view_consensus_weight=pass_region_query_view_consensus_weight,
                     )
                     if ranked_region:
+                        region_focus_debug = ""
+                        if use_strip_mode and not strict_small_region_crop:
+                            focus_region_crop_ratio = min(
+                                float(pass_region_query_crop_ratio),
+                                float(strict_small_region_query_crop_ratio),
+                            )
+                            focus_region_view_consensus = max(
+                                float(pass_region_query_view_consensus_weight),
+                                0.08,
+                            )
+                            ranked_region_focus = search_topk_images(
+                                query_path,
+                                req_region_names,
+                                req_region_feats,
+                                region_topk,
+                                region_crop_recall_backend,
+                                max(float(pass_w_clip), float(strict_small_w_clip)),
+                                max(float(pass_w_shape), float(strict_small_w_shape)),
+                                min(float(pass_w_color), float(strict_small_w_color)),
+                                max(float(pass_w_stripe), float(strict_small_w_stripe)),
+                                query_multicrop=True,
+                                query_crop_ratio=focus_region_crop_ratio,
+                                query_component_views=True,
+                                query_view_consensus_weight=focus_region_view_consensus,
+                            )
+                            if ranked_region_focus:
+                                ranked_region = merge_ranked_image_lists(
+                                    ranked_region,
+                                    ranked_region_focus,
+                                    secondary_weight=1.0,
+                                )
+                                region_focus_debug = ",".join(
+                                    f"{filename_to_style_code(n)}:{float(s):.3f}"
+                                    for n, s in ranked_region_focus[:12]
+                                )
                         if region_crop_color_consistency_enabled:
                             q_region_color_sig = _extract_color_sig(query_path)
                             ranked_region = _apply_region_color_consistency(ranked_region, q_region_color_sig)
@@ -5443,6 +5478,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
                             for n, s in ranked_region[:40]
                         )
+                        if region_focus_debug:
+                            region_debug = f"{region_debug}|focus={region_focus_debug}"
                         region_strong_code = ""
                         if region_crop_suppress_accessory_enabled:
                             code_hits: Dict[str, int] = {}
