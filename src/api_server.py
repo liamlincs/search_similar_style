@@ -349,6 +349,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_hat_family_region_rescue_min_prior = float(search_cfg.get("accessory_hat_family_region_rescue_min_prior", 0.55))
     accessory_hat_family_region_rescue_score = float(search_cfg.get("accessory_hat_family_region_rescue_score", 1.36))
     accessory_hat_family_region_rescue_max_rows = int(search_cfg.get("accessory_hat_family_region_rescue_max_rows", 1))
+    accessory_hat_from_sleeve_region_rescue_enabled = bool(search_cfg.get("accessory_hat_from_sleeve_region_rescue_enabled", True))
+    accessory_hat_from_sleeve_region_rescue_min_seed = float(search_cfg.get("accessory_hat_from_sleeve_region_rescue_min_seed", 1.38))
+    accessory_hat_from_sleeve_region_rescue_max_rows = int(search_cfg.get("accessory_hat_from_sleeve_region_rescue_max_rows", 1))
     accessory_region_requires_hat_prior = bool(search_cfg.get("accessory_region_requires_hat_prior", True))
     accessory_region_hat_prior_threshold = float(search_cfg.get("accessory_region_hat_prior_threshold", accessory_hat_prior_query_threshold))
     accessory_region_suppress_when_accent = bool(search_cfg.get("accessory_region_suppress_when_accent", True))
@@ -4539,6 +4542,100 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 return (sleeve_rows + kept_rows)[:top_k]
 
+            def _rescue_hat_from_sleeve_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and accessory_hat_from_sleeve_region_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and sleeve_candidates_debug
+                    and rows_in
+                    and accessory_hat_code_prefixes
+                    and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
+                ):
+                    return rows_in
+                existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
+                best_ranked_by_key: Dict[str, tuple[str, float]] = {}
+                for img_name, score in ranked_in:
+                    code = filename_to_style_code(img_name)
+                    key = _code_prior_key(code)
+                    current = best_ranked_by_key.get(key)
+                    if current is None or float(score) > float(current[1]):
+                        best_ranked_by_key[key] = (img_name.split("@", 1)[0], float(score))
+                best_hat_by_key: Dict[str, tuple[str, float]] = {}
+                for file_name, prior in accessory_hat_prior_cache.items():
+                    base_name = file_name.split("@", 1)[0]
+                    code = filename_to_style_code(base_name)
+                    key = _code_prior_key(code)
+                    if not key:
+                        continue
+                    current = best_hat_by_key.get(key)
+                    if current is None or float(prior) > float(current[1]):
+                        best_hat_by_key[key] = (base_name, float(prior))
+                rescue_rows: List[Dict[str, Any]] = []
+                seen_keys = set()
+                for part in sleeve_candidates_debug.split(","):
+                    fields = part.split(":")
+                    if len(fields) < 2:
+                        continue
+                    code = fields[0].strip()
+                    if not any(code.upper().startswith(prefix) for prefix in accessory_hat_code_prefixes):
+                        continue
+                    key = _code_prior_key(code)
+                    if not key or key in seen_keys or key in existing_keys:
+                        continue
+                    nums = fields[1].split("/")
+                    if len(nums) < 2:
+                        continue
+                    try:
+                        seed_score = float(nums[1])
+                    except ValueError:
+                        continue
+                    if seed_score < accessory_hat_from_sleeve_region_rescue_min_seed:
+                        continue
+                    ranked_item = best_ranked_by_key.get(key)
+                    image_name = ranked_item[0] if ranked_item is not None else ""
+                    ranked_score = float(ranked_item[1]) if ranked_item is not None else 0.0
+                    if not image_name:
+                        hat_item = best_hat_by_key.get(key)
+                        if hat_item is None:
+                            continue
+                        image_name = hat_item[0]
+                    raw_score = max(float(seed_score), float(ranked_score))
+                    z = float(display_score_scale) * (raw_score - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    rescue_rows.append(
+                        {
+                            "style_code": filename_to_style_code(image_name),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(raw_score, 6),
+                        }
+                    )
+                    seen_keys.add(key)
+                    if len(rescue_rows) >= max(1, accessory_hat_from_sleeve_region_rescue_max_rows):
+                        break
+                if not rescue_rows:
+                    return rows_in
+                hat_sleeve_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in rescue_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|hat_sleeve={hat_sleeve_debug}"
+                    if region_rescue_debug
+                    else f"hat_sleeve={hat_sleeve_debug}"
+                )
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                return (rescue_rows + kept_rows)[:top_k]
+
             def _rescue_checker_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5539,6 +5636,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             _apply_sleeve_region_rescue()
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _rescue_sleeve_region_rows(rows, ranked_images)
+            rows = _rescue_hat_from_sleeve_region_rows(rows, ranked_images)
             rows = _force_top_region_rows(rows)
             rows = _order_region_primary_rows(rows)
             rows = _rescue_hat_region_rows(rows, ranked_images)
