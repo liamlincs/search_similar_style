@@ -50,6 +50,12 @@ user-drawn rectangle is treated as an anchor, not as the final embedding image.
 This keeps CLIP/hybrid semantics from being dominated by nearby labels, printed
 text, or a single tiny patch with too little garment context.
 
+If the original user crop is very small and had to be expanded aggressively,
+the search enters a stricter region mode. In that mode, sleeve/accent/accessory
+pattern injections and scene-text rescue are suppressed so the final ranking
+stays closer to direct region recall instead of being rewritten by generic
+local-pattern heuristics.
+
 ## Tuning Guidance
 
 - Increase `region_crop_code_prior_boost` if a correct region candidate appears
@@ -62,5 +68,8 @@ text, or a single tiny patch with too little garment context.
 - Tune `region_crop_context_pad_ratio` and `region_crop_context_min_area` when
   small crops are still text-biased; raise them for more garment context, lower
   them if region search becomes too broad.
+- Tune `region_crop_strict_small_max_orig_area` and
+  `region_crop_strict_small_min_expand_ratio` when very small label-like crops
+  should stay closer to raw region recall and avoid sleeve/accent overrides.
 - Do not add one-off style-code rules unless the failure is caused by bad data
   or a known catalog labeling issue.

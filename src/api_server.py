@@ -264,6 +264,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_auto_expand_min_area = float(search_cfg.get("region_crop_auto_expand_min_area", 0.12))
     region_crop_context_pad_ratio = float(search_cfg.get("region_crop_context_pad_ratio", 0.35))
     region_crop_context_min_area = float(search_cfg.get("region_crop_context_min_area", 0.18))
+    region_crop_strict_small_enabled = bool(search_cfg.get("region_crop_strict_small_enabled", True))
+    region_crop_strict_small_max_orig_area = float(search_cfg.get("region_crop_strict_small_max_orig_area", 0.10))
+    region_crop_strict_small_min_expand_ratio = float(search_cfg.get("region_crop_strict_small_min_expand_ratio", 1.6))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -4194,6 +4197,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     pass
             crop_debug = ""
             crop_active = False
+            crop_orig_area = 0.0
+            crop_final_area = 0.0
+            crop_expand_ratio = 1.0
+            strict_small_region_crop = False
             if crop_w > 0.02 and crop_h > 0.02:
                 try:
                     with Image.open(query_path) as crop_im0:
@@ -4203,6 +4210,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         y = max(0.0, min(0.98, float(crop_y)))
                         cw = max(0.02, min(1.0 - x, float(crop_w)))
                         ch = max(0.02, min(1.0 - y, float(crop_h)))
+                        crop_orig_area = max(0.0, float(cw) * float(ch))
                         expanded = False
                         if region_crop_auto_expand_enabled:
                             min_w = max(0.02, min(1.0, region_crop_auto_expand_min_w))
@@ -4219,6 +4227,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 context_pad_ratio=max(0.0, min(1.0, region_crop_context_pad_ratio)),
                                 context_min_area=max(0.0, min(1.0, region_crop_context_min_area)),
                             )
+                        crop_final_area = max(0.0, float(cw) * float(ch))
+                        crop_expand_ratio = crop_final_area / max(1e-6, crop_orig_area)
+                        strict_small_region_crop = (
+                            region_crop_strict_small_enabled
+                            and expanded
+                            and crop_orig_area > 0.0
+                            and crop_orig_area <= max(0.0, min(1.0, region_crop_strict_small_max_orig_area))
+                            and crop_expand_ratio >= max(1.0, float(region_crop_strict_small_min_expand_ratio))
+                        )
                         left = int(round(x * iw))
                         top = int(round(y * ih))
                         right = int(round((x + cw) * iw))
@@ -4228,6 +4245,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             crop_debug = f"{x:.3f},{y:.3f},{cw:.3f},{ch:.3f}"
                             if expanded:
                                 crop_debug += ":expanded"
+                            if strict_small_region_crop:
+                                crop_debug += ":strict-small"
                             crop_active = True
                 except Exception:
                     crop_debug = ""
@@ -4537,6 +4556,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and region_crop_sleeve_rescue_enabled
+                    and not strict_small_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
@@ -4567,6 +4587,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and region_crop_sleeve_rescue_enabled
+                    and not strict_small_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
@@ -4647,6 +4668,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and accessory_hat_from_sleeve_region_rescue_enabled
+                    and not strict_small_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
@@ -4985,6 +5007,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and accent_region_rescue_enabled
+                    and not strict_small_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and accent_candidates_debug
@@ -5062,6 +5085,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and scene_text_region_rescue_enabled
+                    and not strict_small_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and scene_text_tokens
@@ -5453,12 +5477,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
             q_accent_sig = None
             q_checker_profile = None
-            accent_pattern_allowed = accent_pattern_enabled and (not crop_active or accent_pattern_crop_enabled)
+            accent_pattern_allowed = (
+                accent_pattern_enabled
+                and not strict_small_region_crop
+                and (not crop_active or accent_pattern_crop_enabled)
+            )
             if accent_pattern_allowed:
                 q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
                 if q_accent_sig is not None:
                     accent_debug = "1"
-            if checker_consistency_enabled:
+            if checker_consistency_enabled and not strict_small_region_crop:
                 q_checker_profile = _extract_checker_profile(query_path, grid=10)
                 if q_checker_profile:
                     checker_debug = (
@@ -5591,6 +5619,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             if (
                 accessory_pattern_enabled
+                and not strict_small_region_crop
                 and (accessory_like_region or accessory_near_square_region)
                 and not suppress_accessory_for_region_hit
             ):
@@ -5635,12 +5664,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and accessory_near_square_region
                 and bool(accessory_candidates_debug)
             )
+            suppress_sleeve_for_small_region_query = bool(strict_small_region_crop)
             if (
                 sleeve_pattern_enabled
                 and not accessory_like_region
                 and not suppress_sleeve_for_accent_query
                 and not suppress_sleeve_for_checker_query
                 and not suppress_sleeve_for_accessory_query
+                and not suppress_sleeve_for_small_region_query
             ):
                 q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
                 if q_sleeve_sig is not None:
@@ -5664,6 +5695,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         )
             if (
                 accessory_pattern_enabled
+                and not strict_small_region_crop
                 and not accessory_like_region
                 and not suppress_accessory_for_region_hit
                 and not sleeve_candidates_debug
@@ -5708,7 +5740,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
-            if scene_text_hint_enabled:
+            if scene_text_hint_enabled and not strict_small_region_crop:
                 ranked_images, scene_text_tokens = merge_scene_text_candidates(
                     ranked_images,
                     query_path,
