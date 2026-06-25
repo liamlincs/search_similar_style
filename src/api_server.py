@@ -293,6 +293,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
     accent_pattern_crop_enabled = bool(search_cfg.get("accent_pattern_crop_enabled", True))
+    accent_region_rescue_enabled = bool(search_cfg.get("accent_region_rescue_enabled", True))
+    accent_region_rescue_min_sim = float(search_cfg.get("accent_region_rescue_min_sim", 0.70))
+    accent_region_rescue_max_rows = int(search_cfg.get("accent_region_rescue_max_rows", 3))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -4459,6 +4462,83 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 return (sleeve_rows + kept_rows)[:top_k]
 
+            def _rescue_accent_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and accent_region_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and accent_candidates_debug
+                    and rows_in
+                    and ranked_in
+                ):
+                    return rows_in
+                best_ranked_by_key: Dict[str, tuple[str, float]] = {}
+                for img_name, score in ranked_in:
+                    code = filename_to_style_code(img_name)
+                    key = _code_prior_key(code)
+                    current = best_ranked_by_key.get(key)
+                    if current is None or float(score) > float(current[1]):
+                        best_ranked_by_key[key] = (img_name.split("@", 1)[0], float(score))
+                accent_rows: List[Dict[str, Any]] = []
+                seen_keys = set()
+                for part in accent_candidates_debug.split(","):
+                    fields = part.split(":")
+                    if len(fields) < 2:
+                        continue
+                    code = fields[0].strip()
+                    key = _code_prior_key(code)
+                    if not key or key in seen_keys:
+                        continue
+                    nums = fields[1].split("/")
+                    if len(nums) < 2:
+                        continue
+                    try:
+                        sim = float(nums[0])
+                        seed_score = float(nums[1])
+                    except ValueError:
+                        continue
+                    if sim < accent_region_rescue_min_sim:
+                        continue
+                    ranked_item = best_ranked_by_key.get(key)
+                    if ranked_item is None:
+                        continue
+                    image_name, ranked_score = ranked_item
+                    raw_score = max(float(seed_score), float(ranked_score))
+                    z = float(display_score_scale) * (raw_score - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    accent_rows.append(
+                        {
+                            "style_code": filename_to_style_code(image_name),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(raw_score, 6),
+                        }
+                    )
+                    seen_keys.add(key)
+                    if len(accent_rows) >= max(1, accent_region_rescue_max_rows):
+                        break
+                if not accent_rows:
+                    return rows_in
+                accent_debug_rescue = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in accent_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|accent={accent_debug_rescue}"
+                    if region_rescue_debug
+                    else f"accent={accent_debug_rescue}"
+                )
+                accent_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in accent_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in accent_keys
+                ]
+                return (accent_rows + kept_rows)[:top_k]
+
             def _rescue_scene_text_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5140,6 +5220,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _rescue_sleeve_region_rows(rows, ranked_images)
             rows = _order_region_primary_rows(rows)
+            rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
 
