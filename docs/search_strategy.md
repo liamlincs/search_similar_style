@@ -61,6 +61,11 @@ handled separately. Their expansion height is capped so auto-expansion does not
 pull in unrelated chest graphics, and accent-pattern injection is disabled when
 the query is already in strip mode.
 
+For strip-like region queries, region recall can also run with query multicrop.
+This lets left/right/top local subviews of a collar or placket participate in
+matching, which is useful when the user crop still contains some body fabric or
+decorations that are not present in the flat-lay standard image.
+
 ## Tuning Guidance
 
 - Increase `region_crop_code_prior_boost` if a correct region candidate appears
@@ -79,5 +84,8 @@ the query is already in strip mode.
 - Tune `region_crop_wide_strip_max_h` when wide collar-like crops still include
   too much body area after expansion, and `region_crop_disable_accent_when_strip`
   if strip queries should ignore incidental logos or chest patches.
+- Tune `region_strip_query_crop_ratio` when strip queries still miss target
+  collar/placket matches; lower it to focus more locally, raise it to keep more
+  context.
 - Do not add one-off style-code rules unless the failure is caused by bad data
   or a known catalog labeling issue.

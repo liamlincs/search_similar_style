@@ -275,6 +275,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_wide_strip_aspect_threshold = float(search_cfg.get("region_crop_wide_strip_aspect_threshold", 1.8))
     region_crop_wide_strip_max_h = float(search_cfg.get("region_crop_wide_strip_max_h", 0.42))
     region_crop_disable_accent_when_strip = bool(search_cfg.get("region_crop_disable_accent_when_strip", True))
+    region_strip_query_multicrop_enabled = bool(search_cfg.get("region_strip_query_multicrop_enabled", True))
+    region_strip_query_crop_ratio = float(search_cfg.get("region_strip_query_crop_ratio", 0.62))
+    region_strip_query_component_views = bool(search_cfg.get("region_strip_query_component_views", False))
+    region_strip_query_view_consensus_weight = float(search_cfg.get("region_strip_query_view_consensus_weight", 0.0))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -5273,6 +5277,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_w_shape: float,
                 pass_w_color: float,
                 pass_w_stripe: float,
+                pass_region_query_multicrop: bool,
+                pass_region_query_crop_ratio: float,
+                pass_region_query_component_views: bool,
+                pass_region_query_view_consensus_weight: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 nonlocal region_debug, region_strong_code, region_best_score, region_has_confident_match
                 t0 = time.perf_counter()
@@ -5333,10 +5341,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         region_w_shape,
                         region_w_color,
                         region_w_stripe,
-                        query_multicrop=False,
-                        query_crop_ratio=query_crop_ratio,
-                        query_component_views=False,
-                        query_view_consensus_weight=0.0,
+                        query_multicrop=pass_region_query_multicrop,
+                        query_crop_ratio=pass_region_query_crop_ratio,
+                        query_component_views=pass_region_query_component_views,
+                        query_view_consensus_weight=pass_region_query_view_consensus_weight,
                     )
                     if ranked_region:
                         if region_crop_color_consistency_enabled:
@@ -5439,6 +5447,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_w_shape=w_shape_pass,
                 pass_w_color=w_color_pass,
                 pass_w_stripe=w_stripe_pass,
+                pass_region_query_multicrop=bool(crop_active and use_strip_mode and region_strip_query_multicrop_enabled),
+                pass_region_query_crop_ratio=(
+                    float(region_strip_query_crop_ratio)
+                    if (crop_active and use_strip_mode and region_strip_query_multicrop_enabled)
+                    else float(query_crop_ratio)
+                ),
+                pass_region_query_component_views=bool(crop_active and use_strip_mode and region_strip_query_component_views),
+                pass_region_query_view_consensus_weight=(
+                    float(region_strip_query_view_consensus_weight)
+                    if (crop_active and use_strip_mode)
+                    else 0.0
+                ),
             )
             second_pass_used = False
             if adaptive_second_pass_enabled:
@@ -5458,6 +5478,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         pass_w_shape=w_shape_pass,
                         pass_w_color=w_color_pass,
                         pass_w_stripe=w_stripe_pass,
+                        pass_region_query_multicrop=bool(crop_active and use_strip_mode and region_strip_query_multicrop_enabled),
+                        pass_region_query_crop_ratio=(
+                            float(region_strip_query_crop_ratio)
+                            if (crop_active and use_strip_mode and region_strip_query_multicrop_enabled)
+                            else float(query_crop_ratio)
+                        ),
+                        pass_region_query_component_views=bool(crop_active and use_strip_mode and region_strip_query_component_views),
+                        pass_region_query_view_consensus_weight=(
+                            float(region_strip_query_view_consensus_weight)
+                            if (crop_active and use_strip_mode)
+                            else 0.0
+                        ),
                     )
                     t_recall += t2_recall
                     t_rerank += t2_rerank
