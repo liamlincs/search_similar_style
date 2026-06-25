@@ -371,7 +371,7 @@ Page({
             rank_score: Number(item.rank_score || 0)
           }));
 
-      const list = srcList.slice(0, 6).map((row, idx) => {
+      const list = srcList.slice(0, 9).map((row, idx) => {
         const imageName = row.image_name || row.best_standard_image || "";
         const meta = byImage[imageName] || null;
         const scoreNum = Number(row.score || 0);

@@ -55,7 +55,7 @@
     "test_dir": "data/test_samples"
   },
   "search": {
-    "top_k": 6,
+    "top_k": 9,
     "candidate_multiplier": 12,
     "recall_topn_cap": 768,
     "min_score": 0.64,
@@ -92,6 +92,6 @@
       "color": 0.15,
       "stripe": 0.1
     },
-    "similar_images_topn": 6
+    "similar_images_topn": 9
   }
 }
