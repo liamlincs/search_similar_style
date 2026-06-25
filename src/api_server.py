@@ -5035,10 +5035,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and accessory_hat_family_region_rescue_enabled
+                    and not use_strip_mode
+                    and not strict_small_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and rows_in
                     and accessory_hat_prior_cache
+                    and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
                     and accessory_hat_family_region_rescue_min_aspect
                     <= float(crop_aspect or 0.0)
                     <= accessory_hat_family_region_rescue_max_aspect
