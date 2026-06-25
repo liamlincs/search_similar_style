@@ -55,6 +55,9 @@ the search enters a stricter region mode. In that mode, sleeve/accent/accessory
 pattern injections and scene-text rescue are suppressed so the final ranking
 stays closer to direct region recall instead of being rewritten by generic
 local-pattern heuristics.
+That strict-small path also uses query weights with lower stripe emphasis and
+higher shape emphasis, so collar-like local crops do not collapse into generic
+striped trim candidates as easily.
 
 Very wide strip-like crops such as collars, plackets, waistbands, or hems are
 handled separately. Their expansion height is capped so auto-expansion does not

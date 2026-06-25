@@ -279,6 +279,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_strip_query_crop_ratio = float(search_cfg.get("region_strip_query_crop_ratio", 0.62))
     region_strip_query_component_views = bool(search_cfg.get("region_strip_query_component_views", False))
     region_strip_query_view_consensus_weight = float(search_cfg.get("region_strip_query_view_consensus_weight", 0.0))
+    strict_small_query_weights = search_cfg.get("strict_small_query_weights", {})
+    strict_small_w_clip = float(strict_small_query_weights.get("clip", 0.52))
+    strict_small_w_shape = float(strict_small_query_weights.get("shape", 0.30))
+    strict_small_w_color = float(strict_small_query_weights.get("color", 0.06))
+    strict_small_w_stripe = float(strict_small_query_weights.get("stripe", 0.12))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -5315,6 +5320,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 nonlocal region_debug, region_strong_code, region_best_score, region_has_confident_match
                 t0 = time.perf_counter()
+                eff_w_clip = pass_w_clip
+                eff_w_shape = pass_w_shape
+                eff_w_color = pass_w_color
+                eff_w_stripe = pass_w_stripe
+                if strict_small_region_crop:
+                    eff_w_clip = strict_small_w_clip
+                    eff_w_shape = strict_small_w_shape
+                    eff_w_color = strict_small_w_color
+                    eff_w_stripe = strict_small_w_stripe
                 image_topk = min(len(req_names), max(top_k * max(cand_multiplier, 1), top_k))
                 if recall_cap > 0:
                     image_topk = min(image_topk, recall_cap)
@@ -5324,10 +5338,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     req_feats,
                     image_topk,
                     feature_backend,
-                    pass_w_clip,
-                    pass_w_shape,
-                    pass_w_color,
-                    pass_w_stripe,
+                    eff_w_clip,
+                    eff_w_shape,
+                    eff_w_color,
+                    eff_w_stripe,
                     query_multicrop=query_multicrop,
                     query_crop_ratio=query_crop_ratio,
                     query_component_views=pass_query_component_views,
@@ -5340,10 +5354,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         req_secondary_feats,
                         image_topk,
                         secondary_feature_backend,
-                        secondary_w_clip,
-                        secondary_w_shape,
-                        secondary_w_color,
-                        secondary_w_stripe,
+                        eff_w_clip,
+                        eff_w_shape,
+                        eff_w_color,
+                        eff_w_stripe,
                         query_multicrop=query_multicrop,
                         query_crop_ratio=query_crop_ratio,
                         query_component_views=pass_query_component_views,
@@ -5368,10 +5382,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         req_region_feats,
                         region_topk,
                         region_crop_recall_backend,
-                        region_w_clip,
-                        region_w_shape,
-                        region_w_color,
-                        region_w_stripe,
+                        eff_w_clip,
+                        eff_w_shape,
+                        eff_w_color,
+                        eff_w_stripe,
                         query_multicrop=pass_region_query_multicrop,
                         query_crop_ratio=pass_region_query_crop_ratio,
                         query_component_views=pass_region_query_component_views,
