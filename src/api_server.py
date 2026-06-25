@@ -331,6 +331,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_hat_prior_seed_score_base = float(search_cfg.get("accessory_hat_prior_seed_score_base", 1.22))
     accessory_hat_prior_seed_boost_scale = float(search_cfg.get("accessory_hat_prior_seed_boost_scale", 0.22))
     accessory_hat_prior_seed_max_injected = int(search_cfg.get("accessory_hat_prior_seed_max_injected", 16))
+    accessory_hat_region_rescue_enabled = bool(search_cfg.get("accessory_hat_region_rescue_enabled", True))
+    accessory_hat_region_rescue_min_seed = float(search_cfg.get("accessory_hat_region_rescue_min_seed", 1.45))
+    accessory_hat_region_rescue_min_aspect = float(search_cfg.get("accessory_hat_region_rescue_min_aspect", 1.35))
+    accessory_hat_region_rescue_max_aspect = float(search_cfg.get("accessory_hat_region_rescue_max_aspect", 2.40))
+    accessory_hat_region_rescue_max_rows = int(search_cfg.get("accessory_hat_region_rescue_max_rows", 1))
     accessory_region_requires_hat_prior = bool(search_cfg.get("accessory_region_requires_hat_prior", True))
     accessory_region_hat_prior_threshold = float(search_cfg.get("accessory_region_hat_prior_threshold", accessory_hat_prior_query_threshold))
     accessory_region_suppress_when_accent = bool(search_cfg.get("accessory_region_suppress_when_accent", True))
@@ -4543,6 +4548,86 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 return (checker_rows + kept_rows)[:top_k]
 
+            def _rescue_hat_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and accessory_hat_region_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and accessory_candidates_debug
+                    and "hat:" in accessory_candidates_debug
+                    and accessory_hat_region_rescue_min_aspect <= float(crop_aspect or 0.0) <= accessory_hat_region_rescue_max_aspect
+                    and rows_in
+                    and ranked_in
+                ):
+                    return rows_in
+                best_ranked_by_key: Dict[str, tuple[str, float]] = {}
+                for img_name, score in ranked_in:
+                    code = filename_to_style_code(img_name)
+                    key = _code_prior_key(code)
+                    current = best_ranked_by_key.get(key)
+                    if current is None or float(score) > float(current[1]):
+                        best_ranked_by_key[key] = (img_name.split("@", 1)[0], float(score))
+                hat_rows: List[Dict[str, Any]] = []
+                seen_keys = set()
+                for part in accessory_candidates_debug.split(","):
+                    fields = part.split(":")
+                    if len(fields) < 3 or fields[0].strip() != "hat":
+                        continue
+                    code = fields[1].strip()
+                    if accessory_hat_code_prefixes and not any(code.upper().startswith(prefix) for prefix in accessory_hat_code_prefixes):
+                        continue
+                    key = _code_prior_key(code)
+                    if not key or key in seen_keys:
+                        continue
+                    nums = fields[2].split("/")
+                    if len(nums) < 2:
+                        continue
+                    try:
+                        seed_score = float(nums[1])
+                    except ValueError:
+                        continue
+                    if seed_score < accessory_hat_region_rescue_min_seed:
+                        continue
+                    ranked_item = best_ranked_by_key.get(key)
+                    if ranked_item is None:
+                        continue
+                    image_name, ranked_score = ranked_item
+                    raw_score = max(float(seed_score), float(ranked_score))
+                    z = float(display_score_scale) * (raw_score - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    hat_rows.append(
+                        {
+                            "style_code": filename_to_style_code(image_name),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(raw_score, 6),
+                        }
+                    )
+                    seen_keys.add(key)
+                    if len(hat_rows) >= max(1, accessory_hat_region_rescue_max_rows):
+                        break
+                if not hat_rows:
+                    return rows_in
+                hat_debug_rescue = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in hat_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|hat={hat_debug_rescue}"
+                    if region_rescue_debug
+                    else f"hat={hat_debug_rescue}"
+                )
+                hat_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in hat_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in hat_keys
+                ]
+                return (hat_rows + kept_rows)[:top_k]
+
             def _rescue_accent_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5301,6 +5386,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_region_rows(rows, ranked_images)
             rows = _rescue_sleeve_region_rows(rows, ranked_images)
             rows = _order_region_primary_rows(rows)
+            rows = _rescue_hat_region_rows(rows, ranked_images)
             rows = _rescue_checker_region_rows(rows, ranked_images)
             rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
