@@ -507,14 +507,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ("left", (0, 0, int(w * 0.58), h)),
             ("right", (int(w * 0.42), 0, w, h)),
             ("top", (0, 0, w, int(h * 0.58))),
+            ("top_narrow", (0, 0, w, int(h * 0.42))),
             ("bottom", (0, int(h * 0.42), w, h)),
             ("mid_band", (0, int(h * 0.22), w, int(h * 0.82))),
             ("upper_band", (0, int(h * 0.08), w, int(h * 0.55))),
+            ("upper_narrow_band", (0, int(h * 0.04), w, int(h * 0.42))),
             ("lower_band", (0, int(h * 0.45), w, int(h * 0.95))),
             ("tl", (0, 0, int(w * 0.62), int(h * 0.62))),
             ("tr", (int(w * 0.38), 0, w, int(h * 0.62))),
             ("bl", (0, int(h * 0.38), int(w * 0.62), h)),
             ("br", (int(w * 0.38), int(h * 0.38), w, h)),
+            ("top_left_band", (0, 0, int(w * 0.58), int(h * 0.46))),
+            ("top_right_band", (int(w * 0.42), 0, w, int(h * 0.46))),
+            ("collar_left_focus", (0, int(h * 0.02), int(w * 0.46), int(h * 0.52))),
+            ("collar_right_focus", (int(w * 0.54), int(h * 0.02), w, int(h * 0.52))),
+            ("collar_center_bridge", (int(w * 0.22), 0, int(w * 0.78), int(h * 0.40))),
         ]
 
         views: List[tuple[str, Image.Image]] = []
@@ -570,7 +577,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "region_crop_recall",
-                "version": 2,
+                "version": 3,
                 "backend": region_crop_recall_backend,
                 "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
                 "standard_views": "grid_halves_bands_components",
