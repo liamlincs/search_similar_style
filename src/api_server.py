@@ -554,6 +554,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     continue
                 comps.append((int(area), (int(x), int(y), int(ww), int(hh))))
             comps.sort(key=lambda item: item[0], reverse=True)
+            top_comps = comps[: max(2, max_component_views + 1)]
             for idx, (_area, (x, y, ww, hh)) in enumerate(comps[:max_component_views]):
                 pad_x = max(8, int(ww * 0.12))
                 pad_y = max(8, int(hh * 0.12))
@@ -566,6 +567,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     continue
                 seen.add(key)
                 views.append((f"comp{idx}", img.crop(key)))
+            pair_idx = 0
+            for left_idx in range(len(top_comps)):
+                _la, (lx, ly, lww, lhh) = top_comps[left_idx]
+                for right_idx in range(left_idx + 1, len(top_comps)):
+                    _ra, (rx, ry, rww, rhh) = top_comps[right_idx]
+                    if max(ly + lhh, ry + rhh) > int(h * 0.68):
+                        continue
+                    pad_x = max(10, int(min(lww, rww) * 0.10))
+                    pad_y = max(8, int(min(lhh, rhh) * 0.12))
+                    x0 = max(0, min(lx, rx) - pad_x)
+                    y0 = max(0, min(ly, ry) - pad_y)
+                    x1 = min(w, max(lx + lww, rx + rww) + pad_x)
+                    y1 = min(h, max(ly + lhh, ry + rhh) + pad_y)
+                    key = (x0, y0, x1, y1)
+                    if x1 - x0 < 40 or y1 - y0 < 32 or y1 - y0 > int(h * 0.62) or key in seen:
+                        continue
+                    seen.add(key)
+                    views.append((f"comp_pair{pair_idx}", img.crop(key)))
+                    pair_idx += 1
+                    if pair_idx >= 4:
+                        break
+                if pair_idx >= 4:
+                    break
         return views
 
     def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
@@ -577,7 +601,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "region_crop_recall",
-                "version": 3,
+                "version": 4,
                 "backend": region_crop_recall_backend,
                 "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
                 "standard_views": "grid_halves_bands_components",
