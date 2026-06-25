@@ -632,85 +632,119 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return cache_names, cache_feats
 
     _setup_logging()
-    names, feats = build_feature_db_with_cache(
-        standard_dir,
-        standard_pattern,
-        feature_backend,
-        image_exts,
-        w_clip,
-        w_shape,
-        w_color,
-        w_stripe,
-        standard_multicrop=standard_multicrop,
-        standard_crop_ratio=standard_crop_ratio,
-        use_cache=feature_cache_enabled,
-        db_feature_dtype=db_feature_dtype,
-    )
-    logging.info("api preloaded db: %d items", len(names))
+    search_assets_lock = threading.Lock()
+    names: List[str] = []
+    feats: np.ndarray | None = None
     secondary_names: List[str] = []
     secondary_feats: np.ndarray | None = None
-    if secondary_feature_backend and secondary_feature_backend != feature_backend:
-        secondary_names, secondary_feats = build_feature_db_with_cache(
+    region_names: List[str] = []
+    region_feats: np.ndarray | None = None
+    rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
+    label_memory_refs: List[tuple[str, np.ndarray]] = []
+    scene_text_index: Dict[str, Any] | None = None
+
+    def _reload_search_assets(reason: str = "startup") -> None:
+        nonlocal names, feats, secondary_names, secondary_feats, region_names, region_feats
+        nonlocal rerank_candidate_cache, label_memory_refs, scene_text_index
+        t_reload = time.perf_counter()
+        next_names, next_feats = build_feature_db_with_cache(
             standard_dir,
             standard_pattern,
-            secondary_feature_backend,
+            feature_backend,
             image_exts,
-            secondary_w_clip,
-            secondary_w_shape,
-            secondary_w_color,
-            secondary_w_stripe,
+            w_clip,
+            w_shape,
+            w_color,
+            w_stripe,
             standard_multicrop=standard_multicrop,
             standard_crop_ratio=standard_crop_ratio,
             use_cache=feature_cache_enabled,
             db_feature_dtype=db_feature_dtype,
         )
-        logging.info(
-            "api preloaded secondary db: backend=%s items=%d",
-            secondary_feature_backend,
-            len(secondary_names),
-        )
-    region_names: List[str] = []
-    region_feats: np.ndarray | None = None
-    if region_crop_recall_enabled:
-        region_names, region_feats = _build_region_feature_db_with_cache()
-        logging.info(
-            "api preloaded region crop db: backend=%s items=%d",
-            region_crop_recall_backend,
-            len(region_names),
-        )
-    rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
-    if rerank_enabled and preload_rerank_candidate_cache:
-        t0 = time.perf_counter()
-        rerank_candidate_cache = precompute_rerank_candidate_cache(
-            standard_dir=standard_dir,
-            names=names,
-            candidate_views_max=rerank_candidate_views_max,
-        )
-        logging.info(
-            "api preloaded rerank candidate cache: %d files in %.2fs",
-            len(rerank_candidate_cache),
-            time.perf_counter() - t0,
-        )
-    elif rerank_enabled:
-        logging.info("api rerank candidate cache preload disabled; using lazy cache on requests")
-    label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
-    if label_memory_enabled:
-        logging.info("api preloaded label memory refs: %d", len(label_memory_refs))
-    scene_text_index: Dict[str, Any] | None = None
-    if scene_text_hint_enabled:
-        t0 = time.perf_counter()
-        scene_text_index = precompute_scene_text_index(
-            standard_dir=standard_dir,
-            pattern=standard_pattern,
-            exts=image_exts,
-            min_token_len=scene_text_min_token_len,
-            use_cache=True,
-        )
-        logging.info(
-            "api preloaded scene text index: %d images in %.2fs",
-            int(scene_text_index.get("total_images", 0)) if isinstance(scene_text_index, dict) else 0,
-            time.perf_counter() - t0,
-        )
+        logging.info("api loaded primary db: %d items", len(next_names))
+
+        next_secondary_names: List[str] = []
+        next_secondary_feats: np.ndarray | None = None
+        if secondary_feature_backend and secondary_feature_backend != feature_backend:
+            next_secondary_names, next_secondary_feats = build_feature_db_with_cache(
+                standard_dir,
+                standard_pattern,
+                secondary_feature_backend,
+                image_exts,
+                secondary_w_clip,
+                secondary_w_shape,
+                secondary_w_color,
+                secondary_w_stripe,
+                standard_multicrop=standard_multicrop,
+                standard_crop_ratio=standard_crop_ratio,
+                use_cache=feature_cache_enabled,
+                db_feature_dtype=db_feature_dtype,
+            )
+            logging.info(
+                "api loaded secondary db: backend=%s items=%d",
+                secondary_feature_backend,
+                len(next_secondary_names),
+            )
+
+        next_region_names: List[str] = []
+        next_region_feats: np.ndarray | None = None
+        if region_crop_recall_enabled:
+            next_region_names, next_region_feats = _build_region_feature_db_with_cache()
+            logging.info(
+                "api loaded region crop db: backend=%s items=%d",
+                region_crop_recall_backend,
+                len(next_region_names),
+            )
+
+        next_rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
+        if rerank_enabled and preload_rerank_candidate_cache:
+            t0 = time.perf_counter()
+            next_rerank_candidate_cache = precompute_rerank_candidate_cache(
+                standard_dir=standard_dir,
+                names=next_names,
+                candidate_views_max=rerank_candidate_views_max,
+            )
+            logging.info(
+                "api loaded rerank candidate cache: %d files in %.2fs",
+                len(next_rerank_candidate_cache),
+                time.perf_counter() - t0,
+            )
+        elif rerank_enabled:
+            logging.info("api rerank candidate cache preload disabled; using lazy cache on requests")
+
+        next_label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
+        if label_memory_enabled:
+            logging.info("api loaded label memory refs: %d", len(next_label_memory_refs))
+
+        next_scene_text_index: Dict[str, Any] | None = None
+        if scene_text_hint_enabled:
+            t0 = time.perf_counter()
+            next_scene_text_index = precompute_scene_text_index(
+                standard_dir=standard_dir,
+                pattern=standard_pattern,
+                exts=image_exts,
+                min_token_len=scene_text_min_token_len,
+                use_cache=True,
+            )
+            logging.info(
+                "api loaded scene text index: %d images in %.2fs",
+                int(next_scene_text_index.get("total_images", 0)) if isinstance(next_scene_text_index, dict) else 0,
+                time.perf_counter() - t0,
+            )
+
+        with search_assets_lock:
+            names = next_names
+            feats = next_feats
+            secondary_names = next_secondary_names
+            secondary_feats = next_secondary_feats
+            region_names = next_region_names
+            region_feats = next_region_feats
+            rerank_candidate_cache = next_rerank_candidate_cache
+            label_memory_refs = next_label_memory_refs
+            scene_text_index = next_scene_text_index
+        logging.info("search assets reloaded: reason=%s in %.2fs", reason, time.perf_counter() - t_reload)
+
+    _reload_search_assets("startup")
     catalog_store = CatalogStore(catalog_db_path)
     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
     logging.info("catalog sync done: %s", sync_stats)
@@ -4131,6 +4165,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for style_code, import_tags in style_extra_tags.items():
             if import_tags:
                 catalog_store.add_product_tags(style_code, sorted(import_tags))
+        _reload_search_assets("catalog_import_commit")
         with catalog_import_lock:
             job = catalog_import_jobs.get(payload.job_id)
             if job is not None:
@@ -4285,6 +4320,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 str(debug_saved or ""),
             )
 
+            with search_assets_lock:
+                req_names = names
+                req_feats = feats
+                req_secondary_names = secondary_names
+                req_secondary_feats = secondary_feats
+                req_region_names = region_names
+                req_region_feats = region_feats
+                req_rerank_candidate_cache = rerank_candidate_cache
+                req_label_memory_refs = label_memory_refs
+                req_scene_text_index = scene_text_index
+
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             scene_text_tokens: List[str] = []
             checker_debug = ""
@@ -4307,7 +4353,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
-                    label_memory_refs,
+                    req_label_memory_refs,
                     sim_threshold=label_memory_sim_threshold,
                     max_boost=label_memory_max_boost,
                 )
@@ -5230,13 +5276,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 nonlocal region_debug, region_strong_code, region_best_score, region_has_confident_match
                 t0 = time.perf_counter()
-                image_topk = min(len(names), max(top_k * max(cand_multiplier, 1), top_k))
+                image_topk = min(len(req_names), max(top_k * max(cand_multiplier, 1), top_k))
                 if recall_cap > 0:
                     image_topk = min(image_topk, recall_cap)
                 ranked = search_topk_images(
                     query_path,
-                    names,
-                    feats,
+                    req_names,
+                    req_feats,
                     image_topk,
                     feature_backend,
                     pass_w_clip,
@@ -5248,11 +5294,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     query_component_views=pass_query_component_views,
                     query_view_consensus_weight=pass_query_view_consensus_weight,
                 )
-                if secondary_feature_backend and secondary_feats is not None and len(secondary_names) == len(secondary_feats):
+                if secondary_feature_backend and req_secondary_feats is not None and len(req_secondary_names) == len(req_secondary_feats):
                     ranked_secondary = search_topk_images(
                         query_path,
-                        secondary_names,
-                        secondary_feats,
+                        req_secondary_names,
+                        req_secondary_feats,
                         image_topk,
                         secondary_feature_backend,
                         secondary_w_clip,
@@ -5269,18 +5315,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         ranked_secondary,
                         secondary_weight=secondary_recall_weight,
                     )
-                if crop_active and region_crop_recall_enabled and region_feats is not None and len(region_names) == len(region_feats):
+                if crop_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
                     if region_crop_recall_topn_cap > 0:
-                        region_topk = min(len(region_names), region_crop_recall_topn_cap)
+                        region_topk = min(len(req_region_names), region_crop_recall_topn_cap)
                     else:
                         region_topk = min(
-                            len(region_names),
+                            len(req_region_names),
                             max(top_k * max(cand_multiplier, 1), top_k),
                         )
                     ranked_region = search_topk_images(
                         query_path,
-                        region_names,
-                        region_feats,
+                        req_region_names,
+                        req_region_feats,
                         region_topk,
                         region_crop_recall_backend,
                         region_w_clip,
@@ -5354,7 +5400,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         query_component_views=pass_query_component_views,
                         rerank_query_views_max=pass_rerank_query_views_max,
                         rerank_candidate_views_max=rerank_candidate_views_max,
-                        candidate_feature_cache=rerank_candidate_cache,
+                        candidate_feature_cache=req_rerank_candidate_cache,
                         max_unique_codes=pass_rerank_max_unique_codes,
                     )
                     t_rerank_local = time.perf_counter() - t1
@@ -5758,7 +5804,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ranked_images, scene_text_tokens = merge_scene_text_candidates(
                     ranked_images,
                     query_path,
-                    scene_text_index,
+                    req_scene_text_index,
                     seed_score_base=scene_text_seed_score_base,
                     boost_scale=scene_text_boost_scale,
                     min_token_len=scene_text_min_token_len,
