@@ -4292,6 +4292,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             crop_final_area = 0.0
             crop_expand_ratio = 1.0
             strict_small_region_crop = False
+            crop_norm_x = 0.0
+            crop_norm_y = 0.0
+            crop_norm_w = 0.0
+            crop_norm_h = 0.0
             if crop_w > 0.02 and crop_h > 0.02:
                 try:
                     with Image.open(query_path) as crop_im0:
@@ -4341,6 +4345,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             if strict_small_region_crop:
                                 crop_debug += ":strict-small"
                             crop_active = True
+                            crop_norm_x = float(x)
+                            crop_norm_y = float(y)
+                            crop_norm_w = float(cw)
+                            crop_norm_h = float(ch)
                 except Exception:
                     crop_debug = ""
             query_width = 0
@@ -5124,6 +5132,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     crop_active
                     and accent_region_rescue_enabled
                     and not strict_small_region_crop
+                    and not partial_region_crop
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and accent_candidates_debug
@@ -5578,6 +5587,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if strip_mode_enabled and q_shape is not None:
                 qa, qf = q_shape
                 use_strip_mode = (qa >= strip_aspect_threshold) or (qf <= strip_fill_threshold)
+            partial_region_crop = bool(
+                crop_active
+                and not use_strip_mode
+                and not strict_small_region_crop
+                and crop_norm_y <= 0.12
+                and crop_orig_area <= 0.36
+                and (
+                    crop_norm_w <= 0.58
+                    or crop_norm_h <= 0.68
+                    or crop_norm_x <= 0.18
+                    or (crop_norm_x + crop_norm_w) >= 0.82
+                )
+            )
             if use_strip_mode:
                 w_clip_pass = strip_w_clip
                 w_shape_pass = strip_w_shape
@@ -5735,6 +5757,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             accent_pattern_allowed = (
                 accent_pattern_enabled
                 and not strict_small_region_crop
+                and not partial_region_crop
                 and not strip_crop_accent_disabled
                 and (not crop_active or accent_pattern_crop_enabled)
             )
