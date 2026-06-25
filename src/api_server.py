@@ -5339,6 +5339,45 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_region_query_view_consensus_weight: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 nonlocal region_debug, region_strong_code, region_best_score, region_has_confident_match
+
+                def _search_topk_images_from_views(
+                    query_views: List[Image.Image],
+                    names_local: List[str],
+                    feats_local: np.ndarray,
+                    top_k_local: int,
+                    backend_local: str,
+                    w_clip_local: float,
+                    w_shape_local: float,
+                    w_color_local: float,
+                    w_stripe_local: float,
+                    query_view_consensus_weight_local: float = 0.0,
+                ) -> List[tuple[str, float]]:
+                    if not query_views or len(names_local) != len(feats_local):
+                        return []
+                    q_feats = [
+                        extract_embedding(
+                            view,
+                            backend_local,
+                            w_clip_local,
+                            w_shape_local,
+                            w_color_local,
+                            w_stripe_local,
+                        )
+                        for view in query_views
+                    ]
+                    if not q_feats:
+                        return []
+                    sims_stack = np.vstack([(feats_local @ q).astype(np.float32) for q in q_feats])
+                    consensus = max(0.0, min(1.0, float(query_view_consensus_weight_local)))
+                    if consensus <= 1e-6:
+                        sims = sims_stack.max(axis=0)
+                    else:
+                        sims_max = sims_stack.max(axis=0)
+                        sims_mean = sims_stack.mean(axis=0)
+                        sims = (1.0 - consensus) * sims_max + consensus * sims_mean
+                    order = np.argsort(-sims)[: max(1, int(top_k_local))]
+                    return [(names_local[int(i)], float(sims[int(i)])) for i in order]
+
                 t0 = time.perf_counter()
                 eff_w_clip = pass_w_clip
                 eff_w_shape = pass_w_shape
@@ -5417,16 +5456,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if ranked_region:
                         region_focus_debug = ""
                         if use_strip_mode and not strict_small_region_crop:
-                            focus_region_crop_ratio = min(
-                                float(pass_region_query_crop_ratio),
-                                float(strict_small_region_query_crop_ratio),
-                            )
+                            focus_query_img = Image.open(query_path).convert("RGB")
+                            focus_tags = {
+                                "top",
+                                "top_narrow",
+                                "upper_band",
+                                "upper_narrow_band",
+                                "top_left_band",
+                                "top_right_band",
+                                "collar_left_focus",
+                                "collar_right_focus",
+                                "collar_center_bridge",
+                            }
+                            focus_query_views = [
+                                view
+                                for tag, view in _region_standard_views(focus_query_img, max_component_views=4)
+                                if (tag in focus_tags) or tag.startswith("comp")
+                            ]
                             focus_region_view_consensus = max(
                                 float(pass_region_query_view_consensus_weight),
-                                0.08,
+                                0.12,
                             )
-                            ranked_region_focus = search_topk_images(
-                                query_path,
+                            ranked_region_focus = _search_topk_images_from_views(
+                                focus_query_views,
                                 req_region_names,
                                 req_region_feats,
                                 region_topk,
@@ -5435,10 +5487,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 max(float(pass_w_shape), float(strict_small_w_shape)),
                                 min(float(pass_w_color), float(strict_small_w_color)),
                                 max(float(pass_w_stripe), float(strict_small_w_stripe)),
-                                query_multicrop=True,
-                                query_crop_ratio=focus_region_crop_ratio,
-                                query_component_views=True,
-                                query_view_consensus_weight=focus_region_view_consensus,
+                                query_view_consensus_weight_local=focus_region_view_consensus,
                             )
                             if ranked_region_focus:
                                 ranked_region = merge_ranked_image_lists(
