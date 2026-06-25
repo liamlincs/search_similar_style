@@ -61,6 +61,53 @@ from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_a
 from catalog_store import CatalogStore
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
+
+def _expand_region_crop(
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    *,
+    min_w: float,
+    min_h: float,
+    min_area: float,
+    context_pad_ratio: float,
+    context_min_area: float,
+) -> tuple[float, float, float, float, bool]:
+    x = max(0.0, min(0.98, float(x)))
+    y = max(0.0, min(0.98, float(y)))
+    w = max(0.02, min(1.0 - x, float(w)))
+    h = max(0.02, min(1.0 - y, float(h)))
+
+    cx = x + w * 0.5
+    cy = y + h * 0.5
+    target_w = max(w, min_w)
+    target_h = max(h, min_h)
+    needs_context = w < min_w or h < min_h or (w * h) < max(min_area, context_min_area)
+
+    pad = max(0.0, float(context_pad_ratio))
+    if needs_context and pad > 0.0:
+        target_w = max(target_w, w * (1.0 + pad * 2.0))
+        target_h = max(target_h, h * (1.0 + pad * 2.0))
+
+    target_area = max(min_area, context_min_area if needs_context else 0.0)
+    if target_w * target_h < target_area:
+        scale = math.sqrt(target_area / max(1e-6, target_w * target_h))
+        target_w *= scale
+        target_h *= scale
+
+    target_w = max(0.02, min(1.0, target_w))
+    target_h = max(0.02, min(1.0, target_h))
+    next_x = max(0.0, min(1.0 - target_w, cx - target_w * 0.5))
+    next_y = max(0.0, min(1.0 - target_h, cy - target_h * 0.5))
+    expanded = (
+        abs(next_x - x) > 1e-6
+        or abs(next_y - y) > 1e-6
+        or abs(target_w - w) > 1e-6
+        or abs(target_h - h) > 1e-6
+    )
+    return next_x, next_y, target_w, target_h, expanded
+
 try:
     from print_service import PRINT_STATIC_DIR, PRINT_STORAGE_DIR, list_templates, process_upload, render_layout
     PRINT_SERVICE_IMPORT_ERROR: Exception | None = None
@@ -211,6 +258,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     result_image_quality = int(search_cfg.get("result_image_quality", 82))
     default_match_mode = str(search_cfg.get("match_mode", "similar_style")).strip().lower()
     region_primary_when_crop = bool(search_cfg.get("region_primary_when_crop", True))
+    region_crop_auto_expand_enabled = bool(search_cfg.get("region_crop_auto_expand_enabled", True))
+    region_crop_auto_expand_min_w = float(search_cfg.get("region_crop_auto_expand_min_w", 0.34))
+    region_crop_auto_expand_min_h = float(search_cfg.get("region_crop_auto_expand_min_h", 0.34))
+    region_crop_auto_expand_min_area = float(search_cfg.get("region_crop_auto_expand_min_area", 0.12))
+    region_crop_context_pad_ratio = float(search_cfg.get("region_crop_context_pad_ratio", 0.35))
+    region_crop_context_min_area = float(search_cfg.get("region_crop_context_min_area", 0.18))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -4150,6 +4203,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         y = max(0.0, min(0.98, float(crop_y)))
                         cw = max(0.02, min(1.0 - x, float(crop_w)))
                         ch = max(0.02, min(1.0 - y, float(crop_h)))
+                        expanded = False
+                        if region_crop_auto_expand_enabled:
+                            min_w = max(0.02, min(1.0, region_crop_auto_expand_min_w))
+                            min_h = max(0.02, min(1.0, region_crop_auto_expand_min_h))
+                            min_area = max(0.0, min(1.0, region_crop_auto_expand_min_area))
+                            x, y, cw, ch, expanded = _expand_region_crop(
+                                x,
+                                y,
+                                cw,
+                                ch,
+                                min_w=min_w,
+                                min_h=min_h,
+                                min_area=min_area,
+                                context_pad_ratio=max(0.0, min(1.0, region_crop_context_pad_ratio)),
+                                context_min_area=max(0.0, min(1.0, region_crop_context_min_area)),
+                            )
                         left = int(round(x * iw))
                         top = int(round(y * ih))
                         right = int(round((x + cw) * iw))
@@ -4157,6 +4226,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         if right - left >= 32 and bottom - top >= 32:
                             crop_im.crop((left, top, right, bottom)).save(query_path, format="JPEG", quality=92)
                             crop_debug = f"{x:.3f},{y:.3f},{cw:.3f},{ch:.3f}"
+                            if expanded:
+                                crop_debug += ":expanded"
                             crop_active = True
                 except Exception:
                     crop_debug = ""

@@ -45,6 +45,11 @@ to square.
 This prevents local matches such as sleeves or scarves from being hidden by
 unrelated global/accessory heuristics.
 
+Small region boxes are automatically expanded before feature extraction. The
+user-drawn rectangle is treated as an anchor, not as the final embedding image.
+This keeps CLIP/hybrid semantics from being dominated by nearby labels, printed
+text, or a single tiny patch with too little garment context.
+
 ## Tuning Guidance
 
 - Increase `region_crop_code_prior_boost` if a correct region candidate appears
@@ -54,5 +59,8 @@ unrelated global/accessory heuristics.
   positives.
 - Keep `exact_region_rescue_enabled=false` unless exact same-color matching also
   needs the region rescue behavior.
+- Tune `region_crop_context_pad_ratio` and `region_crop_context_min_area` when
+  small crops are still text-biased; raise them for more garment context, lower
+  them if region search becomes too broad.
 - Do not add one-off style-code rules unless the failure is caused by bad data
   or a known catalog labeling issue.
