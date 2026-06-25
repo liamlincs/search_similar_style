@@ -4641,6 +4641,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             "best_standard_image": image_name,
                             "score": round(disp, 4),
                             "rank_score": round(raw_score, 6),
+                            "_force_keep": True,
                         }
                     )
                     seen_keys.add(key)
