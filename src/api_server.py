@@ -5632,20 +5632,45 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         secondary_weight=secondary_recall_weight,
                     )
                 if crop_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
+                    region_names_local = req_region_names
+                    region_feats_local = req_region_feats
+                    if partial_region_crop:
+                        partial_region_tags = {
+                            "top",
+                            "top_narrow",
+                            "upper_band",
+                            "upper_narrow_band",
+                            "top_left_band",
+                            "top_right_band",
+                            "collar_left_focus",
+                            "collar_right_focus",
+                            "collar_center_bridge",
+                        }
+                        partial_region_idx = [
+                            idx for idx, name in enumerate(req_region_names)
+                            if (
+                                any(name.endswith(f"_{tag}") for tag in partial_region_tags)
+                                or "_comp" in name
+                                or "_top_comp" in name
+                            )
+                        ]
+                        if partial_region_idx:
+                            region_names_local = [req_region_names[idx] for idx in partial_region_idx]
+                            region_feats_local = req_region_feats[np.array(partial_region_idx, dtype=np.int32)]
                     effective_region_recall_topn_cap = (
                         strict_small_region_recall_topn_cap if strict_small_region_crop else region_crop_recall_topn_cap
                     )
                     if effective_region_recall_topn_cap > 0:
-                        region_topk = min(len(req_region_names), effective_region_recall_topn_cap)
+                        region_topk = min(len(region_names_local), effective_region_recall_topn_cap)
                     else:
                         region_topk = min(
-                            len(req_region_names),
+                            len(region_names_local),
                             max(top_k * max(cand_multiplier, 1), top_k),
                         )
                     ranked_region = search_topk_images(
                         query_path,
-                        req_region_names,
-                        req_region_feats,
+                        region_names_local,
+                        region_feats_local,
                         region_topk,
                         region_crop_recall_backend,
                         eff_w_clip,
