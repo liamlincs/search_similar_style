@@ -2155,7 +2155,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not scored:
             return ranked, "", {}
         scored.sort(key=lambda x: x[1], reverse=True)
-        injected = scored[: max(1, collar_contour_max_injected)]
+        injected: List[tuple[str, float]] = []
+        seen_injected_codes: set[str] = set()
+        for file_name, sim in scored:
+            code = filename_to_style_code(file_name)
+            if code in seen_injected_codes:
+                continue
+            seen_injected_codes.add(code)
+            injected.append((file_name, sim))
+            if len(injected) >= max(1, collar_contour_max_injected):
+                break
         merged: Dict[str, float] = {}
         for name, score in ranked:
             merged[name] = max(float(score), merged.get(name, -1e9))
