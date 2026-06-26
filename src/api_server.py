@@ -407,6 +407,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_chevron_score_boost = float(search_cfg.get("collar_chevron_score_boost", 0.22))
     collar_chevron_seed_score_base = float(search_cfg.get("collar_chevron_seed_score_base", 1.24))
     collar_chevron_max_injected = int(search_cfg.get("collar_chevron_max_injected", 48))
+    collar_chevron_code_contour_min_score = float(search_cfg.get("collar_chevron_code_contour_min_score", 0.58))
+    collar_chevron_code_contour_boost = float(search_cfg.get("collar_chevron_code_contour_boost", 0.32))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -2134,6 +2136,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 scored.append((file_name, effective_sim))
         chevron_debug: List[str] = []
         if collar_chevron_enabled and float(query_chevron_score) >= float(collar_chevron_query_min_score):
+            code_best_contour: Dict[str, tuple[float, str]] = {}
+            for base_file_name, (contour_sim, contour_file_name) in base_best_contour.items():
+                code = filename_to_style_code(base_file_name)
+                current = code_best_contour.get(code)
+                if current is None or float(contour_sim) > float(current[0]):
+                    code_best_contour[code] = (float(contour_sim), contour_file_name)
+            code_best_chevron: Dict[str, tuple[float, str]] = {}
+            for base_file_name, chevron_score in collar_chevron_cache.items():
+                code = filename_to_style_code(base_file_name)
+                current = code_best_chevron.get(code)
+                if current is None or float(chevron_score) > float(current[0]):
+                    code_best_chevron[code] = (float(chevron_score), base_file_name)
             chevron_ranked = sorted(
                 (
                     (file_name, float(score), base_best_contour.get(file_name, (0.0, file_name))[0])
@@ -2152,6 +2166,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 )
                 scored.append((base_best_contour.get(base_file_name, (contour_sim, base_file_name))[1], float(score)))
                 chevron_debug.append(f"{filename_to_style_code(base_file_name)}:{chevron_score:.3f}/{contour_sim:.3f}/{score:.3f}")
+            for code, (chevron_score, base_file_name) in code_best_chevron.items():
+                if chevron_score < float(collar_chevron_standard_min_score):
+                    continue
+                contour_sim, contour_file_name = code_best_contour.get(code, (0.0, base_file_name))
+                if contour_sim < float(collar_chevron_code_contour_min_score):
+                    continue
+                score = max(
+                    contour_sim,
+                    float(collar_chevron_seed_score_base)
+                    + float(collar_chevron_score_boost) * chevron_score
+                    + float(collar_chevron_code_contour_boost) * min(1.0, max(0.0, contour_sim)),
+                )
+                scored.append((contour_file_name, float(score)))
+                chevron_debug.append(f"code:{code}:{chevron_score:.3f}/{contour_sim:.3f}/{score:.3f}")
         if not scored:
             return ranked, "", {}
         scored.sort(key=lambda x: x[1], reverse=True)
