@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from PIL import Image
+from PIL import Image, ImageOps
 from zoneinfo import ZoneInfo
 
 try:
@@ -5482,6 +5482,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 for tag, view in _region_standard_views(focus_query_img, max_component_views=4)
                                 if (tag in focus_tags) or tag.startswith("comp")
                             ]
+                            if partial_region_crop and not use_strip_mode:
+                                mirrored_focus_views: List[Image.Image] = []
+                                seen_mirror_keys = {
+                                    (view.size[0], view.size[1], int(np.asarray(view).mean()))
+                                    for view in focus_query_views
+                                }
+                                for view in list(focus_query_views):
+                                    flipped = ImageOps.mirror(view)
+                                    key = (flipped.size[0], flipped.size[1], int(np.asarray(flipped).mean()))
+                                    if key in seen_mirror_keys:
+                                        continue
+                                    seen_mirror_keys.add(key)
+                                    mirrored_focus_views.append(flipped)
+                                focus_query_views.extend(mirrored_focus_views)
                             focus_region_view_consensus = max(
                                 float(pass_region_query_view_consensus_weight),
                                 0.18 if partial_region_crop and not use_strip_mode else 0.12,
