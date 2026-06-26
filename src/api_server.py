@@ -391,7 +391,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_region_rescue_enabled = bool(search_cfg.get("accent_region_rescue_enabled", True))
     accent_region_rescue_min_sim = float(search_cfg.get("accent_region_rescue_min_sim", 0.70))
     accent_region_rescue_max_rows = int(search_cfg.get("accent_region_rescue_max_rows", 3))
-    collar_contour_enabled = bool(search_cfg.get("collar_contour_enabled", False))
+    collar_contour_enabled = bool(search_cfg.get("collar_contour_enabled", True))
     collar_contour_seed_score_base = float(search_cfg.get("collar_contour_seed_score_base", 1.12))
     collar_contour_boost_scale = float(search_cfg.get("collar_contour_boost_scale", 0.28))
     collar_contour_min_score = float(search_cfg.get("collar_contour_min_score", 0.52))
@@ -6204,7 +6204,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-            if collar_contour_enabled and partial_region_crop:
+            collar_contour_query_allowed = bool(
+                collar_contour_enabled
+                and crop_active
+                and not strict_small_region_crop
+                and (partial_region_crop or use_strip_mode)
+            )
+            if collar_contour_query_allowed:
                 q_collar_sig = _extract_collar_contour_sig(query_path, size=collar_contour_size)
                 q_collar_sig_mirror = None
                 if q_collar_sig is not None:
