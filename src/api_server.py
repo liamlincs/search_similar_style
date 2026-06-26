@@ -676,6 +676,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 local_idx.append(idx)
         return local_idx
 
+    def _build_local_collar_query_views(
+        img: Image.Image,
+        *,
+        use_strip_mode_local: bool,
+        partial_region_crop_local: bool,
+    ) -> List[Image.Image]:
+        w, h = img.size
+        boxes: List[tuple[int, int, int, int]] = [
+            (0, 0, int(w * 0.42), int(h * 0.42)),
+            (int(w * 0.58), 0, w, int(h * 0.42)),
+            (int(w * 0.24), 0, int(w * 0.76), int(h * 0.30)),
+        ]
+        if use_strip_mode_local:
+            boxes.extend(
+                [
+                    (int(w * 0.04), 0, int(w * 0.34), int(h * 0.34)),
+                    (int(w * 0.66), 0, int(w * 0.96), int(h * 0.34)),
+                ]
+            )
+        elif partial_region_crop_local:
+            boxes.extend(
+                [
+                    (0, 0, int(w * 0.36), int(h * 0.36)),
+                    (int(w * 0.64), 0, w, int(h * 0.36)),
+                ]
+            )
+
+        views: List[Image.Image] = []
+        seen: set[tuple[int, int, int, int]] = set()
+        for x0, y0, x1, y1 in boxes:
+            x0, y0 = max(0, x0), max(0, y0)
+            x1, y1 = min(w, x1), min(h, y1)
+            key = (x0, y0, x1, y1)
+            if key in seen or x1 - x0 < 32 or y1 - y0 < 24:
+                continue
+            seen.add(key)
+            views.append(img.crop(key))
+
+        for tag, view in _region_standard_views(img, max_component_views=4):
+            if tag.startswith("top_comp"):
+                vw, vh = view.size
+                if vw >= 24 and vh >= 24 and (vw * vh) <= int(w * h * 0.35):
+                    views.append(view)
+            elif use_strip_mode_local and tag.startswith("comp_pair"):
+                vw, vh = view.size
+                if vw >= 32 and vh >= 24 and vh <= int(h * 0.48):
+                    views.append(view)
+        return views
+
     def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
         files = collect_images(standard_dir, standard_pattern, image_exts)
         sigs = []
@@ -5677,37 +5726,50 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             len(region_names_local),
                             max(top_k * max(cand_multiplier, 1), top_k),
                         )
-                    ranked_region = search_topk_images(
-                        query_path,
-                        region_names_local,
-                        region_feats_local,
-                        region_topk,
-                        region_crop_recall_backend,
-                        eff_w_clip,
-                        eff_w_shape,
-                        eff_w_color,
-                        eff_w_stripe,
-                        query_multicrop=pass_region_query_multicrop,
-                        query_crop_ratio=pass_region_query_crop_ratio,
-                        query_component_views=pass_region_query_component_views,
-                        query_view_consensus_weight=pass_region_query_view_consensus_weight,
-                    )
+                    if local_collar_region_crop and not strict_small_region_crop:
+                        local_query_img = Image.open(query_path).convert("RGB")
+                        local_query_views = _build_local_collar_query_views(
+                            local_query_img,
+                            use_strip_mode_local=bool(use_strip_mode),
+                            partial_region_crop_local=bool(partial_region_crop),
+                        )
+                        ranked_region = _search_topk_images_from_views(
+                            local_query_views,
+                            region_names_local,
+                            region_feats_local,
+                            region_topk,
+                            region_crop_recall_backend,
+                            eff_w_clip,
+                            eff_w_shape,
+                            eff_w_color,
+                            eff_w_stripe,
+                            query_view_consensus_weight_local=max(float(pass_region_query_view_consensus_weight), 0.10),
+                        )
+                    else:
+                        ranked_region = search_topk_images(
+                            query_path,
+                            region_names_local,
+                            region_feats_local,
+                            region_topk,
+                            region_crop_recall_backend,
+                            eff_w_clip,
+                            eff_w_shape,
+                            eff_w_color,
+                            eff_w_stripe,
+                            query_multicrop=pass_region_query_multicrop,
+                            query_crop_ratio=pass_region_query_crop_ratio,
+                            query_component_views=pass_region_query_component_views,
+                            query_view_consensus_weight=pass_region_query_view_consensus_weight,
+                        )
                     if ranked_region:
                         region_focus_debug = ""
                         if local_collar_region_crop and not strict_small_region_crop:
                             focus_query_img = Image.open(query_path).convert("RGB")
-                            local_focus_tags = {
-                                "collar_left_focus",
-                                "collar_right_focus",
-                                "collar_center_bridge",
-                            }
-                            focus_query_views = []
-                            for tag, view in _region_standard_views(focus_query_img, max_component_views=4):
-                                if tag in local_focus_tags or tag.startswith("top_comp"):
-                                    focus_query_views.append(view)
-                                    continue
-                                if use_strip_mode and tag.startswith("comp_pair"):
-                                    focus_query_views.append(view)
+                            focus_query_views = _build_local_collar_query_views(
+                                focus_query_img,
+                                use_strip_mode_local=bool(use_strip_mode),
+                                partial_region_crop_local=bool(partial_region_crop),
+                            )
                             if partial_region_crop and not use_strip_mode:
                                 mirrored_focus_views: List[Image.Image] = []
                                 seen_mirror_keys = {
