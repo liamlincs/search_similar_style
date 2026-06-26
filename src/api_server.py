@@ -5464,7 +5464,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     if ranked_region:
                         region_focus_debug = ""
-                        if use_strip_mode and not strict_small_region_crop:
+                        if (use_strip_mode or partial_region_crop) and not strict_small_region_crop:
                             focus_query_img = Image.open(query_path).convert("RGB")
                             focus_tags = {
                                 "top",
@@ -5484,7 +5484,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             ]
                             focus_region_view_consensus = max(
                                 float(pass_region_query_view_consensus_weight),
-                                0.12,
+                                0.18 if partial_region_crop and not use_strip_mode else 0.12,
                             )
                             ranked_region_focus = _search_topk_images_from_views(
                                 focus_query_views,
@@ -5492,10 +5492,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 req_region_feats,
                                 region_topk,
                                 region_crop_recall_backend,
-                                max(float(pass_w_clip), float(strict_small_w_clip)),
-                                max(float(pass_w_shape), float(strict_small_w_shape)),
-                                min(float(pass_w_color), float(strict_small_w_color)),
-                                max(float(pass_w_stripe), float(strict_small_w_stripe)),
+                                max(float(pass_w_clip), float(strict_small_w_clip if partial_region_crop else pass_w_clip)),
+                                max(float(pass_w_shape), float(strict_small_w_shape if partial_region_crop else pass_w_shape)),
+                                min(float(pass_w_color), float(strict_small_w_color if partial_region_crop else pass_w_color)),
+                                max(float(pass_w_stripe), float(strict_small_w_stripe if partial_region_crop else pass_w_stripe)),
                                 query_view_consensus_weight_local=focus_region_view_consensus,
                             )
                             if ranked_region_focus:
