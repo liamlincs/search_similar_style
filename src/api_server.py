@@ -1395,6 +1395,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             row["tags"] = list(product.get("tags", [])) if product else []
         return rows_in
 
+    def _dedupe_search_rows(rows_in: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        seen_codes: set[str] = set()
+        for row in rows_in:
+            code = _code_prior_key(str(row.get("style_code", "")))
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            out.append(row)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
     def _cached_preview_path(image_name: str, max_edge: int, quality: int) -> Path:
         stem = Path(image_name).stem
         return image_cache_dir / f"{stem}__e{max_edge}_q{quality}.jpg"
@@ -6301,6 +6314,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
+
+            rows = _dedupe_search_rows(rows, top_k)
 
             if low_confidence_enabled and rows:
                 top1 = float(rows[0].get("score", 0.0))
