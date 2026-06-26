@@ -562,7 +562,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             maxc = arr.max(axis=-1).astype(np.float32)
             minc = arr.min(axis=-1).astype(np.float32)
             sat = (maxc - minc) / np.maximum(maxc, 1.0)
-            fg = ((gray < 235.0) & ((sat > 0.08) | (gray < 170.0))).astype(np.uint8)
+            border_band = max(16, int(min(w, h) * 0.10))
+            border_rgb = np.concatenate(
+                [
+                    arr[max(0, h - border_band):, :, :].reshape(-1, 3),
+                    arr[:, max(0, w - border_band):, :].reshape(-1, 3),
+                ],
+                axis=0,
+            )
+            bg_rgb = np.median(border_rgb, axis=0).astype(np.float32)
+            bg_gray = float(0.299 * bg_rgb[0] + 0.587 * bg_rgb[1] + 0.114 * bg_rgb[2])
+            color_dist = np.sqrt(((arr.astype(np.float32) - bg_rgb.reshape(1, 1, 3)) ** 2).sum(axis=-1))
+            bright_fg = gray > (bg_gray + 55.0)
+            dark_or_colored = (gray < (bg_gray - 18.0)) | (sat > 0.08)
+            dark_or_colored = cv2.dilate(dark_or_colored.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1) > 0
+            fg_mask = bright_fg | (bright_fg & dark_or_colored) | (dark_or_colored & (gray > (bg_gray + 25.0))) | (color_dist > 42.0)
+            if int(fg_mask.sum()) < max(64, int(w * h * 0.004)):
+                fg_mask = (gray < 235.0) & ((sat > 0.08) | (gray < 170.0))
+            fg = fg_mask.astype(np.uint8)
             fg[: min(int(h * 0.10), 80), :] = 0
             num, _labels, stats, _centers = cv2.connectedComponentsWithStats(fg, connectivity=8)
             comps: List[tuple[int, tuple[int, int, int, int]]] = []
