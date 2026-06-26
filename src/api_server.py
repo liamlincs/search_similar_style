@@ -3008,8 +3008,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_contour",
-                "version": 1,
+                "version": 2,
                 "size": int(collar_contour_size),
+                "standard_views": "collar_focus_components_topcomp",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -3030,10 +3031,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass
         t0 = time.perf_counter()
         out: Dict[str, np.ndarray] = {}
+        collar_tags = {
+            "top",
+            "top_narrow",
+            "upper_band",
+            "upper_narrow_band",
+            "top_left_band",
+            "top_right_band",
+            "collar_left_focus",
+            "collar_right_focus",
+            "collar_center_bridge",
+        }
         for fp in files:
-            sig = _extract_collar_contour_sig(fp, size=collar_contour_size)
-            if sig is not None:
-                out[fp.name] = sig.astype(np.float32)
+            try:
+                img = Image.open(fp).convert("RGB")
+            except Exception:
+                continue
+            for idx, (tag, view) in enumerate(_region_standard_views(img, max_component_views=4)):
+                if not ((tag in collar_tags) or tag.startswith("comp") or tag.startswith("top_comp")):
+                    continue
+                sig = _extract_collar_contour_sig_from_image(view, size=collar_contour_size)
+                if sig is not None:
+                    out[f"{fp.name}@c{idx}_{tag}"] = sig.astype(np.float32)
         if feature_cache_enabled:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             names_arr = np.array(list(out.keys()), dtype=object)
