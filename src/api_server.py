@@ -404,7 +404,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
     collar_chevron_standard_min_score = float(search_cfg.get("collar_chevron_standard_min_score", 0.62))
     collar_chevron_min_contour_score = float(search_cfg.get("collar_chevron_min_contour_score", 0.44))
-    collar_chevron_score_boost = float(search_cfg.get("collar_chevron_score_boost", 0.12))
+    collar_chevron_score_boost = float(search_cfg.get("collar_chevron_score_boost", 0.22))
+    collar_chevron_seed_score_base = float(search_cfg.get("collar_chevron_seed_score_base", 1.24))
+    collar_chevron_max_injected = int(search_cfg.get("collar_chevron_max_injected", 24))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -2111,11 +2113,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not ranked or not q_sigs or not collar_contour_cache:
             return ranked, "", {}
         scored: List[tuple[str, float]] = []
+        base_best_contour: Dict[str, tuple[float, str]] = {}
         for file_name, sig in collar_contour_cache.items():
             sim = max(float(query_sig @ sig) for query_sig in q_sigs)
             if q_mirror_sigs:
                 sim = max(sim, max(float(query_sig_mirror @ sig) for query_sig_mirror in q_mirror_sigs))
             base_file_name = file_name.split("@", 1)[0]
+            current_base = base_best_contour.get(base_file_name)
+            if current_base is None or sim > current_base[0]:
+                base_best_contour[base_file_name] = (float(sim), file_name)
             chevron_score = float(collar_chevron_cache.get(base_file_name, 0.0)) if collar_chevron_enabled else 0.0
             chevron_match = (
                 collar_chevron_enabled
@@ -2126,6 +2132,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if sim >= collar_contour_min_score or chevron_match:
                 effective_sim = max(sim, sim + float(collar_chevron_score_boost) * chevron_score) if chevron_match else sim
                 scored.append((file_name, effective_sim))
+        chevron_debug: List[str] = []
+        if collar_chevron_enabled and float(query_chevron_score) >= float(collar_chevron_query_min_score):
+            chevron_ranked = sorted(
+                (
+                    (file_name, float(score), base_best_contour.get(file_name, (0.0, file_name))[0])
+                    for file_name, score in collar_chevron_cache.items()
+                    if float(score) >= float(collar_chevron_standard_min_score)
+                ),
+                key=lambda item: (item[1], item[2]),
+                reverse=True,
+            )[: max(1, collar_chevron_max_injected)]
+            for base_file_name, chevron_score, contour_sim in chevron_ranked:
+                if contour_sim < float(collar_chevron_min_contour_score):
+                    continue
+                score = max(
+                    contour_sim,
+                    float(collar_chevron_seed_score_base) + float(collar_chevron_score_boost) * chevron_score,
+                )
+                scored.append((base_best_contour.get(base_file_name, (contour_sim, base_file_name))[1], float(score)))
+                chevron_debug.append(f"{filename_to_style_code(base_file_name)}:{chevron_score:.3f}/{contour_sim:.3f}/{score:.3f}")
         if not scored:
             return ranked, "", {}
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -2145,6 +2171,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             f"{filename_to_style_code(file_name)}:{sim:.3f}/{collar_contour_seed_score_base + collar_contour_boost_scale * max(0.0, sim):.3f}"
             for file_name, sim in injected[:24]
         ]
+        if chevron_debug:
+            debug_items.append("chev=" + ",".join(chevron_debug[:8]))
         return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items), code_matches
 
     def _extract_sleeve_pattern_sig_from_image(image: Image.Image, size: int = 32) -> np.ndarray | None:
