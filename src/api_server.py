@@ -653,6 +653,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 views.append((f"top_comp{idx}", img.crop(key)))
         return views
 
+    def _filter_local_collar_region_views(
+        region_names: List[str],
+        *,
+        allow_component_pairs: bool,
+    ) -> List[int]:
+        local_tags = {
+            "collar_left_focus",
+            "collar_right_focus",
+            "collar_center_bridge",
+        }
+        local_idx: List[int] = []
+        for idx, name in enumerate(region_names):
+            if any(name.endswith(f"_{tag}") for tag in local_tags):
+                local_idx.append(idx)
+                continue
+            if "_top_comp" in name:
+                local_idx.append(idx)
+                continue
+            if allow_component_pairs and "_comp_pair" in name:
+                local_idx.append(idx)
+        return local_idx
+
     def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
         files = collect_images(standard_dir, standard_pattern, image_exts)
         sigs = []
@@ -5634,19 +5656,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if crop_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
                     region_names_local = req_region_names
                     region_feats_local = req_region_feats
-                    if partial_region_crop:
-                        partial_region_tags = {
-                            "collar_left_focus",
-                            "collar_right_focus",
-                            "collar_center_bridge",
-                        }
-                        partial_region_idx = [
-                            idx for idx, name in enumerate(req_region_names)
-                            if (
-                                any(name.endswith(f"_{tag}") for tag in partial_region_tags)
-                                or "_top_comp" in name
-                            )
-                        ]
+                    local_collar_region_crop = partial_region_crop or use_strip_mode
+                    if local_collar_region_crop:
+                        partial_region_idx = _filter_local_collar_region_views(
+                            req_region_names,
+                            allow_component_pairs=bool(use_strip_mode),
+                        )
                         if partial_region_idx:
                             region_names_local = [req_region_names[idx] for idx in partial_region_idx]
                             region_feats_local = req_region_feats[np.array(partial_region_idx, dtype=np.int32)]
@@ -5677,24 +5692,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     if ranked_region:
                         region_focus_debug = ""
-                        if (use_strip_mode or partial_region_crop) and not strict_small_region_crop:
+                        if local_collar_region_crop and not strict_small_region_crop:
                             focus_query_img = Image.open(query_path).convert("RGB")
-                            focus_tags = {
-                                "top",
-                                "top_narrow",
-                                "upper_band",
-                                "upper_narrow_band",
-                                "top_left_band",
-                                "top_right_band",
+                            local_focus_tags = {
                                 "collar_left_focus",
                                 "collar_right_focus",
                                 "collar_center_bridge",
                             }
-                            focus_query_views = [
-                                view
-                                for tag, view in _region_standard_views(focus_query_img, max_component_views=4)
-                                if (tag in focus_tags) or tag.startswith("comp")
-                            ]
+                            focus_query_views = []
+                            for tag, view in _region_standard_views(focus_query_img, max_component_views=4):
+                                if tag in local_focus_tags or tag.startswith("top_comp"):
+                                    focus_query_views.append(view)
+                                    continue
+                                if use_strip_mode and tag.startswith("comp_pair"):
+                                    focus_query_views.append(view)
                             if partial_region_crop and not use_strip_mode:
                                 mirrored_focus_views: List[Image.Image] = []
                                 seen_mirror_keys = {
