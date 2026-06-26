@@ -287,6 +287,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     strict_small_region_code_prior_min_score = float(search_cfg.get("strict_small_region_code_prior_min_score", 0.62))
     strict_small_region_result_rescue_min_score = float(search_cfg.get("strict_small_region_result_rescue_min_score", 0.60))
     strict_small_region_force_top_min_score = float(search_cfg.get("strict_small_region_force_top_min_score", 0.62))
+    strict_small_region_force_topn = int(search_cfg.get("strict_small_region_force_topn", 3))
     strict_small_region_recall_topn_cap = int(search_cfg.get("strict_small_region_recall_topn_cap", 240))
     strict_small_region_query_multicrop_enabled = bool(search_cfg.get("strict_small_region_query_multicrop_enabled", True))
     strict_small_region_query_crop_ratio = float(search_cfg.get("strict_small_region_query_crop_ratio", 0.72))
@@ -4776,9 +4777,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 min_region_force_top_score = (
                     strict_small_region_force_top_min_score if strict_small_region_crop else region_crop_force_top_min_score
                 )
+                force_topn_local = (
+                    strict_small_region_force_topn if strict_small_region_crop else region_crop_force_topn
+                )
                 forced_rows: List[Dict[str, Any]] = []
                 for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
-                    if len(forced_rows) >= max(1, region_crop_force_topn):
+                    if len(forced_rows) >= max(1, force_topn_local):
                         break
                     if float(score) < min_region_force_top_score:
                         break
