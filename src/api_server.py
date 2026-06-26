@@ -443,6 +443,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_region_requires_hat_prior = bool(search_cfg.get("accessory_region_requires_hat_prior", True))
     accessory_region_hat_prior_threshold = float(search_cfg.get("accessory_region_hat_prior_threshold", accessory_hat_prior_query_threshold))
     accessory_region_suppress_when_accent = bool(search_cfg.get("accessory_region_suppress_when_accent", True))
+    text_accessory_region_rescue_enabled = bool(search_cfg.get("text_accessory_region_rescue_enabled", True))
+    text_accessory_region_rescue_topn = int(search_cfg.get("text_accessory_region_rescue_topn", 3))
+    text_accessory_region_rescue_min_score = float(search_cfg.get("text_accessory_region_rescue_min_score", 0.60))
+    text_accessory_region_rescue_seed_score = float(search_cfg.get("text_accessory_region_rescue_seed_score", 1.30))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -5245,6 +5249,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and accessory_hat_region_rescue_min_aspect <= float(crop_aspect or 0.0) <= accessory_hat_region_rescue_max_aspect
                     and rows_in
                     and ranked_in
+                    and not text_like_accessory_query
                 ):
                     return rows_in
                 best_ranked_by_key: Dict[str, tuple[str, float]] = {}
@@ -5333,6 +5338,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and not sleeve_candidates_debug
                     and not checker_candidates_debug
                     and str(accessory_debug).startswith("skip-region:")
+                    and not text_like_accessory_query
                 ):
                     return rows_in
                 existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
@@ -5413,6 +5419,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and accent_candidates_debug
                     and rows_in
                     and ranked_in
+                    and not text_like_accessory_query
                 ):
                     return rows_in
                 best_ranked_by_key: Dict[str, tuple[str, float]] = {}
@@ -5591,6 +5598,62 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if _code_prior_key(str(row.get("style_code", ""))) not in text_keys
                 ]
                 return _merge_rescue_rows_preserving_forced(text_rows, kept_rows)
+
+            def _rescue_text_accessory_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    crop_active
+                    and text_like_accessory_query
+                    and text_accessory_region_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and region_code_scores
+                    and region_code_best_images
+                    and rows_in
+                ):
+                    return rows_in
+                rescue_rows: List[Dict[str, Any]] = []
+                for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
+                    if len(rescue_rows) >= max(1, text_accessory_region_rescue_topn):
+                        break
+                    if float(score) < text_accessory_region_rescue_min_score:
+                        break
+                    key = _code_prior_key(code)
+                    image_name = region_code_best_images.get(key)
+                    if not image_name:
+                        continue
+                    ranked_score = float(score)
+                    raw_score = max(float(text_accessory_region_rescue_seed_score), ranked_score)
+                    z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    rescue_rows.append(
+                        {
+                            "style_code": filename_to_style_code(image_name),
+                            "best_standard_image": image_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(float(raw_score), 6),
+                            "_force_keep": True,
+                        }
+                    )
+                if not rescue_rows:
+                    return rows_in
+                text_accessory_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
+                    for row in rescue_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|text_accessory={text_accessory_debug}"
+                    if region_rescue_debug
+                    else f"text_accessory={text_accessory_debug}"
+                )
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                return _merge_rescue_rows_preserving_forced(rescue_rows, kept_rows)
 
             def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
                 """Keep UI percentages consistent with the final ranked order."""
@@ -6256,6 +6319,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 accessory_pattern_enabled
                 and not strict_small_region_crop
                 and (accessory_like_region or accessory_near_square_region)
+                and not text_like_accessory_query
                 and not suppress_accessory_for_region_hit
             ):
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
@@ -6332,6 +6396,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 accessory_pattern_enabled
                 and not strict_small_region_crop
                 and not accessory_like_region
+                and not text_like_accessory_query
                 and not suppress_accessory_for_region_hit
                 and not sleeve_candidates_debug
                 and not accessory_candidates_debug
@@ -6412,6 +6477,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_checker_region_rows(rows, ranked_images)
             rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
+            rows = _rescue_text_accessory_region_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
 
             if low_confidence_enabled and rows:
