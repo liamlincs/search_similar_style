@@ -45,6 +45,7 @@ from search_similar_return_code import (
     build_label_memory_prior_from_refs,
     collect_images,
     extract_embedding,
+    extract_query_scene_text_tokens,
     filename_to_style_code,
     merge_scene_text_candidates,
     merge_ranked_image_lists,
@@ -4738,6 +4739,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and region_code_scores
                     and rows_in
                     and ranked_in
+                    and not text_like_accessory_query
                 ):
                     return rows_in
                 min_region_rescue_score = (
@@ -4828,6 +4830,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and region_code_scores
                     and region_code_best_images
                     and rows_in
+                    and not text_like_accessory_query
                 ):
                     return rows_in
                 min_region_force_top_score = (
@@ -4898,6 +4901,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if accessory_hat_query:
                     region_order_debug = "skip-accessory-hat"
                     return rows_in
+                if text_like_accessory_query:
+                    region_order_debug = "skip-accessory-text"
+                    return rows_in
                 protected_rows = [row for row in rows_in if row.get("_force_keep")]
                 protected_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in protected_rows}
                 sortable_rows = [
@@ -4948,6 +4954,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
+                    and not text_like_accessory_query
                 ):
                     return
                 for part in sleeve_candidates_debug.split(","):
@@ -4981,6 +4988,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and sleeve_candidates_debug
                     and rows_in
                     and ranked_in
+                    and not text_like_accessory_query
                 ):
                     return rows_in
                 best_ranked_by_key: Dict[str, tuple[str, float]] = {}
@@ -6170,6 +6178,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             accessory_near_square_region = False
             crop_aspect = 0.0
             q_accessory_hat_prior = 0.0
+            text_like_accessory_query = False
             if crop_active:
                 try:
                     with Image.open(query_path) as q_im:
@@ -6188,10 +6197,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     if accessory_near_square_region:
                         q_accessory_hat_prior = _extract_accessory_hat_prior(query_path)
+                        if scene_text_hint_enabled and not strict_small_region_crop:
+                            scene_text_tokens = extract_query_scene_text_tokens(
+                                query_path,
+                                min_token_len=scene_text_min_token_len,
+                                include_components=True,
+                            )
+                            text_like_accessory_query = bool(scene_text_tokens)
                 except Exception:
                     accessory_like_region = False
                     accessory_near_square_region = False
                     q_accessory_hat_prior = 0.0
+                    text_like_accessory_query = False
             if crop_active and region_debug and not region_has_confident_match:
                 try:
                     parsed_region_scores = [
@@ -6229,6 +6246,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and crop_aspect <= accessory_hat_override_max_aspect
                 and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
             ):
+                suppress_accessory_for_region_hit = False
+            if text_like_accessory_query:
                 suppress_accessory_for_region_hit = False
             if suppress_accessory_for_region_hit:
                 accessory_debug = f"skip-region:{region_best_score:.3f}/{q_accessory_hat_prior:.3f}"
@@ -6278,7 +6297,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             suppress_sleeve_for_accessory_query = (
                 crop_active
                 and accessory_near_square_region
-                and bool(accessory_candidates_debug)
+                and (bool(accessory_candidates_debug) or text_like_accessory_query)
             )
             suppress_sleeve_for_small_region_query = bool(strict_small_region_crop)
             if (
