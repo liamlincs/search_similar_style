@@ -1939,18 +1939,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         rgb = rgb[:top_cut, :, :]
         h, w = rgb.shape[:2]
         gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+        maxc = rgb.max(axis=-1).astype(np.float32)
+        minc = rgb.min(axis=-1).astype(np.float32)
+        sat = (maxc - minc) / np.maximum(maxc, 1.0)
         fg = ((gray < 242.0) & np.any(rgb < 246, axis=-1))
         fg[: min(int(h * 0.10), 20), :] = False
         if int(fg.sum()) < max(32, int(h * w * 0.015)):
             return None
+        line_core = (((sat > 0.10) & (gray < 245.0)) | (gray < 105.0)) & fg
         dark = ((gray < 228.0) & fg).astype(np.uint8)
         if cv2 is not None:
             edge = (cv2.Canny(gray.astype(np.uint8), 60, 140) > 0).astype(np.uint8)
+            line_near = cv2.dilate(line_core.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1) > 0
         else:
             gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
             gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
             edge = ((gx + gy) > 28.0).astype(np.uint8)
-        sig_map = np.maximum(edge * fg.astype(np.uint8), dark)
+            line_near = line_core
+        line_edge = (edge > 0) & line_near
+        if int(line_edge.sum()) >= max(12, int(h * w * 0.003)):
+            sig_map = line_edge.astype(np.uint8)
+        else:
+            sig_map = np.maximum(edge * fg.astype(np.uint8), dark)
         if int(sig_map.sum()) < max(24, int(h * w * 0.008)):
             return None
         arr = np.asarray(
@@ -3051,9 +3061,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_contour",
-                "version": 2,
+                "version": 3,
                 "size": int(collar_contour_size),
-                "standard_views": "collar_focus_components_topcomp",
+                "standard_views": "collar_focus_components_topcomp_lineedge",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
