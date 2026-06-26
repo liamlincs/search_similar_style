@@ -1399,7 +1399,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         out: List[Dict[str, Any]] = []
         seen_codes: set[str] = set()
         for row in rows_in:
-            code = _code_prior_key(str(row.get("style_code", "")))
+            code = str(row.get("style_code", "")).strip().upper()
+            if code.endswith("#"):
+                code = code[:-1]
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
