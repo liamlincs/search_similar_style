@@ -5750,7 +5750,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         )
                     if ranked_region:
                         region_focus_debug = ""
-                        if crop_active and (use_strip_mode or partial_region_crop) and not strict_small_region_crop:
+                        if crop_active and (use_strip_mode or partial_region_crop or vertical_stripe_region_crop) and not strict_small_region_crop:
                             focus_query_img = Image.open(query_path).convert("RGB")
                             focus_tags = {
                                 "top",
@@ -5812,9 +5812,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                     seen_mirror_keys.add(key)
                                     mirrored_focus_views.append(flipped)
                                 focus_query_views.extend(mirrored_focus_views)
+                            if vertical_stripe_region_crop:
+                                rotated_focus_views: List[Image.Image] = []
+                                seen_rotate_keys = {
+                                    (view.size[0], view.size[1], int(np.asarray(view).mean()))
+                                    for view in focus_query_views
+                                }
+                                for view in list(focus_query_views):
+                                    if view.height <= view.width * 1.15:
+                                        continue
+                                    for method in (Image.Transpose.ROTATE_90, Image.Transpose.ROTATE_270):
+                                        rotated = view.transpose(method)
+                                        key = (rotated.size[0], rotated.size[1], int(np.asarray(rotated).mean()))
+                                        if key in seen_rotate_keys:
+                                            continue
+                                        seen_rotate_keys.add(key)
+                                        rotated_focus_views.append(rotated)
+                                focus_query_views.extend(rotated_focus_views)
                             focus_region_view_consensus = max(
                                 float(pass_region_query_view_consensus_weight),
-                                0.18 if partial_region_crop and not use_strip_mode else 0.12,
+                                0.18 if (partial_region_crop or vertical_stripe_region_crop) and not use_strip_mode else 0.12,
                             )
                             ranked_region_focus = _search_topk_images_from_views(
                                 focus_query_views,
@@ -5917,6 +5934,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if strip_mode_enabled and q_shape is not None:
                 qa, qf = q_shape
                 use_strip_mode = (qa >= strip_aspect_threshold) or (qf <= strip_fill_threshold)
+            q_pre_checker_profile = None
+            vertical_stripe_region_crop = False
+            if crop_active and not strict_small_region_crop and not use_strip_mode:
+                q_pre_checker_profile = _extract_checker_profile(query_path, grid=10)
+                if q_pre_checker_profile:
+                    vertical_stripe_region_crop = bool(
+                        crop_norm_h >= 0.45
+                        and float(query_height or 0) > float(query_width or 0) * 1.25
+                        and float(q_pre_checker_profile.get("stripe", 0.0)) > float(q_pre_checker_profile.get("checker", 0.0))
+                        and float(q_pre_checker_profile.get("bw_mix", 0.0)) >= 0.45
+                    )
             partial_region_crop = bool(
                 crop_active
                 and not use_strip_mode
@@ -6109,7 +6137,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and not checker_large_crop_blocked
                 and not checker_blocked_by_region_probe
             ):
-                q_checker_profile = _extract_checker_profile(query_path, grid=10)
+                q_checker_profile = q_pre_checker_profile or _extract_checker_profile(query_path, grid=10)
                 if q_checker_profile:
                     checker_debug = (
                         f"{float(q_checker_profile.get('checker', 0.0)):.3f}/"
