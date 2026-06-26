@@ -45,7 +45,6 @@ from search_similar_return_code import (
     build_label_memory_prior_from_refs,
     collect_images,
     extract_embedding,
-    extract_query_scene_text_tokens,
     filename_to_style_code,
     merge_scene_text_candidates,
     merge_ranked_image_lists,
@@ -443,10 +442,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_region_requires_hat_prior = bool(search_cfg.get("accessory_region_requires_hat_prior", True))
     accessory_region_hat_prior_threshold = float(search_cfg.get("accessory_region_hat_prior_threshold", accessory_hat_prior_query_threshold))
     accessory_region_suppress_when_accent = bool(search_cfg.get("accessory_region_suppress_when_accent", True))
-    text_accessory_region_rescue_enabled = bool(search_cfg.get("text_accessory_region_rescue_enabled", True))
-    text_accessory_region_rescue_topn = int(search_cfg.get("text_accessory_region_rescue_topn", 3))
-    text_accessory_region_rescue_min_score = float(search_cfg.get("text_accessory_region_rescue_min_score", 0.60))
-    text_accessory_region_rescue_seed_score = float(search_cfg.get("text_accessory_region_rescue_seed_score", 1.30))
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
@@ -656,78 +651,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     continue
                 seen.add(key)
                 views.append((f"top_comp{idx}", img.crop(key)))
-        return views
-
-    def _filter_local_collar_region_views(
-        region_names: List[str],
-        *,
-        allow_component_pairs: bool,
-        allow_fixed_focus: bool,
-    ) -> List[int]:
-        local_tags = {
-            "collar_left_focus",
-            "collar_right_focus",
-            "collar_center_bridge",
-        }
-        local_idx: List[int] = []
-        for idx, name in enumerate(region_names):
-            if allow_fixed_focus and any(name.endswith(f"_{tag}") for tag in local_tags):
-                local_idx.append(idx)
-                continue
-            if "_top_comp" in name:
-                local_idx.append(idx)
-                continue
-            if allow_component_pairs and "_comp_pair" in name:
-                local_idx.append(idx)
-        return local_idx
-
-    def _build_local_collar_query_views(
-        img: Image.Image,
-        *,
-        use_strip_mode_local: bool,
-        partial_region_crop_local: bool,
-    ) -> List[Image.Image]:
-        w, h = img.size
-        boxes: List[tuple[int, int, int, int]] = [
-            (0, 0, int(w * 0.42), int(h * 0.42)),
-            (int(w * 0.58), 0, w, int(h * 0.42)),
-            (int(w * 0.24), 0, int(w * 0.76), int(h * 0.30)),
-        ]
-        if use_strip_mode_local:
-            boxes.extend(
-                [
-                    (int(w * 0.04), 0, int(w * 0.34), int(h * 0.34)),
-                    (int(w * 0.66), 0, int(w * 0.96), int(h * 0.34)),
-                ]
-            )
-        elif partial_region_crop_local:
-            boxes.extend(
-                [
-                    (0, 0, int(w * 0.36), int(h * 0.36)),
-                    (int(w * 0.64), 0, w, int(h * 0.36)),
-                ]
-            )
-
-        views: List[Image.Image] = []
-        seen: set[tuple[int, int, int, int]] = set()
-        for x0, y0, x1, y1 in boxes:
-            x0, y0 = max(0, x0), max(0, y0)
-            x1, y1 = min(w, x1), min(h, y1)
-            key = (x0, y0, x1, y1)
-            if key in seen or x1 - x0 < 32 or y1 - y0 < 24:
-                continue
-            seen.add(key)
-            views.append(img.crop(key))
-
-        for tag, view in _region_standard_views(img, max_component_views=4):
-            if tag.startswith("top_comp"):
-                vw, vh = view.size
-                if vw >= 24 and vh >= 24 and (vw * vh) <= int(w * h * 0.35):
-                    views.append(view)
-            elif use_strip_mode_local and tag.startswith("comp_pair"):
-                vw, vh = view.size
-                if vw >= 32 and vh >= 24 and vh <= int(h * 0.48):
-                    views.append(view)
         return views
 
     def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
@@ -4743,7 +4666,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and region_code_scores
                     and rows_in
                     and ranked_in
-                    and not text_like_accessory_query
                 ):
                     return rows_in
                 min_region_rescue_score = (
@@ -4834,7 +4756,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and region_code_scores
                     and region_code_best_images
                     and rows_in
-                    and not text_like_accessory_query
                 ):
                     return rows_in
                 min_region_force_top_score = (
@@ -4905,9 +4826,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if accessory_hat_query:
                     region_order_debug = "skip-accessory-hat"
                     return rows_in
-                if text_like_accessory_query:
-                    region_order_debug = "skip-accessory-text"
-                    return rows_in
                 protected_rows = [row for row in rows_in if row.get("_force_keep")]
                 protected_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in protected_rows}
                 sortable_rows = [
@@ -4958,7 +4876,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
-                    and not text_like_accessory_query
                 ):
                     return
                 for part in sleeve_candidates_debug.split(","):
@@ -4992,7 +4909,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and sleeve_candidates_debug
                     and rows_in
                     and ranked_in
-                    and not text_like_accessory_query
                 ):
                     return rows_in
                 best_ranked_by_key: Dict[str, tuple[str, float]] = {}
@@ -5249,7 +5165,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and accessory_hat_region_rescue_min_aspect <= float(crop_aspect or 0.0) <= accessory_hat_region_rescue_max_aspect
                     and rows_in
                     and ranked_in
-                    and not text_like_accessory_query
                 ):
                     return rows_in
                 best_ranked_by_key: Dict[str, tuple[str, float]] = {}
@@ -5338,7 +5253,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and not sleeve_candidates_debug
                     and not checker_candidates_debug
                     and str(accessory_debug).startswith("skip-region:")
-                    and not text_like_accessory_query
                 ):
                     return rows_in
                 existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
@@ -5419,7 +5333,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and accent_candidates_debug
                     and rows_in
                     and ranked_in
-                    and not text_like_accessory_query
                 ):
                     return rows_in
                 best_ranked_by_key: Dict[str, tuple[str, float]] = {}
@@ -5599,62 +5512,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 return _merge_rescue_rows_preserving_forced(text_rows, kept_rows)
 
-            def _rescue_text_accessory_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
-                nonlocal region_rescue_debug
-                if not (
-                    crop_active
-                    and text_like_accessory_query
-                    and text_accessory_region_rescue_enabled
-                    and active_match_mode == "similar_style"
-                    and search_scope == "region_primary"
-                    and region_code_scores
-                    and region_code_best_images
-                    and rows_in
-                ):
-                    return rows_in
-                rescue_rows: List[Dict[str, Any]] = []
-                for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
-                    if len(rescue_rows) >= max(1, text_accessory_region_rescue_topn):
-                        break
-                    if float(score) < text_accessory_region_rescue_min_score:
-                        break
-                    key = _code_prior_key(code)
-                    image_name = region_code_best_images.get(key)
-                    if not image_name:
-                        continue
-                    ranked_score = float(score)
-                    raw_score = max(float(text_accessory_region_rescue_seed_score), ranked_score)
-                    z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
-                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
-                    disp = min(0.9999, max(0.0, float(disp)))
-                    rescue_rows.append(
-                        {
-                            "style_code": filename_to_style_code(image_name),
-                            "best_standard_image": image_name,
-                            "score": round(disp, 4),
-                            "rank_score": round(float(raw_score), 6),
-                            "_force_keep": True,
-                        }
-                    )
-                if not rescue_rows:
-                    return rows_in
-                text_accessory_debug = ",".join(
-                    f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
-                    for row in rescue_rows
-                )
-                region_rescue_debug = (
-                    f"{region_rescue_debug}|text_accessory={text_accessory_debug}"
-                    if region_rescue_debug
-                    else f"text_accessory={text_accessory_debug}"
-                )
-                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
-                kept_rows = [
-                    row
-                    for row in rows_in
-                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
-                ]
-                return _merge_rescue_rows_preserving_forced(rescue_rows, kept_rows)
-
             def _make_display_scores_follow_order(rows_in: List[Dict[str, Any]]) -> None:
                 """Keep UI percentages consistent with the final ranked order."""
                 prev_score: float | None = None
@@ -5775,72 +5632,51 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         secondary_weight=secondary_recall_weight,
                     )
                 if crop_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
-                    region_names_local = req_region_names
-                    region_feats_local = req_region_feats
-                    local_collar_region_crop = partial_region_crop or use_strip_mode
-                    if local_collar_region_crop:
-                        partial_region_idx = _filter_local_collar_region_views(
-                            req_region_names,
-                            allow_component_pairs=bool(use_strip_mode),
-                            allow_fixed_focus=False,
-                        )
-                        if partial_region_idx:
-                            region_names_local = [req_region_names[idx] for idx in partial_region_idx]
-                            region_feats_local = req_region_feats[np.array(partial_region_idx, dtype=np.int32)]
                     effective_region_recall_topn_cap = (
                         strict_small_region_recall_topn_cap if strict_small_region_crop else region_crop_recall_topn_cap
                     )
                     if effective_region_recall_topn_cap > 0:
-                        region_topk = min(len(region_names_local), effective_region_recall_topn_cap)
+                        region_topk = min(len(req_region_names), effective_region_recall_topn_cap)
                     else:
                         region_topk = min(
-                            len(region_names_local),
+                            len(req_region_names),
                             max(top_k * max(cand_multiplier, 1), top_k),
                         )
-                    if local_collar_region_crop and not strict_small_region_crop:
-                        local_query_img = Image.open(query_path).convert("RGB")
-                        local_query_views = _build_local_collar_query_views(
-                            local_query_img,
-                            use_strip_mode_local=bool(use_strip_mode),
-                            partial_region_crop_local=bool(partial_region_crop),
-                        )
-                        ranked_region = _search_topk_images_from_views(
-                            local_query_views,
-                            region_names_local,
-                            region_feats_local,
-                            region_topk,
-                            region_crop_recall_backend,
-                            eff_w_clip,
-                            eff_w_shape,
-                            eff_w_color,
-                            eff_w_stripe,
-                            query_view_consensus_weight_local=max(float(pass_region_query_view_consensus_weight), 0.10),
-                        )
-                    else:
-                        ranked_region = search_topk_images(
-                            query_path,
-                            region_names_local,
-                            region_feats_local,
-                            region_topk,
-                            region_crop_recall_backend,
-                            eff_w_clip,
-                            eff_w_shape,
-                            eff_w_color,
-                            eff_w_stripe,
-                            query_multicrop=pass_region_query_multicrop,
-                            query_crop_ratio=pass_region_query_crop_ratio,
-                            query_component_views=pass_region_query_component_views,
-                            query_view_consensus_weight=pass_region_query_view_consensus_weight,
-                        )
+                    ranked_region = search_topk_images(
+                        query_path,
+                        req_region_names,
+                        req_region_feats,
+                        region_topk,
+                        region_crop_recall_backend,
+                        eff_w_clip,
+                        eff_w_shape,
+                        eff_w_color,
+                        eff_w_stripe,
+                        query_multicrop=pass_region_query_multicrop,
+                        query_crop_ratio=pass_region_query_crop_ratio,
+                        query_component_views=pass_region_query_component_views,
+                        query_view_consensus_weight=pass_region_query_view_consensus_weight,
+                    )
                     if ranked_region:
                         region_focus_debug = ""
-                        if local_collar_region_crop and not strict_small_region_crop:
+                        if (use_strip_mode or partial_region_crop) and not strict_small_region_crop:
                             focus_query_img = Image.open(query_path).convert("RGB")
-                            focus_query_views = _build_local_collar_query_views(
-                                focus_query_img,
-                                use_strip_mode_local=bool(use_strip_mode),
-                                partial_region_crop_local=bool(partial_region_crop),
-                            )
+                            focus_tags = {
+                                "top",
+                                "top_narrow",
+                                "upper_band",
+                                "upper_narrow_band",
+                                "top_left_band",
+                                "top_right_band",
+                                "collar_left_focus",
+                                "collar_right_focus",
+                                "collar_center_bridge",
+                            }
+                            focus_query_views = [
+                                view
+                                for tag, view in _region_standard_views(focus_query_img, max_component_views=4)
+                                if (tag in focus_tags) or tag.startswith("comp")
+                            ]
                             if partial_region_crop and not use_strip_mode:
                                 mirrored_focus_views: List[Image.Image] = []
                                 seen_mirror_keys = {
@@ -6241,7 +6077,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             accessory_near_square_region = False
             crop_aspect = 0.0
             q_accessory_hat_prior = 0.0
-            text_like_accessory_query = False
             if crop_active:
                 try:
                     with Image.open(query_path) as q_im:
@@ -6260,18 +6095,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     if accessory_near_square_region:
                         q_accessory_hat_prior = _extract_accessory_hat_prior(query_path)
-                        if scene_text_hint_enabled and not strict_small_region_crop:
-                            scene_text_tokens = extract_query_scene_text_tokens(
-                                query_path,
-                                min_token_len=scene_text_min_token_len,
-                                include_components=True,
-                            )
-                            text_like_accessory_query = bool(scene_text_tokens)
                 except Exception:
                     accessory_like_region = False
                     accessory_near_square_region = False
                     q_accessory_hat_prior = 0.0
-                    text_like_accessory_query = False
             if crop_active and region_debug and not region_has_confident_match:
                 try:
                     parsed_region_scores = [
@@ -6310,8 +6137,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and q_accessory_hat_prior >= accessory_region_hat_prior_threshold
             ):
                 suppress_accessory_for_region_hit = False
-            if text_like_accessory_query:
-                suppress_accessory_for_region_hit = False
             if suppress_accessory_for_region_hit:
                 accessory_debug = f"skip-region:{region_best_score:.3f}/{q_accessory_hat_prior:.3f}"
 
@@ -6319,7 +6144,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 accessory_pattern_enabled
                 and not strict_small_region_crop
                 and (accessory_like_region or accessory_near_square_region)
-                and not text_like_accessory_query
                 and not suppress_accessory_for_region_hit
             ):
                 q_accessory_sig = _extract_accessory_pattern_sig(query_path, size=48)
@@ -6361,7 +6185,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             suppress_sleeve_for_accessory_query = (
                 crop_active
                 and accessory_near_square_region
-                and (bool(accessory_candidates_debug) or text_like_accessory_query)
+                and bool(accessory_candidates_debug)
             )
             suppress_sleeve_for_small_region_query = bool(strict_small_region_crop)
             if (
@@ -6396,7 +6220,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 accessory_pattern_enabled
                 and not strict_small_region_crop
                 and not accessory_like_region
-                and not text_like_accessory_query
                 and not suppress_accessory_for_region_hit
                 and not sleeve_candidates_debug
                 and not accessory_candidates_debug
@@ -6477,7 +6300,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_checker_region_rows(rows, ranked_images)
             rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
-            rows = _rescue_text_accessory_region_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
 
             if low_confidence_enabled and rows:
