@@ -400,6 +400,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_code_prior_boost = float(search_cfg.get("collar_contour_code_prior_boost", 0.10))
     collar_contour_region_score_base = float(search_cfg.get("collar_contour_region_score_base", 0.84))
     collar_contour_region_score_scale = float(search_cfg.get("collar_contour_region_score_scale", 0.18))
+    collar_chevron_enabled = bool(search_cfg.get("collar_chevron_enabled", True))
+    collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
+    collar_chevron_standard_min_score = float(search_cfg.get("collar_chevron_standard_min_score", 0.62))
+    collar_chevron_min_contour_score = float(search_cfg.get("collar_chevron_min_contour_score", 0.44))
+    collar_chevron_score_boost = float(search_cfg.get("collar_chevron_score_boost", 0.12))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -555,6 +560,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ("collar_left_focus", (0, int(h * 0.02), int(w * 0.46), int(h * 0.52))),
             ("collar_right_focus", (int(w * 0.54), int(h * 0.02), w, int(h * 0.52))),
             ("collar_center_bridge", (int(w * 0.22), 0, int(w * 0.78), int(h * 0.40))),
+            ("collar_right_mid", (int(w * 0.50), int(h * 0.20), w, int(h * 0.78))),
+            ("collar_right_lower", (int(w * 0.50), int(h * 0.36), w, int(h * 0.92))),
+            ("collar_left_mid_strip", (0, int(h * 0.18), int(w * 0.72), int(h * 0.72))),
+            ("collar_lower_strip", (0, int(h * 0.40), int(w * 0.72), int(h * 0.92))),
         ]
 
         views: List[tuple[str, Image.Image]] = []
@@ -676,10 +685,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "region_crop_recall",
-                "version": 5,
+                "version": 6,
                 "backend": region_crop_recall_backend,
                 "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
-                "standard_views": "grid_halves_bands_components_topdetail",
+                "standard_views": "grid_halves_bands_components_topdetail_collar_mid_strip",
                 "standard_crop_ratio": float(region_standard_crop_ratio),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
@@ -2021,10 +2030,75 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except Exception:
             return []
 
+    def _extract_collar_chevron_score_from_image(image: Image.Image) -> float:
+        if cv2 is None:
+            return 0.0
+        im = image.convert("RGB")
+        im.thumbnail((320, 320), Image.Resampling.BILINEAR)
+        rgb = np.asarray(im, dtype=np.uint8)
+        if rgb.ndim != 3 or rgb.shape[0] < 28 or rgb.shape[1] < 28:
+            return 0.0
+        h, w = rgb.shape[:2]
+        top_cut = min(h, max(24, int(h * 0.75)))
+        rgb = rgb[:top_cut, :, :]
+        h, w = rgb.shape[:2]
+        gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+        maxc = rgb.max(axis=-1).astype(np.float32)
+        minc = rgb.min(axis=-1).astype(np.float32)
+        sat = (maxc - minc) / np.maximum(maxc, 1.0)
+        line_core = (((sat > 0.10) & (gray < 245.0)) | (gray < 120.0))
+        line_core[: min(int(h * 0.08), 20), :] = False
+        edges = (cv2.Canny(gray.astype(np.uint8), 50, 130) > 0).astype(np.uint8) * 255
+        line_mask = cv2.dilate(line_core.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1)
+        edges = cv2.bitwise_and(edges, edges, mask=line_mask)
+        min_line = max(14, int(min(h, w) * 0.10))
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=16,
+            minLineLength=min_line,
+            maxLineGap=7,
+        )
+        if lines is None:
+            return 0.0
+        pos_len = 0.0
+        neg_len = 0.0
+        hor_len = 0.0
+        for x1, y1, x2, y2 in lines[:, 0, :]:
+            dx = float(x2 - x1)
+            dy = float(y2 - y1)
+            length = math.hypot(dx, dy)
+            if length < min_line:
+                continue
+            angle = (math.degrees(math.atan2(dy, dx)) + 180.0) % 180.0
+            if 20.0 <= angle <= 75.0:
+                pos_len += length
+            elif 105.0 <= angle <= 160.0:
+                neg_len += length
+            elif angle < 12.0 or angle > 168.0:
+                hor_len += length
+        diag_len = pos_len + neg_len
+        both_len = min(pos_len, neg_len)
+        if diag_len < 20.0 or both_len < 10.0:
+            return 0.0
+        balance = 2.0 * both_len / max(1e-6, diag_len)
+        density = min(1.0, diag_len / max(1.0, float(min(h, w)) * 1.6))
+        horizontal_penalty = 1.0 - min(0.5, hor_len / max(1e-6, hor_len + diag_len))
+        return float(max(0.0, min(1.0, balance * density * horizontal_penalty)))
+
+    def _extract_collar_chevron_score(path: Path) -> float:
+        try:
+            with Image.open(path) as im0:
+                return _extract_collar_chevron_score_from_image(im0.convert("RGB"))
+        except Exception:
+            return 0.0
+
     def _merge_collar_contour_candidates(
         ranked: List[tuple[str, float]],
         query_sigs: List[np.ndarray] | np.ndarray | None,
         query_sig_mirrors: List[np.ndarray] | np.ndarray | None,
+        query_chevron_score: float = 0.0,
     ) -> tuple[List[tuple[str, float]], str, Dict[str, tuple[float, str]]]:
         if isinstance(query_sigs, np.ndarray):
             q_sigs = [query_sigs]
@@ -2041,8 +2115,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             sim = max(float(query_sig @ sig) for query_sig in q_sigs)
             if q_mirror_sigs:
                 sim = max(sim, max(float(query_sig_mirror @ sig) for query_sig_mirror in q_mirror_sigs))
-            if sim >= collar_contour_min_score:
-                scored.append((file_name, sim))
+            base_file_name = file_name.split("@", 1)[0]
+            chevron_score = float(collar_chevron_cache.get(base_file_name, 0.0)) if collar_chevron_enabled else 0.0
+            chevron_match = (
+                collar_chevron_enabled
+                and float(query_chevron_score) >= float(collar_chevron_query_min_score)
+                and chevron_score >= float(collar_chevron_standard_min_score)
+                and sim >= float(collar_chevron_min_contour_score)
+            )
+            if sim >= collar_contour_min_score or chevron_match:
+                effective_sim = max(sim, sim + float(collar_chevron_score_boost) * chevron_score) if chevron_match else sim
+                scored.append((file_name, effective_sim))
         if not scored:
             return ranked, "", {}
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -2718,6 +2801,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"collar_contour_cache_{safe}.npz"
 
+    def _collar_chevron_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"collar_chevron_cache_{safe}.npz"
+
     def _load_or_build_accent_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
         files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
@@ -3115,9 +3202,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_contour",
-                "version": 5,
+                "version": 6,
                 "size": int(collar_contour_size),
-                "standard_views": "collar_focus_components_topcomp_vline_lineedge_contourfallback",
+                "standard_views": "collar_focus_components_topcomp_vline_lineedge_contourfallback_mid_strip",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -3148,6 +3235,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "collar_left_focus",
             "collar_right_focus",
             "collar_center_bridge",
+            "collar_right_mid",
+            "collar_right_lower",
+            "collar_left_mid_strip",
+            "collar_lower_strip",
         }
         for fp in files:
             try:
@@ -3174,6 +3265,78 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("collar contour cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
+    def _load_or_build_collar_chevron_cache(file_names: List[str]) -> Dict[str, float]:
+        if not collar_chevron_enabled or cv2 is None:
+            return {}
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "collar_chevron",
+                "version": 1,
+                "standard_views": "collar_focus_components_topcomp_hough_mid_strip",
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _collar_chevron_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    scores = arr["scores"].astype(np.float32)
+                    out = {name: float(scores[i]) for i, name in enumerate(cached_names)}
+                    logging.info("collar chevron cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+        t0 = time.perf_counter()
+        out: Dict[str, float] = {}
+        collar_tags = {
+            "top",
+            "top_narrow",
+            "upper_band",
+            "upper_narrow_band",
+            "top_left_band",
+            "top_right_band",
+            "collar_left_focus",
+            "collar_right_focus",
+            "collar_center_bridge",
+            "collar_right_mid",
+            "collar_right_lower",
+            "collar_left_mid_strip",
+            "collar_lower_strip",
+        }
+        for fp in files:
+            try:
+                img = Image.open(fp).convert("RGB")
+            except Exception:
+                continue
+            for idx, (tag, view) in enumerate(_region_standard_views(img, max_component_views=4)):
+                if not ((tag in collar_tags) or tag.startswith("comp") or tag.startswith("top_comp")):
+                    continue
+                score = _extract_collar_chevron_score_from_image(view)
+                if score > 0.0:
+                    out[fp.name] = max(float(out.get(fp.name, 0.0)), float(score))
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            scores_arr = np.array([out[n] for n in out.keys()], dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                scores=scores_arr,
+            )
+            logging.info("collar chevron cache write: %s", cache_path)
+        logging.info("collar chevron cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     color_sig_cache: Dict[str, np.ndarray] = {}
@@ -3182,6 +3345,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
     collar_contour_cache: Dict[str, np.ndarray] = {}
+    collar_chevron_cache: Dict[str, float] = {}
     sleeve_pattern_cache: Dict[str, np.ndarray] = {}
     sleeve_pair_prior_cache: Dict[str, float] = {}
     accessory_pattern_cache: Dict[str, np.ndarray] = {}
@@ -3253,6 +3417,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if collar_contour_enabled:
         collar_contour_cache = _load_or_build_collar_contour_cache(names)
         logging.info("api preloaded collar contour cache: %d", len(collar_contour_cache))
+        if collar_chevron_enabled:
+            collar_chevron_cache = _load_or_build_collar_chevron_cache(names)
+            logging.info("api preloaded collar chevron cache: %d", len(collar_chevron_cache))
     if sleeve_pattern_enabled:
         sleeve_pattern_cache = _load_or_build_sleeve_pattern_cache(names)
         logging.info("api preloaded sleeve pattern cache: %d", len(sleeve_pattern_cache))
@@ -6276,19 +6443,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if collar_contour_query_allowed:
                 q_collar_sigs = _extract_collar_contour_sigs(query_path, size=collar_contour_size)
                 q_collar_sig_mirrors: List[np.ndarray] = []
+                q_collar_chevron_score = 0.0
                 if q_collar_sigs:
                     try:
                         with Image.open(query_path) as q_im0:
+                            q_img = q_im0.convert("RGB")
                             q_collar_sig_mirrors = _extract_collar_contour_sigs_from_image(
-                                ImageOps.mirror(q_im0.convert("RGB")),
+                                ImageOps.mirror(q_img),
                                 size=collar_contour_size,
                             )
+                            if collar_chevron_enabled:
+                                q_collar_chevron_score = max(
+                                    _extract_collar_chevron_score_from_image(q_img),
+                                    _extract_collar_chevron_score_from_image(ImageOps.mirror(q_img)),
+                                )
                     except Exception:
                         q_collar_sig_mirrors = []
+                        q_collar_chevron_score = 0.0
                     ranked_images, collar_candidates_debug, collar_code_matches = _merge_collar_contour_candidates(
                         ranked_images,
                         q_collar_sigs,
                         q_collar_sig_mirrors,
+                        query_chevron_score=q_collar_chevron_score,
                     )
                     if collar_candidates_debug:
                         for code, (sim, image_name) in collar_code_matches.items():
