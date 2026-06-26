@@ -368,6 +368,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     checker_seed_boost_scale = float(search_cfg.get("checker_seed_boost_scale", 0.75))
     checker_seed_min_score = float(search_cfg.get("checker_seed_min_score", 0.08))
     checker_seed_max_injected = int(search_cfg.get("checker_seed_max_injected", 24))
+    checker_crop_max_area = float(search_cfg.get("checker_crop_max_area", 0.28))
     checker_region_rescue_enabled = bool(search_cfg.get("checker_region_rescue_enabled", True))
     checker_region_rescue_min_seed = float(search_cfg.get("checker_region_rescue_min_seed", 1.38))
     checker_region_rescue_max_rows = int(search_cfg.get("checker_region_rescue_max_rows", 3))
@@ -414,6 +415,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_near_square_crop_enabled = bool(search_cfg.get("accessory_near_square_crop_enabled", True))
     accessory_near_square_crop_min_aspect = float(search_cfg.get("accessory_near_square_crop_min_aspect", 0.65))
     accessory_near_square_crop_max_aspect = float(search_cfg.get("accessory_near_square_crop_max_aspect", 1.25))
+    accessory_near_square_crop_max_area = float(search_cfg.get("accessory_near_square_crop_max_area", 0.28))
     accessory_hat_override_max_aspect = float(search_cfg.get("accessory_hat_override_max_aspect", 1.10))
     accessory_disable_wide_crop_enabled = bool(search_cfg.get("accessory_disable_wide_crop_enabled", True))
     accessory_hat_prior_seed_enabled = bool(search_cfg.get("accessory_hat_prior_seed_enabled", True))
@@ -5993,7 +5995,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
                 if q_accent_sig is not None:
                     accent_debug = "1"
-            if checker_consistency_enabled and not strict_small_region_crop:
+            checker_large_crop_blocked = bool(
+                crop_active
+                and crop_final_area > max(0.0, min(1.0, float(checker_crop_max_area)))
+            )
+            if checker_consistency_enabled and not strict_small_region_crop and not checker_large_crop_blocked:
                 q_checker_profile = _extract_checker_profile(query_path, grid=10)
                 if q_checker_profile:
                     checker_debug = (
@@ -6038,6 +6044,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            elif checker_consistency_enabled and checker_large_crop_blocked:
+                checker_debug = f"skip-large-crop:{crop_final_area:.3f}"
             if accent_pattern_allowed:
                 if q_accent_sig is not None:
                     ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
@@ -6110,6 +6118,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     accessory_near_square_region = (
                         accessory_near_square_crop_enabled
                         and not checker_is_strong
+                        and crop_final_area <= max(0.0, min(1.0, float(accessory_near_square_crop_max_area)))
                         and accessory_near_square_crop_min_aspect <= crop_aspect <= accessory_near_square_crop_max_aspect
                     )
                     if accessory_near_square_region:
