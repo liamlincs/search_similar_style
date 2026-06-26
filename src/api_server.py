@@ -657,6 +657,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         region_names: List[str],
         *,
         allow_component_pairs: bool,
+        allow_fixed_focus: bool,
     ) -> List[int]:
         local_tags = {
             "collar_left_focus",
@@ -665,7 +666,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
         local_idx: List[int] = []
         for idx, name in enumerate(region_names):
-            if any(name.endswith(f"_{tag}") for tag in local_tags):
+            if allow_fixed_focus and any(name.endswith(f"_{tag}") for tag in local_tags):
                 local_idx.append(idx)
                 continue
             if "_top_comp" in name:
@@ -5661,6 +5662,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         partial_region_idx = _filter_local_collar_region_views(
                             req_region_names,
                             allow_component_pairs=bool(use_strip_mode),
+                            allow_fixed_focus=False,
                         )
                         if partial_region_idx:
                             region_names_local = [req_region_names[idx] for idx in partial_region_idx]
