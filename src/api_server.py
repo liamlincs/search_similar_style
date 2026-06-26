@@ -5768,6 +5768,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 for tag, view in _region_standard_views(focus_query_img, max_component_views=4)
                                 if (tag in focus_tags) or tag.startswith("comp")
                             ]
+                            fw, fh = focus_query_img.size
+                            grid_boxes = [
+                                (0.00, 0.00, 0.55, 0.52),
+                                (0.45, 0.00, 1.00, 0.52),
+                                (0.00, 0.32, 0.55, 0.84),
+                                (0.45, 0.32, 1.00, 0.84),
+                                (0.00, 0.00, 0.42, 0.46),
+                                (0.29, 0.00, 0.71, 0.46),
+                                (0.58, 0.00, 1.00, 0.46),
+                                (0.00, 0.38, 0.42, 0.88),
+                                (0.29, 0.38, 0.71, 0.88),
+                                (0.58, 0.38, 1.00, 0.88),
+                            ]
+                            seen_focus_keys = {
+                                (view.size[0], view.size[1], int(np.asarray(view).mean()))
+                                for view in focus_query_views
+                            }
+                            for x0f, y0f, x1f, y1f in grid_boxes:
+                                left = int(round(x0f * fw))
+                                top = int(round(y0f * fh))
+                                right = int(round(x1f * fw))
+                                bottom = int(round(y1f * fh))
+                                if right - left < 32 or bottom - top < 32:
+                                    continue
+                                grid_view = focus_query_img.crop((left, top, right, bottom))
+                                key = (grid_view.size[0], grid_view.size[1], int(np.asarray(grid_view).mean()))
+                                if key in seen_focus_keys:
+                                    continue
+                                seen_focus_keys.add(key)
+                                focus_query_views.append(grid_view)
                             if partial_region_crop and not use_strip_mode:
                                 mirrored_focus_views: List[Image.Image] = []
                                 seen_mirror_keys = {
