@@ -315,6 +315,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_force_top_enabled = bool(search_cfg.get("region_crop_force_top_enabled", True))
     region_crop_force_top_min_score = float(search_cfg.get("region_crop_force_top_min_score", 0.80))
     region_crop_force_topn = int(search_cfg.get("region_crop_force_topn", 1))
+    region_crop_large_force_top_area = float(search_cfg.get("region_crop_large_force_top_area", 0.30))
+    region_crop_large_force_top_min_score = float(search_cfg.get("region_crop_large_force_top_min_score", 0.72))
+    region_crop_large_force_topn = int(search_cfg.get("region_crop_large_force_topn", 3))
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
     region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
@@ -400,6 +403,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pattern_max_injected = int(search_cfg.get("sleeve_pattern_max_injected", 16))
     sleeve_pair_prior_boost = float(search_cfg.get("sleeve_pair_prior_boost", 0.08))
     sleeve_pattern_skip_when_full_accent = bool(search_cfg.get("sleeve_pattern_skip_when_full_accent", True))
+    sleeve_pattern_crop_max_area = float(search_cfg.get("sleeve_pattern_crop_max_area", 0.28))
     accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
     accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
@@ -4782,6 +4786,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 force_topn_local = (
                     strict_small_region_force_topn if strict_small_region_crop else region_crop_force_topn
                 )
+                if (
+                    not strict_small_region_crop
+                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                ):
+                    min_region_force_top_score = min(
+                        float(min_region_force_top_score),
+                        float(region_crop_large_force_top_min_score),
+                    )
+                    force_topn_local = max(int(force_topn_local), int(region_crop_large_force_topn))
                 forced_rows: List[Dict[str, Any]] = []
                 for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
                     if len(forced_rows) >= max(1, force_topn_local):
@@ -6216,6 +6229,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and bool(accessory_candidates_debug)
             )
             suppress_sleeve_for_small_region_query = bool(strict_small_region_crop)
+            suppress_sleeve_for_large_region_query = bool(
+                crop_active
+                and crop_final_area > max(0.0, min(1.0, float(sleeve_pattern_crop_max_area)))
+            )
             if (
                 sleeve_pattern_enabled
                 and not accessory_like_region
@@ -6223,6 +6240,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and not suppress_sleeve_for_checker_query
                 and not suppress_sleeve_for_accessory_query
                 and not suppress_sleeve_for_small_region_query
+                and not suppress_sleeve_for_large_region_query
             ):
                 q_sleeve_sig = _extract_sleeve_pattern_sig(query_path, size=32)
                 if q_sleeve_sig is not None:
@@ -6244,6 +6262,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
+            elif sleeve_pattern_enabled and suppress_sleeve_for_large_region_query:
+                sleeve_debug = f"skip-large-crop:{crop_final_area:.3f}"
             if (
                 accessory_pattern_enabled
                 and not strict_small_region_crop
