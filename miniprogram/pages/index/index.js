@@ -367,7 +367,7 @@ Page({
             rank_score: Number(item.rank_score || 0)
           }));
 
-      const list = srcList.slice(0, 9).map((row, idx) => {
+      const rawList = srcList.map((row, idx) => {
         const imageName = row.image_name || row.best_standard_image || "";
         const meta = byImage[imageName] || null;
         const scoreNum = Number(row.score || 0);
@@ -385,6 +385,17 @@ Page({
           scoreText: `${(scoreNum * 100).toFixed(2)}%`,
           rankScore: Number(row.rank_score || 0)
         };
+      });
+      const seenStyleCodes = new Set();
+      const list = [];
+      rawList.forEach((item) => {
+        const key = String(item.styleCode || "").trim().toUpperCase();
+        if (!key || seenStyleCodes.has(key) || list.length >= 9) return;
+        seenStyleCodes.add(key);
+        list.push({
+          ...item,
+          rank: list.length + 1
+        });
       });
 
       this.setData({

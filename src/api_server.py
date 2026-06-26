@@ -6351,7 +6351,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return
             file_name = image_name.split("@", 1)[0]
             code = style_code or filename_to_style_code(file_name)
-            seen_key = code if crop_active else file_name
+            seen_key = str(code).strip().upper()
             if not file_name or seen_key in seen:
                 return
             seen.add(seen_key)
