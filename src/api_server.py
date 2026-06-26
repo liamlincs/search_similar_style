@@ -403,7 +403,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_chevron_enabled = bool(search_cfg.get("collar_chevron_enabled", True))
     collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
     collar_chevron_standard_min_score = float(search_cfg.get("collar_chevron_standard_min_score", 0.50))
-    collar_chevron_min_contour_score = float(search_cfg.get("collar_chevron_min_contour_score", 0.44))
+    collar_chevron_min_contour_score = float(search_cfg.get("collar_chevron_min_contour_score", 0.30))
     collar_chevron_score_boost = float(search_cfg.get("collar_chevron_score_boost", 0.22))
     collar_chevron_seed_score_base = float(search_cfg.get("collar_chevron_seed_score_base", 1.24))
     collar_chevron_max_injected = int(search_cfg.get("collar_chevron_max_injected", 48))
@@ -2181,7 +2181,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             for file_name, sim in injected[:24]
         ]
         if chevron_debug:
-            debug_items.append("chev=" + ",".join(chevron_debug[:48]))
+            debug_items.append("chev=" + ",".join(chevron_debug[:64]))
         return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items), code_matches
 
     def _extract_sleeve_pattern_sig_from_image(image: Image.Image, size: int = 32) -> np.ndarray | None:
