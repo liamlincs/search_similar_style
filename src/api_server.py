@@ -5636,12 +5636,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     region_feats_local = req_region_feats
                     if partial_region_crop:
                         partial_region_tags = {
-                            "top",
-                            "top_narrow",
-                            "upper_band",
-                            "upper_narrow_band",
-                            "top_left_band",
-                            "top_right_band",
                             "collar_left_focus",
                             "collar_right_focus",
                             "collar_center_bridge",
@@ -5650,7 +5644,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             idx for idx, name in enumerate(req_region_names)
                             if (
                                 any(name.endswith(f"_{tag}") for tag in partial_region_tags)
-                                or "_comp" in name
                                 or "_top_comp" in name
                             )
                         ]
