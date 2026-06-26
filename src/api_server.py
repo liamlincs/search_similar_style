@@ -1928,12 +1928,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
-    def _extract_collar_contour_sig_from_image(image: Image.Image, size: int = 48) -> np.ndarray | None:
+    def _normalize_collar_contour_map(sig_map: np.ndarray, size: int, min_pixels: int) -> np.ndarray | None:
+        if int(sig_map.sum()) < max(1, min_pixels):
+            return None
+        arr = np.asarray(
+            Image.fromarray((sig_map.astype(np.uint8) * 255), mode="L").resize((size, size), Image.Resampling.BILINEAR),
+            dtype=np.float32,
+        ) / 255.0
+        arr = arr - float(arr.mean())
+        norm = float(np.linalg.norm(arr)) + 1e-8
+        if norm <= 1e-8:
+            return None
+        return (arr.ravel() / norm).astype(np.float32)
+
+    def _extract_collar_contour_sigs_from_image(image: Image.Image, size: int = 48) -> List[np.ndarray]:
         im = image.convert("RGB")
         im.thumbnail((256, 256), Image.Resampling.BILINEAR)
         rgb = np.asarray(im, dtype=np.uint8)
         if rgb.ndim != 3 or rgb.shape[0] < 24 or rgb.shape[1] < 24:
-            return None
+            return []
         h, w = rgb.shape[:2]
         top_cut = min(h, max(24, int(h * 0.72)))
         rgb = rgb[:top_cut, :, :]
@@ -1945,7 +1958,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         fg = ((gray < 242.0) & np.any(rgb < 246, axis=-1))
         fg[: min(int(h * 0.10), 20), :] = False
         if int(fg.sum()) < max(32, int(h * w * 0.015)):
-            return None
+            return []
         line_core = (((sat > 0.10) & (gray < 245.0)) | (gray < 105.0)) & fg
         dark = ((gray < 228.0) & fg).astype(np.uint8)
         if cv2 is not None:
@@ -1957,21 +1970,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             edge = ((gx + gy) > 28.0).astype(np.uint8)
             line_near = line_core
         line_edge = (edge > 0) & line_near
-        if int(line_edge.sum()) >= max(12, int(h * w * 0.003)):
-            sig_map = line_edge.astype(np.uint8)
-        else:
-            sig_map = np.maximum(edge * fg.astype(np.uint8), dark)
-        if int(sig_map.sum()) < max(24, int(h * w * 0.008)):
-            return None
-        arr = np.asarray(
-            Image.fromarray((sig_map * 255).astype(np.uint8), mode="L").resize((size, size), Image.Resampling.BILINEAR),
-            dtype=np.float32,
-        ) / 255.0
-        arr = arr - float(arr.mean())
-        norm = float(np.linalg.norm(arr)) + 1e-8
-        if norm <= 1e-8:
-            return None
-        return (arr.ravel() / norm).astype(np.float32)
+        sigs: List[np.ndarray] = []
+        line_sig = _normalize_collar_contour_map(
+            line_edge.astype(np.uint8),
+            size,
+            max(8, int(h * w * 0.0015)),
+        )
+        if line_sig is not None:
+            sigs.append(line_sig)
+        contour_sig = _normalize_collar_contour_map(
+            np.maximum(edge * fg.astype(np.uint8), dark),
+            size,
+            max(24, int(h * w * 0.008)),
+        )
+        if contour_sig is not None and all(float(contour_sig @ sig) < 0.985 for sig in sigs):
+            sigs.append(contour_sig)
+        return sigs
+
+    def _extract_collar_contour_sig_from_image(image: Image.Image, size: int = 48) -> np.ndarray | None:
+        sigs = _extract_collar_contour_sigs_from_image(image, size=size)
+        return sigs[0] if sigs else None
 
     def _extract_collar_contour_sig(path: Path, size: int = 48) -> np.ndarray | None:
         try:
@@ -1980,18 +1998,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except Exception:
             return None
 
+    def _extract_collar_contour_sigs(path: Path, size: int = 48) -> List[np.ndarray]:
+        try:
+            with Image.open(path) as im0:
+                return _extract_collar_contour_sigs_from_image(im0.convert("RGB"), size=size)
+        except Exception:
+            return []
+
     def _merge_collar_contour_candidates(
         ranked: List[tuple[str, float]],
-        query_sig: np.ndarray | None,
-        query_sig_mirror: np.ndarray | None,
+        query_sigs: List[np.ndarray] | np.ndarray | None,
+        query_sig_mirrors: List[np.ndarray] | np.ndarray | None,
     ) -> tuple[List[tuple[str, float]], str]:
-        if not ranked or query_sig is None or not collar_contour_cache:
+        if isinstance(query_sigs, np.ndarray):
+            q_sigs = [query_sigs]
+        else:
+            q_sigs = list(query_sigs or [])
+        if isinstance(query_sig_mirrors, np.ndarray):
+            q_mirror_sigs = [query_sig_mirrors]
+        else:
+            q_mirror_sigs = list(query_sig_mirrors or [])
+        if not ranked or not q_sigs or not collar_contour_cache:
             return ranked, ""
         scored: List[tuple[str, float]] = []
         for file_name, sig in collar_contour_cache.items():
-            sim = float(query_sig @ sig)
-            if query_sig_mirror is not None:
-                sim = max(sim, float(query_sig_mirror @ sig))
+            sim = max(float(query_sig @ sig) for query_sig in q_sigs)
+            if q_mirror_sigs:
+                sim = max(sim, max(float(query_sig_mirror @ sig) for query_sig_mirror in q_mirror_sigs))
             if sim >= collar_contour_min_score:
                 scored.append((file_name, sim))
         if not scored:
@@ -3061,9 +3094,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_contour",
-                "version": 3,
+                "version": 4,
                 "size": int(collar_contour_size),
-                "standard_views": "collar_focus_components_topcomp_lineedge",
+                "standard_views": "collar_focus_components_topcomp_lineedge_contourfallback",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -3103,9 +3136,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             for idx, (tag, view) in enumerate(_region_standard_views(img, max_component_views=4)):
                 if not ((tag in collar_tags) or tag.startswith("comp") or tag.startswith("top_comp")):
                     continue
-                sig = _extract_collar_contour_sig_from_image(view, size=collar_contour_size)
-                if sig is not None:
-                    out[f"{fp.name}@c{idx}_{tag}"] = sig.astype(np.float32)
+                for sig_idx, sig in enumerate(_extract_collar_contour_sigs_from_image(view, size=collar_contour_size)):
+                    out[f"{fp.name}@c{idx}_{tag}_s{sig_idx}"] = sig.astype(np.float32)
         if feature_cache_enabled:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             names_arr = np.array(list(out.keys()), dtype=object)
@@ -6221,21 +6253,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and (partial_region_crop or use_strip_mode)
             )
             if collar_contour_query_allowed:
-                q_collar_sig = _extract_collar_contour_sig(query_path, size=collar_contour_size)
-                q_collar_sig_mirror = None
-                if q_collar_sig is not None:
+                q_collar_sigs = _extract_collar_contour_sigs(query_path, size=collar_contour_size)
+                q_collar_sig_mirrors: List[np.ndarray] = []
+                if q_collar_sigs:
                     try:
                         with Image.open(query_path) as q_im0:
-                            q_collar_sig_mirror = _extract_collar_contour_sig_from_image(
+                            q_collar_sig_mirrors = _extract_collar_contour_sigs_from_image(
                                 ImageOps.mirror(q_im0.convert("RGB")),
                                 size=collar_contour_size,
                             )
                     except Exception:
-                        q_collar_sig_mirror = None
+                        q_collar_sig_mirrors = []
                     ranked_images, collar_candidates_debug = _merge_collar_contour_candidates(
                         ranked_images,
-                        q_collar_sig,
-                        q_collar_sig_mirror,
+                        q_collar_sigs,
+                        q_collar_sig_mirrors,
                     )
                     if collar_candidates_debug:
                         region_debug = (
