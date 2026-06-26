@@ -299,6 +299,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_recall_backend = str(search_cfg.get("region_crop_recall_backend", secondary_feature_backend or feature_backend)).strip().lower()
     region_crop_recall_weight = float(search_cfg.get("region_crop_recall_weight", 1.12))
     region_crop_recall_topn_cap = int(search_cfg.get("region_crop_recall_topn_cap", 1200))
+    full_context_region_probe_enabled = bool(search_cfg.get("full_context_region_probe_enabled", True))
+    full_context_region_probe_max_aspect = float(search_cfg.get("full_context_region_probe_max_aspect", 0.72))
+    full_context_region_probe_min_height = int(search_cfg.get("full_context_region_probe_min_height", 640))
     region_crop_suppress_accessory_enabled = bool(search_cfg.get("region_crop_suppress_accessory_enabled", True))
     region_crop_suppress_accessory_min_score = float(search_cfg.get("region_crop_suppress_accessory_min_score", 0.68))
     region_crop_suppress_accessory_wide_min_score = float(search_cfg.get("region_crop_suppress_accessory_wide_min_score", 0.74))
@@ -4581,6 +4584,37 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 active_match_mode = "similar_style"
             search_scope = "region_primary" if crop_active and region_primary_when_crop else "full_context"
             search_strategy = f"{active_match_mode}:{search_scope}"
+            auto_region_probe_views: List[Image.Image] = []
+            auto_region_probe_active = False
+            if (
+                full_context_region_probe_enabled
+                and not crop_active
+                and active_match_mode == "similar_style"
+                and query_width > 0
+                and query_height >= max(1, int(full_context_region_probe_min_height))
+                and (float(query_width) / float(query_height)) <= max(0.1, float(full_context_region_probe_max_aspect))
+            ):
+                try:
+                    with Image.open(query_path) as probe_im0:
+                        probe_im = probe_im0.convert("RGB")
+                        pw, ph = probe_im.size
+                        probe_boxes = [
+                            (0.04, 0.16, 0.78, 0.70),
+                            (0.00, 0.22, 0.78, 0.82),
+                            (0.18, 0.12, 0.76, 0.68),
+                        ]
+                        for bx, by, bw, bh in probe_boxes:
+                            left = int(round(max(0.0, min(0.98, bx)) * pw))
+                            top = int(round(max(0.0, min(0.98, by)) * ph))
+                            right = int(round(min(1.0, bx + bw) * pw))
+                            bottom = int(round(min(1.0, by + bh) * ph))
+                            if right - left >= 48 and bottom - top >= 48:
+                                auto_region_probe_views.append(probe_im.crop((left, top, right, bottom)))
+                        auto_region_probe_active = bool(auto_region_probe_views)
+                except Exception:
+                    auto_region_probe_views = []
+                    auto_region_probe_active = False
+            region_probe_active = bool(crop_active or auto_region_probe_active)
             debug_saved = _save_debug_query_image(request, query_path, file.filename or "query")
             logging.info(
                 "search upload user=%s file=%s bytes=%d final_size=%sx%s crop=%s strategy=%s saved=%s",
@@ -4659,7 +4693,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             def _apply_region_code_prior() -> None:
                 nonlocal region_boost_debug
-                if not (crop_active and region_crop_code_prior_enabled and region_code_scores):
+                if not (region_probe_active and region_crop_code_prior_enabled and region_code_scores):
                     return
                 boosted_codes = []
                 min_region_code_prior_score = (
@@ -4683,7 +4717,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
-                    crop_active
+                    region_probe_active
                     and region_crop_result_rescue_enabled
                     and (active_match_mode != "exact" or exact_region_rescue_enabled)
                     and region_code_scores
@@ -4772,10 +4806,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             def _force_top_region_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
-                    crop_active
+                    region_probe_active
                     and region_crop_force_top_enabled
                     and active_match_mode == "similar_style"
-                    and search_scope == "region_primary"
+                    and (search_scope == "region_primary" or auto_region_probe_active)
                     and region_code_scores
                     and region_code_best_images
                     and rows_in
@@ -4788,8 +4822,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     strict_small_region_force_topn if strict_small_region_crop else region_crop_force_topn
                 )
                 if (
-                    not strict_small_region_crop
-                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                    auto_region_probe_active
+                    or (
+                        not strict_small_region_crop
+                        and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                    )
                 ):
                     min_region_force_top_score = min(
                         float(min_region_force_top_score),
@@ -4843,10 +4880,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             def _order_region_primary_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 nonlocal region_order_debug
                 if not (
-                    crop_active
+                    region_probe_active
                     and region_crop_order_by_region_enabled
                     and active_match_mode == "similar_style"
-                    and search_scope == "region_primary"
+                    and (search_scope == "region_primary" or auto_region_probe_active)
                     and region_code_scores
                     and rows_in
                 ):
@@ -5668,7 +5705,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         ranked_secondary,
                         secondary_weight=secondary_recall_weight,
                     )
-                if crop_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
+                if region_probe_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
                     effective_region_recall_topn_cap = (
                         strict_small_region_recall_topn_cap if strict_small_region_crop else region_crop_recall_topn_cap
                     )
@@ -5679,24 +5716,41 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             len(req_region_names),
                             max(top_k * max(cand_multiplier, 1), top_k),
                         )
-                    ranked_region = search_topk_images(
-                        query_path,
-                        req_region_names,
-                        req_region_feats,
-                        region_topk,
-                        region_crop_recall_backend,
-                        eff_w_clip,
-                        eff_w_shape,
-                        eff_w_color,
-                        eff_w_stripe,
-                        query_multicrop=pass_region_query_multicrop,
-                        query_crop_ratio=pass_region_query_crop_ratio,
-                        query_component_views=pass_region_query_component_views,
-                        query_view_consensus_weight=pass_region_query_view_consensus_weight,
-                    )
+                    if auto_region_probe_active and auto_region_probe_views:
+                        ranked_region = _search_topk_images_from_views(
+                            auto_region_probe_views,
+                            req_region_names,
+                            req_region_feats,
+                            region_topk,
+                            region_crop_recall_backend,
+                            eff_w_clip,
+                            eff_w_shape,
+                            eff_w_color,
+                            eff_w_stripe,
+                            query_view_consensus_weight_local=max(
+                                float(pass_region_query_view_consensus_weight),
+                                0.12,
+                            ),
+                        )
+                    else:
+                        ranked_region = search_topk_images(
+                            query_path,
+                            req_region_names,
+                            req_region_feats,
+                            region_topk,
+                            region_crop_recall_backend,
+                            eff_w_clip,
+                            eff_w_shape,
+                            eff_w_color,
+                            eff_w_stripe,
+                            query_multicrop=pass_region_query_multicrop,
+                            query_crop_ratio=pass_region_query_crop_ratio,
+                            query_component_views=pass_region_query_component_views,
+                            query_view_consensus_weight=pass_region_query_view_consensus_weight,
+                        )
                     if ranked_region:
                         region_focus_debug = ""
-                        if (use_strip_mode or partial_region_crop) and not strict_small_region_crop:
+                        if crop_active and (use_strip_mode or partial_region_crop) and not strict_small_region_crop:
                             focus_query_img = Image.open(query_path).convert("RGB")
                             focus_tags = {
                                 "top",
@@ -6015,7 +6069,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 crop_active
                 and crop_final_area > max(0.0, min(1.0, float(checker_crop_max_area)))
             )
-            if checker_consistency_enabled and not strict_small_region_crop and not checker_large_crop_blocked:
+            checker_blocked_by_region_probe = bool(
+                auto_region_probe_active
+                and region_best_score >= float(scene_text_suppress_when_region_min_score)
+            )
+            if (
+                checker_consistency_enabled
+                and not strict_small_region_crop
+                and not checker_large_crop_blocked
+                and not checker_blocked_by_region_probe
+            ):
                 q_checker_profile = _extract_checker_profile(query_path, grid=10)
                 if q_checker_profile:
                     checker_debug = (
@@ -6062,6 +6125,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
             elif checker_consistency_enabled and checker_large_crop_blocked:
                 checker_debug = f"skip-large-crop:{crop_final_area:.3f}"
+            elif checker_consistency_enabled and checker_blocked_by_region_probe:
+                checker_debug = f"skip-region-probe:{region_best_score:.3f}"
             if accent_pattern_allowed:
                 if q_accent_sig is not None:
                     ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
@@ -6315,8 +6380,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_bias=display_score_bias,
                     )
             scene_text_blocked_by_region = bool(
-                crop_active
-                and search_scope == "region_primary"
+                region_probe_active
+                and (search_scope == "region_primary" or auto_region_probe_active)
                 and region_best_score >= float(scene_text_suppress_when_region_min_score)
             )
             if scene_text_hint_enabled and not strict_small_region_crop and not scene_text_blocked_by_region:
