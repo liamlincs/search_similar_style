@@ -603,6 +603,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         break
                 if pair_idx >= 4:
                     break
+            top_cut = min(h, max(48, int(h * 0.62)))
+            fg_top = fg[:top_cut, :]
+            num_top, _labels_top, stats_top, _centers_top = cv2.connectedComponentsWithStats(fg_top, connectivity=8)
+            fine_comps: List[tuple[int, tuple[int, int, int, int]]] = []
+            fine_min_area = max(48, int(w * h * 0.004))
+            for i in range(1, num_top):
+                x, y, ww, hh, area = stats_top[i]
+                if int(area) < fine_min_area or int(ww) < 18 or int(hh) < 18:
+                    continue
+                if int(y + hh) > int(h * 0.68):
+                    continue
+                fine_comps.append((int(area), (int(x), int(y), int(ww), int(hh))))
+            fine_comps.sort(key=lambda item: item[0], reverse=True)
+            for idx, (_area, (x, y, ww, hh)) in enumerate(fine_comps[:6]):
+                pad_x = max(6, int(ww * 0.10))
+                pad_y = max(6, int(hh * 0.10))
+                x0 = max(0, x - pad_x)
+                y0 = max(0, y - pad_y)
+                x1 = min(w, x + ww + pad_x)
+                y1 = min(h, y + hh + pad_y)
+                key = (x0, y0, x1, y1)
+                if x1 - x0 < 24 or y1 - y0 < 24 or key in seen:
+                    continue
+                seen.add(key)
+                views.append((f"top_comp{idx}", img.crop(key)))
         return views
 
     def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
@@ -614,10 +639,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "region_crop_recall",
-                "version": 4,
+                "version": 5,
                 "backend": region_crop_recall_backend,
                 "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
-                "standard_views": "grid_halves_bands_components",
+                "standard_views": "grid_halves_bands_components_topdetail",
                 "standard_crop_ratio": float(region_standard_crop_ratio),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
