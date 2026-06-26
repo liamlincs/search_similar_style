@@ -397,6 +397,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_min_score = float(search_cfg.get("collar_contour_min_score", 0.52))
     collar_contour_max_injected = int(search_cfg.get("collar_contour_max_injected", 24))
     collar_contour_size = int(search_cfg.get("collar_contour_size", 48))
+    collar_contour_code_prior_boost = float(search_cfg.get("collar_contour_code_prior_boost", 0.10))
+    collar_contour_region_score_base = float(search_cfg.get("collar_contour_region_score_base", 0.84))
+    collar_contour_region_score_scale = float(search_cfg.get("collar_contour_region_score_scale", 0.18))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -1964,13 +1967,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if cv2 is not None:
             edge = (cv2.Canny(gray.astype(np.uint8), 60, 140) > 0).astype(np.uint8)
             line_near = cv2.dilate(line_core.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1) > 0
+            gx = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
         else:
             gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
             gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
             edge = ((gx + gy) > 28.0).astype(np.uint8)
             line_near = line_core
         line_edge = (edge > 0) & line_near
+        grad_mag = np.sqrt(gx.astype(np.float32) * gx.astype(np.float32) + gy.astype(np.float32) * gy.astype(np.float32))
+        tangent = (np.degrees(np.arctan2(gy.astype(np.float32), gx.astype(np.float32))) + 90.0) % 180.0
+        diagonal = ((tangent >= 24.0) & (tangent <= 76.0)) | ((tangent >= 104.0) & (tangent <= 156.0))
+        vline_edge = line_edge & diagonal & (grad_mag > 18.0)
         sigs: List[np.ndarray] = []
+        vline_sig = _normalize_collar_contour_map(
+            vline_edge.astype(np.uint8),
+            size,
+            max(6, int(h * w * 0.0010)),
+        )
+        if vline_sig is not None:
+            sigs.append(vline_sig)
         line_sig = _normalize_collar_contour_map(
             line_edge.astype(np.uint8),
             size,
@@ -2009,7 +2025,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ranked: List[tuple[str, float]],
         query_sigs: List[np.ndarray] | np.ndarray | None,
         query_sig_mirrors: List[np.ndarray] | np.ndarray | None,
-    ) -> tuple[List[tuple[str, float]], str]:
+    ) -> tuple[List[tuple[str, float]], str, Dict[str, tuple[float, str]]]:
         if isinstance(query_sigs, np.ndarray):
             q_sigs = [query_sigs]
         else:
@@ -2019,7 +2035,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         else:
             q_mirror_sigs = list(query_sig_mirrors or [])
         if not ranked or not q_sigs or not collar_contour_cache:
-            return ranked, ""
+            return ranked, "", {}
         scored: List[tuple[str, float]] = []
         for file_name, sig in collar_contour_cache.items():
             sim = max(float(query_sig @ sig) for query_sig in q_sigs)
@@ -2028,20 +2044,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if sim >= collar_contour_min_score:
                 scored.append((file_name, sim))
         if not scored:
-            return ranked, ""
+            return ranked, "", {}
         scored.sort(key=lambda x: x[1], reverse=True)
         injected = scored[: max(1, collar_contour_max_injected)]
         merged: Dict[str, float] = {}
         for name, score in ranked:
             merged[name] = max(float(score), merged.get(name, -1e9))
+        code_matches: Dict[str, tuple[float, str]] = {}
         for file_name, sim in injected:
             seed = collar_contour_seed_score_base + collar_contour_boost_scale * max(0.0, sim)
             merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+            code = filename_to_style_code(file_name)
+            current = code_matches.get(code)
+            if current is None or float(sim) > float(current[0]):
+                code_matches[code] = (float(sim), file_name.split("@", 1)[0])
         debug_items = [
             f"{filename_to_style_code(file_name)}:{sim:.3f}/{collar_contour_seed_score_base + collar_contour_boost_scale * max(0.0, sim):.3f}"
             for file_name, sim in injected[:24]
         ]
-        return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items)
+        return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items), code_matches
 
     def _extract_sleeve_pattern_sig_from_image(image: Image.Image, size: int = 32) -> np.ndarray | None:
         im = image.convert("RGB")
@@ -3094,9 +3115,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_contour",
-                "version": 4,
+                "version": 5,
                 "size": int(collar_contour_size),
-                "standard_views": "collar_focus_components_topcomp_lineedge_contourfallback",
+                "standard_views": "collar_focus_components_topcomp_vline_lineedge_contourfallback",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -6264,12 +6285,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             )
                     except Exception:
                         q_collar_sig_mirrors = []
-                    ranked_images, collar_candidates_debug = _merge_collar_contour_candidates(
+                    ranked_images, collar_candidates_debug, collar_code_matches = _merge_collar_contour_candidates(
                         ranked_images,
                         q_collar_sigs,
                         q_collar_sig_mirrors,
                     )
                     if collar_candidates_debug:
+                        for code, (sim, image_name) in collar_code_matches.items():
+                            code_key = _code_prior_key(code)
+                            region_score = float(collar_contour_region_score_base) + float(collar_contour_region_score_scale) * max(
+                                0.0,
+                                min(1.0, float(sim)),
+                            )
+                            region_code_scores[code] = max(float(region_code_scores.get(code, -1e9)), region_score)
+                            region_code_best_images[code_key] = image_name
+                            if collar_contour_code_prior_boost > 0.0:
+                                code_prior_boost[code_key] = max(
+                                    float(code_prior_boost.get(code_key, 0.0)),
+                                    float(collar_contour_code_prior_boost),
+                                )
                         region_debug = (
                             f"{region_debug}|collar={collar_candidates_debug}"
                             if region_debug
