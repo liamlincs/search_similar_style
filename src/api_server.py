@@ -316,7 +316,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_force_top_min_score = float(search_cfg.get("region_crop_force_top_min_score", 0.80))
     region_crop_force_topn = int(search_cfg.get("region_crop_force_topn", 1))
     region_crop_large_force_top_area = float(search_cfg.get("region_crop_large_force_top_area", 0.30))
-    region_crop_large_force_top_min_score = float(search_cfg.get("region_crop_large_force_top_min_score", 0.72))
+    region_crop_large_force_top_min_score = float(search_cfg.get("region_crop_large_force_top_min_score", 0.66))
     region_crop_large_force_topn = int(search_cfg.get("region_crop_large_force_topn", 3))
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
@@ -471,6 +471,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_region_rescue_min_score = float(search_cfg.get("scene_text_region_rescue_min_score", 1.25))
     scene_text_region_rescue_min_ratio = float(search_cfg.get("scene_text_region_rescue_min_ratio", 0.66))
     scene_text_region_rescue_max_rows = int(search_cfg.get("scene_text_region_rescue_max_rows", 3))
+    scene_text_suppress_when_region_min_score = float(search_cfg.get("scene_text_suppress_when_region_min_score", 0.62))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -5447,6 +5448,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and rows_in
                 ):
                     return rows_in
+                if region_best_score >= float(scene_text_suppress_when_region_min_score):
+                    return rows_in
                 image_tokens = dict(scene_text_index.get("image_tokens", {}))
                 token_idf = dict(scene_text_index.get("token_idf", {}))
                 if not image_tokens:
@@ -6311,7 +6314,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
-            if scene_text_hint_enabled and not strict_small_region_crop:
+            scene_text_blocked_by_region = bool(
+                crop_active
+                and search_scope == "region_primary"
+                and region_best_score >= float(scene_text_suppress_when_region_min_score)
+            )
+            if scene_text_hint_enabled and not strict_small_region_crop and not scene_text_blocked_by_region:
                 ranked_images, scene_text_tokens = merge_scene_text_candidates(
                     ranked_images,
                     query_path,
@@ -6336,6 +6344,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            elif scene_text_hint_enabled and scene_text_blocked_by_region:
+                scene_text_tokens = [f"skip-region:{region_best_score:.3f}"]
 
             _apply_sleeve_region_rescue()
             rows = _rescue_region_rows(rows, ranked_images)
