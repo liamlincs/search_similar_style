@@ -383,6 +383,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_region_rescue_enabled = bool(search_cfg.get("accent_region_rescue_enabled", True))
     accent_region_rescue_min_sim = float(search_cfg.get("accent_region_rescue_min_sim", 0.70))
     accent_region_rescue_max_rows = int(search_cfg.get("accent_region_rescue_max_rows", 3))
+    collar_contour_enabled = bool(search_cfg.get("collar_contour_enabled", True))
+    collar_contour_seed_score_base = float(search_cfg.get("collar_contour_seed_score_base", 1.12))
+    collar_contour_boost_scale = float(search_cfg.get("collar_contour_boost_scale", 0.28))
+    collar_contour_min_score = float(search_cfg.get("collar_contour_min_score", 0.52))
+    collar_contour_max_injected = int(search_cfg.get("collar_contour_max_injected", 24))
+    collar_contour_size = int(search_cfg.get("collar_contour_size", 48))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -1879,6 +1885,78 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
+    def _extract_collar_contour_sig_from_image(image: Image.Image, size: int = 48) -> np.ndarray | None:
+        im = image.convert("RGB")
+        im.thumbnail((256, 256), Image.Resampling.BILINEAR)
+        rgb = np.asarray(im, dtype=np.uint8)
+        if rgb.ndim != 3 or rgb.shape[0] < 24 or rgb.shape[1] < 24:
+            return None
+        h, w = rgb.shape[:2]
+        top_cut = min(h, max(24, int(h * 0.72)))
+        rgb = rgb[:top_cut, :, :]
+        h, w = rgb.shape[:2]
+        gray = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+        fg = ((gray < 242.0) & np.any(rgb < 246, axis=-1))
+        fg[: min(int(h * 0.10), 20), :] = False
+        if int(fg.sum()) < max(32, int(h * w * 0.015)):
+            return None
+        dark = ((gray < 228.0) & fg).astype(np.uint8)
+        if cv2 is not None:
+            edge = (cv2.Canny(gray.astype(np.uint8), 60, 140) > 0).astype(np.uint8)
+        else:
+            gx = np.abs(np.diff(gray, axis=1, prepend=gray[:, :1]))
+            gy = np.abs(np.diff(gray, axis=0, prepend=gray[:1, :]))
+            edge = ((gx + gy) > 28.0).astype(np.uint8)
+        sig_map = np.maximum(edge * fg.astype(np.uint8), dark)
+        if int(sig_map.sum()) < max(24, int(h * w * 0.008)):
+            return None
+        arr = np.asarray(
+            Image.fromarray((sig_map * 255).astype(np.uint8), mode="L").resize((size, size), Image.Resampling.BILINEAR),
+            dtype=np.float32,
+        ) / 255.0
+        arr = arr - float(arr.mean())
+        norm = float(np.linalg.norm(arr)) + 1e-8
+        if norm <= 1e-8:
+            return None
+        return (arr.ravel() / norm).astype(np.float32)
+
+    def _extract_collar_contour_sig(path: Path, size: int = 48) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                return _extract_collar_contour_sig_from_image(im0.convert("RGB"), size=size)
+        except Exception:
+            return None
+
+    def _merge_collar_contour_candidates(
+        ranked: List[tuple[str, float]],
+        query_sig: np.ndarray | None,
+        query_sig_mirror: np.ndarray | None,
+    ) -> tuple[List[tuple[str, float]], str]:
+        if not ranked or query_sig is None or not collar_contour_cache:
+            return ranked, ""
+        scored: List[tuple[str, float]] = []
+        for file_name, sig in collar_contour_cache.items():
+            sim = float(query_sig @ sig)
+            if query_sig_mirror is not None:
+                sim = max(sim, float(query_sig_mirror @ sig))
+            if sim >= collar_contour_min_score:
+                scored.append((file_name, sim))
+        if not scored:
+            return ranked, ""
+        scored.sort(key=lambda x: x[1], reverse=True)
+        injected = scored[: max(1, collar_contour_max_injected)]
+        merged: Dict[str, float] = {}
+        for name, score in ranked:
+            merged[name] = max(float(score), merged.get(name, -1e9))
+        for file_name, sim in injected:
+            seed = collar_contour_seed_score_base + collar_contour_boost_scale * max(0.0, sim)
+            merged[file_name] = max(merged.get(file_name, -1e9), float(seed))
+        debug_items = [
+            f"{filename_to_style_code(file_name)}:{sim:.3f}/{collar_contour_seed_score_base + collar_contour_boost_scale * max(0.0, sim):.3f}"
+            for file_name, sim in injected[:24]
+        ]
+        return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items)
+
     def _extract_sleeve_pattern_sig_from_image(image: Image.Image, size: int = 32) -> np.ndarray | None:
         im = image.convert("RGB")
         im.thumbnail((320, 320), Image.Resampling.BILINEAR)
@@ -2529,6 +2607,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accessory_hat_prior_cache_{safe}.npz"
 
+    def _collar_contour_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"collar_contour_cache_{safe}.npz"
+
     def _load_or_build_accent_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
         files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
@@ -2919,6 +3001,54 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("accessory hat prior cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
+    def _load_or_build_collar_contour_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "collar_contour",
+                "version": 1,
+                "size": int(collar_contour_size),
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _collar_contour_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    feats = arr["feats"].astype(np.float32)
+                    out = {name: feats[i] for i, name in enumerate(cached_names)}
+                    logging.info("collar contour cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+        t0 = time.perf_counter()
+        out: Dict[str, np.ndarray] = {}
+        for fp in files:
+            sig = _extract_collar_contour_sig(fp, size=collar_contour_size)
+            if sig is not None:
+                out[fp.name] = sig.astype(np.float32)
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            feats_arr = np.vstack([out[n] for n in out.keys()]).astype(np.float32) if out else np.zeros((0, 1), dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                feats=feats_arr,
+            )
+            logging.info("collar contour cache write: %s", cache_path)
+        logging.info("collar contour cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
     fg_shape_cache: Dict[str, tuple[float, float]] = {}
     fg_mask_cache: Dict[str, np.ndarray] = {}
     color_sig_cache: Dict[str, np.ndarray] = {}
@@ -2926,6 +3056,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
+    collar_contour_cache: Dict[str, np.ndarray] = {}
     sleeve_pattern_cache: Dict[str, np.ndarray] = {}
     sleeve_pair_prior_cache: Dict[str, float] = {}
     accessory_pattern_cache: Dict[str, np.ndarray] = {}
@@ -2994,6 +3125,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if accent_pattern_enabled:
         accent_pattern_cache = _load_or_build_accent_pattern_cache(names)
         logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
+    if collar_contour_enabled:
+        collar_contour_cache = _load_or_build_collar_contour_cache(names)
+        logging.info("api preloaded collar contour cache: %d", len(collar_contour_cache))
     if sleeve_pattern_enabled:
         sleeve_pattern_cache = _load_or_build_sleeve_pattern_cache(names)
         logging.info("api preloaded sleeve pattern cache: %d", len(sleeve_pattern_cache))
@@ -5856,6 +5990,41 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         q_accent_sig,
                     )
                     if accent_candidates_debug:
+                        rows = topk_style_codes(
+                            ranked_images,
+                            top_k,
+                            min_score=min_score,
+                            code_agg_top_n=code_agg_top_n,
+                            code_agg_alpha=code_agg_alpha,
+                            query_hint_code=query_hint_code,
+                            query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                            code_prior_boost=code_prior_boost,
+                            display_score_scale=display_score_scale,
+                            display_score_bias=display_score_bias,
+                        )
+            if collar_contour_enabled and partial_region_crop:
+                q_collar_sig = _extract_collar_contour_sig(query_path, size=collar_contour_size)
+                q_collar_sig_mirror = None
+                if q_collar_sig is not None:
+                    try:
+                        with Image.open(query_path) as q_im0:
+                            q_collar_sig_mirror = _extract_collar_contour_sig_from_image(
+                                ImageOps.mirror(q_im0.convert("RGB")),
+                                size=collar_contour_size,
+                            )
+                    except Exception:
+                        q_collar_sig_mirror = None
+                    ranked_images, collar_candidates_debug = _merge_collar_contour_candidates(
+                        ranked_images,
+                        q_collar_sig,
+                        q_collar_sig_mirror,
+                    )
+                    if collar_candidates_debug:
+                        region_debug = (
+                            f"{region_debug}|collar={collar_candidates_debug}"
+                            if region_debug
+                            else f"collar={collar_candidates_debug}"
+                        )
                         rows = topk_style_codes(
                             ranked_images,
                             top_k,
