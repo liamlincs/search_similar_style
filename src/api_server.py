@@ -2181,7 +2181,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             for file_name, sim in injected[:24]
         ]
         if chevron_debug:
-            debug_items.append("chev=" + ",".join(chevron_debug[:16]))
+            debug_items.append("chev=" + ",".join(chevron_debug[:48]))
         return sorted(merged.items(), key=lambda x: x[1], reverse=True), ",".join(debug_items), code_matches
 
     def _extract_sleeve_pattern_sig_from_image(image: Image.Image, size: int = 32) -> np.ndarray | None:
@@ -3239,7 +3239,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_contour",
-                "version": 6,
+                "version": 7,
                 "size": int(collar_contour_size),
                 "standard_views": "collar_focus_components_topcomp_vline_lineedge_contourfallback_mid_strip",
                 "pattern": standard_pattern,
@@ -3311,7 +3311,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_chevron",
-                "version": 1,
+                "version": 2,
                 "standard_views": "collar_focus_components_topcomp_hough_mid_strip",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
