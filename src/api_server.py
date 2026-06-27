@@ -414,6 +414,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_repeat_view_boost = float(search_cfg.get("collar_contour_repeat_view_boost", 0.04))
     collar_contour_multi_image_boost = float(search_cfg.get("collar_contour_multi_image_boost", 0.08))
     collar_contour_repeat_max_boost = float(search_cfg.get("collar_contour_repeat_max_boost", 0.24))
+    collar_contour_near_tie_diversify_enabled = bool(
+        search_cfg.get("collar_contour_near_tie_diversify_enabled", True)
+    )
+    collar_contour_near_tie_margin = float(search_cfg.get("collar_contour_near_tie_margin", 0.008))
+    collar_contour_near_tie_min_window = int(search_cfg.get("collar_contour_near_tie_min_window", 12))
+    collar_contour_near_tie_window_extra = int(search_cfg.get("collar_contour_near_tie_window_extra", 5))
     collar_chevron_enabled = bool(search_cfg.get("collar_chevron_enabled", True))
     collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
     collar_chevron_standard_min_score = float(search_cfg.get("collar_chevron_standard_min_score", 0.50))
@@ -5032,6 +5038,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_has_confident_match = False
             region_code_scores: Dict[str, float] = {}
             region_code_best_images: Dict[str, str] = {}
+            collar_candidate_scores: Dict[str, float] = {}
             region_repeat_force_scores: Dict[str, tuple[float, int]] = {}
             region_boost_debug = ""
             region_rescue_debug = ""
@@ -5323,7 +5330,46 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ),
                     reverse=True,
                 )
-                ordered = (protected_rows + ordered)[:top_k]
+                ordered_all = protected_rows + ordered
+                if (
+                    collar_contour_near_tie_diversify_enabled
+                    and collar_candidate_scores
+                    and len(ordered_all) > top_k
+                ):
+                    def _row_region_score(row: Dict[str, Any]) -> float:
+                        return float(region_code_scores.get(str(row.get("style_code", "")), -1.0))
+
+                    base_top = ordered_all[:top_k]
+                    cutoff_score = min(_row_region_score(row) for row in base_top) if base_top else -1.0
+                    near_tie_window = [
+                        row
+                        for row in ordered_all
+                        if _code_prior_key(str(row.get("style_code", ""))) in collar_candidate_scores
+                        and _row_region_score(row) >= cutoff_score - float(collar_contour_near_tie_margin)
+                    ]
+                    near_tie_window = near_tie_window[: max(top_k, top_k + int(collar_contour_near_tie_window_extra))]
+                    if len(near_tie_window) >= max(top_k + 1, int(collar_contour_near_tie_min_window)):
+                        selected_rows: List[Dict[str, Any]] = []
+                        selected_keys: set[str] = set()
+                        slots = max(1, top_k)
+                        for pos in range(slots):
+                            idx = 0 if slots == 1 else round(pos * (len(near_tie_window) - 1) / (slots - 1))
+                            row = near_tie_window[int(idx)]
+                            key = _code_prior_key(str(row.get("style_code", "")))
+                            if key in selected_keys:
+                                continue
+                            selected_keys.add(key)
+                            selected_rows.append(row)
+                        for row in ordered_all:
+                            if len(selected_rows) >= top_k:
+                                break
+                            key = _code_prior_key(str(row.get("style_code", "")))
+                            if key in selected_keys:
+                                continue
+                            selected_keys.add(key)
+                            selected_rows.append(row)
+                        ordered_all = selected_rows
+                ordered = ordered_all[:top_k]
                 region_order_debug = ",".join(
                     f"{row.get('style_code', '')}:{float(region_code_scores.get(str(row.get('style_code', '')), -1.0)):.3f}"
                     for row in ordered[:top_k]
@@ -6698,6 +6744,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if collar_candidates_debug:
                         for code, (sim, image_name) in collar_code_matches.items():
                             code_key = _code_prior_key(code)
+                            collar_candidate_scores[code_key] = max(
+                                float(collar_candidate_scores.get(code_key, -1e9)),
+                                float(sim),
+                            )
                             region_score = float(collar_contour_region_score_base) + float(collar_contour_region_score_scale) * max(
                                 0.0,
                                 min(float(collar_contour_region_score_max), float(sim)),
