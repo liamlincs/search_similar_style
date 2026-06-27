@@ -405,9 +405,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_code_prior_boost = float(search_cfg.get("collar_contour_code_prior_boost", 0.10))
     collar_contour_region_score_base = float(search_cfg.get("collar_contour_region_score_base", 0.84))
     collar_contour_region_score_scale = float(search_cfg.get("collar_contour_region_score_scale", 0.18))
+    collar_contour_region_score_max = float(search_cfg.get("collar_contour_region_score_max", 1.80))
     collar_contour_repeat_min_score = float(search_cfg.get("collar_contour_repeat_min_score", 0.62))
     collar_contour_repeat_min_hits = int(search_cfg.get("collar_contour_repeat_min_hits", 2))
     collar_contour_repeat_boost = float(search_cfg.get("collar_contour_repeat_boost", 0.16))
+    collar_contour_repeat_view_boost = float(search_cfg.get("collar_contour_repeat_view_boost", 0.04))
     collar_contour_repeat_max_boost = float(search_cfg.get("collar_contour_repeat_max_boost", 0.24))
     collar_chevron_enabled = bool(search_cfg.get("collar_chevron_enabled", True))
     collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
@@ -2232,13 +2234,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     continue
                 code_repeat_hits.setdefault(code, set()).add(base_file_name)
             for code, base_names in code_repeat_hits.items():
-                hit_count = max(len(base_names), len(code_repeat_view_hits.get(code, set())))
-                if hit_count < repeat_min_hits:
+                base_hit_count = len(base_names)
+                view_hit_count = len(code_repeat_view_hits.get(code, set()))
+                if base_hit_count >= repeat_min_hits:
+                    repeat_steps = max(1, base_hit_count - repeat_min_hits + 1)
+                    repeat_boost = float(collar_contour_repeat_boost) * float(repeat_steps)
+                elif view_hit_count >= repeat_min_hits and float(collar_contour_repeat_view_boost) > 0.0:
+                    repeat_steps = max(1, view_hit_count - repeat_min_hits + 1)
+                    repeat_boost = float(collar_contour_repeat_view_boost) * float(repeat_steps)
+                else:
                     continue
-                repeat_steps = max(1, hit_count - repeat_min_hits + 1)
                 repeat_boost_by_code[code] = min(
                     float(collar_contour_repeat_max_boost),
-                    float(collar_contour_repeat_boost) * float(repeat_steps),
+                    float(repeat_boost),
                 )
         if repeat_boost_by_code:
             scored = [
@@ -6643,7 +6651,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             code_key = _code_prior_key(code)
                             region_score = float(collar_contour_region_score_base) + float(collar_contour_region_score_scale) * max(
                                 0.0,
-                                min(1.0, float(sim)),
+                                min(float(collar_contour_region_score_max), float(sim)),
                             )
                             region_code_scores[code] = max(float(region_code_scores.get(code, -1e9)), region_score)
                             region_code_best_images[code_key] = image_name
