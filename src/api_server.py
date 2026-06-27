@@ -321,6 +321,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_large_force_top_area = float(search_cfg.get("region_crop_large_force_top_area", 0.30))
     region_crop_large_force_top_min_score = float(search_cfg.get("region_crop_large_force_top_min_score", 0.66))
     region_crop_large_force_topn = int(search_cfg.get("region_crop_large_force_topn", 3))
+    region_crop_repeat_force_enabled = bool(search_cfg.get("region_crop_repeat_force_enabled", True))
+    region_crop_repeat_force_topn = int(search_cfg.get("region_crop_repeat_force_topn", 12))
+    region_crop_repeat_force_min_score = float(search_cfg.get("region_crop_repeat_force_min_score", 0.62))
+    region_crop_repeat_force_min_hits = int(search_cfg.get("region_crop_repeat_force_min_hits", 4))
+    region_crop_repeat_force_seed_score = float(search_cfg.get("region_crop_repeat_force_seed_score", 1.50))
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
     region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
@@ -4950,6 +4955,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_has_confident_match = False
             region_code_scores: Dict[str, float] = {}
             region_code_best_images: Dict[str, str] = {}
+            region_repeat_force_scores: Dict[str, tuple[float, int]] = {}
             region_boost_debug = ""
             region_rescue_debug = ""
             region_order_debug = ""
@@ -5129,6 +5135,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     force_topn_local = max(int(force_topn_local), int(region_crop_large_force_topn))
                 forced_rows: List[Dict[str, Any]] = []
+                if region_crop_repeat_force_enabled and region_repeat_force_scores:
+                    for code, (repeat_score, hit_count) in sorted(
+                        region_repeat_force_scores.items(),
+                        key=lambda item: (item[1][1], item[1][0]),
+                        reverse=True,
+                    ):
+                        if int(hit_count) < max(1, int(region_crop_repeat_force_min_hits)):
+                            continue
+                        if float(repeat_score) < float(region_crop_repeat_force_min_score):
+                            continue
+                        key = _code_prior_key(code)
+                        image_name = region_code_best_images.get(key)
+                        if not image_name:
+                            continue
+                        raw_score = max(
+                            float(region_crop_repeat_force_seed_score),
+                            float(repeat_score) + float(region_crop_code_prior_boost),
+                        )
+                        z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                        disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                        disp = min(0.9999, max(0.0, float(disp)))
+                        forced_rows.append(
+                            {
+                                "style_code": filename_to_style_code(image_name),
+                                "best_standard_image": image_name,
+                                "score": round(disp, 4),
+                                "rank_score": round(float(raw_score), 6),
+                                "_force_keep": True,
+                            }
+                        )
                 for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True):
                     if len(forced_rows) >= max(1, force_topn_local):
                         break
@@ -6174,6 +6210,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             if score > region_code_scores.get(code, -1e9):
                                 region_code_scores[code] = score
                                 region_code_best_images[_code_prior_key(code)] = n.split("@", 1)[0]
+                        region_repeat_force_scores.clear()
+                        if region_crop_repeat_force_enabled:
+                            repeat_hits: Dict[str, tuple[float, int]] = {}
+                            for n, s in ranked_region[: max(1, int(region_crop_repeat_force_topn))]:
+                                code = filename_to_style_code(n)
+                                score = float(s)
+                                if score < float(region_crop_repeat_force_min_score):
+                                    continue
+                                best_score, hit_count = repeat_hits.get(code, (-1.0, 0))
+                                repeat_hits[code] = (max(float(best_score), score), int(hit_count) + 1)
+                            region_repeat_force_scores.update(repeat_hits)
                         region_debug = ",".join(
                             f"{filename_to_style_code(n)}:{float(s):.3f}"
                             for n, s in ranked_region[:40]
