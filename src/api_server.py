@@ -405,6 +405,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_code_prior_boost = float(search_cfg.get("collar_contour_code_prior_boost", 0.10))
     collar_contour_region_score_base = float(search_cfg.get("collar_contour_region_score_base", 0.84))
     collar_contour_region_score_scale = float(search_cfg.get("collar_contour_region_score_scale", 0.18))
+    collar_contour_repeat_min_score = float(search_cfg.get("collar_contour_repeat_min_score", 0.62))
+    collar_contour_repeat_min_hits = int(search_cfg.get("collar_contour_repeat_min_hits", 2))
+    collar_contour_repeat_boost = float(search_cfg.get("collar_contour_repeat_boost", 0.16))
+    collar_contour_repeat_max_boost = float(search_cfg.get("collar_contour_repeat_max_boost", 0.24))
     collar_chevron_enabled = bool(search_cfg.get("collar_chevron_enabled", True))
     collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
     collar_chevron_standard_min_score = float(search_cfg.get("collar_chevron_standard_min_score", 0.50))
@@ -2211,6 +2215,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 chevron_debug.append(f"code:{code}:{chevron_score:.3f}/{contour_sim:.3f}/{score:.3f}")
         if not scored:
             return ranked, "", {}
+        repeat_boost_by_code: Dict[str, float] = {}
+        repeat_min_hits = max(2, int(collar_contour_repeat_min_hits))
+        if float(collar_contour_repeat_boost) > 0.0:
+            code_repeat_hits: Dict[str, set[str]] = {}
+            for base_file_name, (contour_sim, _contour_file_name) in base_best_contour.items():
+                if float(contour_sim) < float(collar_contour_repeat_min_score):
+                    continue
+                code = filename_to_style_code(base_file_name)
+                if not code:
+                    continue
+                code_repeat_hits.setdefault(code, set()).add(base_file_name)
+            for code, base_names in code_repeat_hits.items():
+                hit_count = len(base_names)
+                if hit_count < repeat_min_hits:
+                    continue
+                repeat_steps = max(1, hit_count - repeat_min_hits + 1)
+                repeat_boost_by_code[code] = min(
+                    float(collar_contour_repeat_max_boost),
+                    float(collar_contour_repeat_boost) * float(repeat_steps),
+                )
+        if repeat_boost_by_code:
+            scored = [
+                (file_name, float(sim) + float(repeat_boost_by_code.get(filename_to_style_code(file_name), 0.0)))
+                for file_name, sim in scored
+            ]
         scored.sort(key=lambda x: x[1], reverse=True)
         injected: List[tuple[str, float]] = []
         seen_injected_codes: set[str] = set()
@@ -5231,7 +5260,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in forced_keys
                 ]
-                return (forced_rows + kept_rows)[:top_k]
+                target_n = max(top_k, len(rows_in))
+                return (forced_rows + kept_rows)[:target_n]
 
             def _order_region_primary_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 nonlocal region_order_debug
