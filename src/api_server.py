@@ -405,7 +405,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_code_prior_boost = float(search_cfg.get("collar_contour_code_prior_boost", 0.10))
     collar_contour_region_score_base = float(search_cfg.get("collar_contour_region_score_base", 0.84))
     collar_contour_region_score_scale = float(search_cfg.get("collar_contour_region_score_scale", 0.18))
-    collar_contour_force_keep_min_rank = float(search_cfg.get("collar_contour_force_keep_min_rank", 1.60))
     collar_chevron_enabled = bool(search_cfg.get("collar_chevron_enabled", True))
     collar_chevron_query_min_score = float(search_cfg.get("collar_chevron_query_min_score", 0.30))
     collar_chevron_standard_min_score = float(search_cfg.get("collar_chevron_standard_min_score", 0.50))
@@ -6624,7 +6623,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         )
                         rows = topk_style_codes(
                             ranked_images,
-                            top_k,
+                            max(top_k, collar_contour_max_injected),
                             min_score=min_score,
                             code_agg_top_n=code_agg_top_n,
                             code_agg_alpha=code_agg_alpha,
@@ -6634,13 +6633,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-                        collar_match_keys = {_code_prior_key(code) for code in collar_code_matches}
-                        for row in rows:
-                            if (
-                                _code_prior_key(str(row.get("style_code", ""))) in collar_match_keys
-                                and float(row.get("rank_score", 0.0)) >= float(collar_contour_force_keep_min_rank)
-                            ):
-                                row["_force_keep"] = True
             accessory_like_region = False
             accessory_near_square_region = False
             crop_aspect = 0.0
