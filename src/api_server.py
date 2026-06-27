@@ -412,8 +412,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_chevron_score_boost = float(search_cfg.get("collar_chevron_score_boost", 0.22))
     collar_chevron_seed_score_base = float(search_cfg.get("collar_chevron_seed_score_base", 1.24))
     collar_chevron_max_injected = int(search_cfg.get("collar_chevron_max_injected", 48))
+    collar_chevron_code_min_score = float(
+        search_cfg.get("collar_chevron_code_min_score", max(0.36, collar_chevron_standard_min_score - 0.12))
+    )
     collar_chevron_code_contour_min_score = float(search_cfg.get("collar_chevron_code_contour_min_score", 0.40))
     collar_chevron_code_contour_boost = float(search_cfg.get("collar_chevron_code_contour_boost", 0.32))
+    collar_chevron_code_fallback_contour_min_score = float(
+        search_cfg.get("collar_chevron_code_fallback_contour_min_score", max(collar_chevron_code_contour_min_score, 0.42))
+    )
+    collar_chevron_code_fallback_boost = float(search_cfg.get("collar_chevron_code_fallback_boost", 0.22))
     checker_suppress_when_accent = bool(search_cfg.get("checker_suppress_when_accent", True))
     checker_accent_suppress_below = float(search_cfg.get("checker_accent_suppress_below", 0.14))
     sleeve_pattern_enabled = bool(search_cfg.get("sleeve_pattern_enabled", False))
@@ -2055,7 +2062,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         maxc = rgb.max(axis=-1).astype(np.float32)
         minc = rgb.min(axis=-1).astype(np.float32)
         sat = (maxc - minc) / np.maximum(maxc, 1.0)
-        line_core = (((sat > 0.10) & (gray < 245.0)) | (gray < 120.0))
+        bright_support = cv2.dilate(((gray > 165.0) & (sat < 0.45)).astype(np.uint8), np.ones((9, 9), np.uint8), iterations=2) > 0
+        line_core = (((sat > 0.10) & (gray < 245.0)) | ((gray < 120.0) & bright_support))
         line_core[: min(int(h * 0.08), 20), :] = False
         edges = (cv2.Canny(gray.astype(np.uint8), 50, 130) > 0).astype(np.uint8) * 255
         line_mask = cv2.dilate(line_core.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1)
@@ -2094,9 +2102,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         balance = 2.0 * both_len / max(1e-6, diag_len)
         density = min(1.0, diag_len / max(1.0, float(min(h, w)) * 1.6))
         horizontal_penalty = 1.0 - min(0.5, hor_len / max(1e-6, hor_len + diag_len))
-        dark_fill = float(np.mean((gray < 120.0) & (sat < 0.35)))
+        dark_fill = float(np.mean((gray < 120.0) & (sat < 0.35) & bright_support))
         dark_fill_penalty = 1.0 - min(0.55, max(0.0, dark_fill - 0.06) * 2.8)
-        solid_mask = ((gray < 125.0) & (sat < 0.45)).astype(np.uint8)
+        solid_mask = ((gray < 125.0) & (sat < 0.45) & bright_support).astype(np.uint8)
         solid_mask[: min(int(h * 0.08), 20), :] = 0
         solid_count, _, solid_stats, _ = cv2.connectedComponentsWithStats(solid_mask, 8)
         largest_solid = 0.0
@@ -2181,7 +2189,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 scored.append((base_best_contour.get(base_file_name, (contour_sim, base_file_name))[1], float(score)))
                 chevron_debug.append(f"{filename_to_style_code(base_file_name)}:{chevron_score:.3f}/{contour_sim:.3f}/{score:.3f}")
             for code, (chevron_score, base_file_name) in code_best_chevron.items():
-                if chevron_score < float(collar_chevron_standard_min_score):
+                if chevron_score < float(collar_chevron_code_min_score):
                     continue
                 contour_sim, contour_file_name = code_best_contour.get(code, (0.0, base_file_name))
                 if contour_sim < float(collar_chevron_code_contour_min_score):
@@ -2192,6 +2200,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     + float(collar_chevron_score_boost) * chevron_score
                     + float(collar_chevron_code_contour_boost) * min(1.0, max(0.0, contour_sim)),
                 )
+                if (
+                    chevron_score < float(collar_chevron_standard_min_score)
+                    and contour_sim >= float(collar_chevron_code_fallback_contour_min_score)
+                ):
+                    score = max(
+                        score,
+                        float(collar_chevron_seed_score_base)
+                        + float(collar_chevron_code_fallback_boost)
+                        + float(collar_chevron_code_contour_boost) * min(1.0, max(0.0, contour_sim)),
+                    )
                 scored.append((contour_file_name, float(score)))
                 chevron_debug.append(f"code:{code}:{chevron_score:.3f}/{contour_sim:.3f}/{score:.3f}")
         if not scored:
@@ -3353,7 +3371,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_chevron",
-                "version": 4,
+                "version": 5,
                 "standard_views": "collar_focus_components_topcomp_hough_mid_strip",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
