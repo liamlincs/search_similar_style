@@ -5315,19 +5315,63 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if accessory_hat_query:
                     region_order_debug = "skip-accessory-hat"
                     return rows_in
-                protected_rows = [row for row in rows_in if row.get("_force_keep")]
+                def _row_region_score(row: Dict[str, Any]) -> float:
+                    code_key = _code_prior_key(str(row.get("style_code", "")))
+                    return max(
+                        float(region_code_scores.get(str(row.get("style_code", "")), -1.0)),
+                        float(region_code_scores.get(code_key, -1.0)),
+                    )
+
+                rows_for_order = list(rows_in)
+                if collar_candidate_scores:
+                    existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_for_order}
+                    sorted_existing = sorted(rows_for_order, key=_row_region_score, reverse=True)
+                    cutoff_score = (
+                        _row_region_score(sorted_existing[min(len(sorted_existing), top_k) - 1])
+                        if sorted_existing
+                        else -1.0
+                    )
+                    for code_key, sim in sorted(collar_candidate_scores.items(), key=lambda item: item[1], reverse=True):
+                        if code_key in existing_keys:
+                            continue
+                        region_score = max(
+                            float(region_code_scores.get(code_key, -1.0)),
+                            float(collar_contour_region_score_base)
+                            + float(collar_contour_region_score_scale)
+                            * max(0.0, min(float(collar_contour_region_score_max), float(sim))),
+                        )
+                        if region_score < cutoff_score - float(collar_contour_near_tie_margin):
+                            continue
+                        image_name = region_code_best_images.get(code_key)
+                        if not image_name:
+                            continue
+                        raw_score = (
+                            float(collar_contour_seed_score_base)
+                            + float(collar_contour_boost_scale) * max(0.0, float(sim))
+                            + float(code_prior_boost.get(code_key, 0.0))
+                        )
+                        z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                        disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                        disp = min(0.9999, max(0.0, float(disp)))
+                        rows_for_order.append(
+                            {
+                                "style_code": code_key,
+                                "best_standard_image": image_name,
+                                "score": round(disp, 4),
+                                "rank_score": round(float(raw_score), 6),
+                            }
+                        )
+                        existing_keys.add(code_key)
+                protected_rows = [row for row in rows_for_order if row.get("_force_keep")]
                 protected_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in protected_rows}
                 sortable_rows = [
                     row
-                    for row in rows_in
+                    for row in rows_for_order
                     if _code_prior_key(str(row.get("style_code", ""))) not in protected_keys
                 ]
                 ordered = sorted(
                     sortable_rows,
-                    key=lambda row: (
-                        float(region_code_scores.get(str(row.get("style_code", "")), -1.0)),
-                        float(row.get("rank_score", 0.0)),
-                    ),
+                    key=lambda row: (_row_region_score(row), float(row.get("rank_score", 0.0))),
                     reverse=True,
                 )
                 ordered_all = protected_rows + ordered
@@ -5336,9 +5380,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and collar_candidate_scores
                     and len(ordered_all) > top_k
                 ):
-                    def _row_region_score(row: Dict[str, Any]) -> float:
-                        return float(region_code_scores.get(str(row.get("style_code", "")), -1.0))
-
                     base_top = ordered_all[:top_k]
                     cutoff_score = min(_row_region_score(row) for row in base_top) if base_top else -1.0
                     near_tie_window = [
