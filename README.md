@@ -531,7 +531,7 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - `pages/recolor/index`
 - 底部导航可从“搜款/拼图打印”跳转到“局部改色”
 
-### AI改色（SiliconFlow / Qwen-Image-Edit-2509）
+### AI出图（SiliconFlow / Qwen-Image-Edit-2509）
 
 配置环境变量（服务端）：
 
@@ -540,21 +540,25 @@ export SILICONFLOW_API_KEY="你的_siliconflow_api_key"
 ```
 
 新增接口：`POST /recolor-ai`（`multipart/form-data`）
-- 必填：`file`
+- 必填：`file`（主图，对应 SiliconFlow `image`）
 - 基础参数：
   - `model`（默认：`Qwen/Qwen-Image-Edit-2509`）
-  - `target_hex`
+  - `prompt`
+  - `target_hex`（可选；用于提示词换色或后处理校色）
   - `x_ratio` / `y_ratio` / `w_ratio` / `h_ratio`
   - `strength`
 - 可选参数：
   - `negative_prompt`
   - `seed`
-  - `num_inference_steps`
-  - `image2`
-  - `image3`
+  - `cfg`（小程序默认 `4`，与 SiliconFlow Playground 常用值一致；兼容旧字段 `cfg_scale`）
+  - `num_inference_steps`（小程序默认 `20`）
+  - `image2`（参考图 data URL；例如衣领图）
+  - `image3`（第二张参考图 data URL）
+  - `postprocess`（`0/1`；多图合成时建议 `0`，避免颜色后处理影响合成）
 
 说明：
-- 后端调用 SiliconFlow `POST /v1/images/generations`，并将框选区域转为蒙版图（作为 `image2`）辅助编辑。
+- 后端调用 SiliconFlow `POST /v1/images/generations`。没有参考图时，后端可将框选区域转为蒙版图（作为 `image2`）辅助改色；传入 `image2/image3` 时，它们会作为真实参考图透传给 SiliconFlow，不再被蒙版覆盖。
+- 小程序 AI 出图支持“主图 + 参考图1 + 参考图2 + 提示词”。用户可写“把参考图1的衣领合并到主图上”，发送前会自动换算为 SiliconFlow 更容易识别的“把 image 2 的衣领合并到 image 1 上”，不额外追加长约束，尽量保持与 Playground 行为一致。
 - 返回字段 `used_params` 会给出本次实际生效的参数。
 
 ### Nginx 反向代理（按 URI 区分搜款与打印）
@@ -618,7 +622,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # AI改色接口
+    # AI出图接口
     location = /recolor-ai {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;

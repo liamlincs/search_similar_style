@@ -1,7 +1,7 @@
 <view class="container">
   <view class="hero">
-    <view class="title">局部换色</view>
-    <view class="subtitle">标准换色与AI换色都支持自动抠主体换色</view>
+    <view class="title">换色与AI出图</view>
+    <view class="subtitle">标准换色支持自动抠主体；AI出图支持提示词改色和多图合成</view>
   </view>
 
   <view class="card">
@@ -9,13 +9,13 @@
     <view wx:if="{{localImage}}" class="stage">
       <image class="stage-img" src="{{localImage}}" mode="aspectFit" />
     </view>
-    <view wx:if="{{localImage}}" class="hint">自动识别主体区域进行换色</view>
+    <view wx:if="{{localImage}}" class="hint">主图会作为 SiliconFlow 的 image 参数</view>
   </view>
 
   <view class="card">
     <view class="mode-switch">
       <view class="mode-item {{mode === 'fast' ? 'active' : ''}}" data-mode="fast" bindtap="switchMode">标准换色</view>
-      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">AI换色</view>
+      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">AI出图</view>
     </view>
 
     <view class="field">
@@ -35,10 +35,6 @@
         <view wx:if="{{mode === 'fast'}}" class="inline-action" bindtap="toggleFastParams">
           高级参数 {{fastParamsOpen ? '⌃' : '›'}}
         </view>
-        <view wx:if="{{mode === 'ai'}}" class="inline-ai-toggle">
-          <text>原生AI（关闭后处理）</text>
-          <switch class="small-switch" checked="{{aiRawMode}}" bindchange="onAiRawModeChange" />
-        </view>
       </view>
     </view>
 
@@ -49,30 +45,53 @@
     </view>
 
     <view wx:if="{{mode === 'ai'}}">
-      <view class="field-title">AI换色提示词</view>
+      <view class="ref-grid">
+        <view class="ref-box" bindtap="chooseReferenceImage" data-slot="2">
+          <image wx:if="{{referenceImage2}}" class="ref-img" src="{{referenceImage2}}" mode="aspectFill" />
+          <view wx:else class="ref-empty">参考图1</view>
+          <view wx:if="{{referenceImage2}}" class="ref-remove" catchtap="removeReferenceImage" data-slot="2">移除</view>
+        </view>
+        <view class="ref-box" bindtap="chooseReferenceImage" data-slot="3">
+          <image wx:if="{{referenceImage3}}" class="ref-img" src="{{referenceImage3}}" mode="aspectFill" />
+          <view wx:else class="ref-empty">参考图2</view>
+          <view wx:if="{{referenceImage3}}" class="ref-remove" catchtap="removeReferenceImage" data-slot="3">移除</view>
+        </view>
+      </view>
+      <view class="ai-options">
+        <view class="inline-ai-toggle">
+          <text>附加目标色</text>
+          <switch class="small-switch" checked="{{aiUseColor}}" bindchange="onAiUseColorChange" />
+        </view>
+        <view wx:if="{{!referenceImage2 && !referenceImage3}}" class="inline-ai-toggle">
+          <text>原生AI</text>
+          <switch class="small-switch" checked="{{aiRawMode}}" bindchange="onAiRawModeChange" />
+        </view>
+      </view>
+      <view class="field-title">AI出图提示词</view>
       <textarea
         class="prompt-input"
-        maxlength="300"
+        maxlength="500"
         value="{{aiPrompt}}"
-        placeholder="例如：把织品颜色改成目标色，其它不变（系统会自动附加当前HEX）"
+        placeholder="例如：把参考图1的衣领合并到主图上"
         bindinput="onAiPromptInput"
       />
-      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI换色</button>
+      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI出图</button>
     </view>
   </view>
 
   <view class="card" wx:if="{{recoloredUrl}}">
-    <view class="subtitle2">换色结果（点击放大）</view>
+    <view class="subtitle2">结果图（点击放大）</view>
     <image class="result-img" src="{{recoloredLocalUrl || recoloredUrl}}" mode="aspectFit" bindtap="previewResult" binderror="onResultImageError" />
     <view wx:if="{{mode === 'fast' && recolorMaskBackend}}" class="mode-tip">
       抠图后端：{{recolorMaskBackend}}（{{recolorMaskMode || 'auto'}}）
     </view>
+    <view wx:if="{{mode === 'ai' && aiUsedParamsText}}" class="mode-tip debug-tip">{{aiUsedParamsText}}</view>
     <view class="url-tip">结果地址：{{recoloredUrl}}</view>
   </view>
 
   <view class="bottom-nav">
     <view class="nav-item" bindtap="goSearchPage">以图搜款</view>
-    <view class="nav-item active" bindtap="goRecolorPage">局部换色</view>
+    <view class="nav-item active" bindtap="goRecolorPage">AI出图</view>
     <view class="nav-item" bindtap="goPrintPage">拼图打印</view>
   </view>
 </view>

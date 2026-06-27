@@ -343,14 +343,14 @@ def recolor_region_ai(
     prompt: str = "",
     negative_prompt: str = "",
     seed: int | None = None,
-    cfg_scale: float | None = None,
+    cfg: float | None = None,
     num_inference_steps: int | None = None,
     postprocess: bool = True,
     image2: str | None = None,
     image3: str | None = None,
 ) -> dict:
     if not api_key:
-        raise ValueError("缺少 SILICONFLOW_API_KEY，无法调用 AI 改色")
+        raise ValueError("缺少 SILICONFLOW_API_KEY，无法调用 AI 出图")
 
     from io import BytesIO
 
@@ -392,9 +392,9 @@ def recolor_region_ai(
     img.save(src_buf, format="PNG")
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
-    final_prompt = (
-        prompt.strip()
-        or f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
+    has_reference_images = bool(image2 or image3)
+    final_prompt = prompt.strip() or (
+        f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
     )
 
     payload: dict = {
@@ -402,15 +402,16 @@ def recolor_region_ai(
         "prompt": final_prompt,
         "image": f"data:image/png;base64,{src_b64}",
     }
+    # 有参考图时 image2/image3 留给用户传入的素材；否则才用 image2 传蒙版辅助局部编辑。
     # 原生模式(关闭后处理)下，整图不传蒙版，更贴近 playground 的直出行为。
-    if not (full_image_mode and not postprocess):
+    if not has_reference_images and not (full_image_mode and not postprocess):
         payload["image2"] = f"data:image/png;base64,{mask_b64}"
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
     if seed is not None:
         payload["seed"] = int(seed)
-    if cfg_scale is not None:
-        payload["cfg_scale"] = float(np.clip(cfg_scale, 1.0, 32.0))
+    if cfg is not None:
+        payload["cfg"] = float(np.clip(cfg, 0.1, 20.0))
     if num_inference_steps is not None:
         payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
     if image2:
@@ -448,9 +449,9 @@ def recolor_region_ai(
         if out_img.size != (w, h):
             out_img = out_img.resize((w, h), resample=Image.BICUBIC)
     except Exception as exc:
-        raise ValueError(f"下载 AI 改色结果失败: {exc}") from exc
+        raise ValueError(f"下载 AI 出图结果失败: {exc}") from exc
 
-    if postprocess:
+    if postprocess and not has_reference_images:
         # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
@@ -495,13 +496,20 @@ def recolor_region_ai(
             "provider": "siliconflow",
             "model": model,
             "prompt": final_prompt,
-            "mask_mode": ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox")),
+            "task_mode": "reference_generate" if has_reference_images else "recolor_edit",
+            "mask_mode": (
+                "reference_images"
+                if has_reference_images
+                else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox"))
+            ),
             "mask_backend": mask_backend,
-            "postprocess": bool(postprocess),
+            "postprocess": bool(postprocess and not has_reference_images),
             "negative_prompt": negative_prompt,
             "seed": seed,
-            "cfg_scale": payload.get("cfg_scale"),
+            "cfg": payload.get("cfg"),
             "num_inference_steps": payload.get("num_inference_steps"),
             "strength_hint": strength,
+            "has_image2": bool(image2),
+            "has_image3": bool(image3),
         },
     }

@@ -313,6 +313,7 @@ function recolorAiUpload(filePath, options = {}) {
   if (options.prompt) formData.prompt = String(options.prompt);
   if (options.negative_prompt) formData.negative_prompt = String(options.negative_prompt);
   if (options.seed !== undefined && options.seed !== null) formData.seed = String(options.seed);
+  if (options.cfg !== undefined && options.cfg !== null) formData.cfg = String(options.cfg);
   if (options.cfg_scale !== undefined && options.cfg_scale !== null) formData.cfg_scale = String(options.cfg_scale);
   if (options.postprocess !== undefined && options.postprocess !== null) formData.postprocess = String(options.postprocess ? 1 : 0);
   if (options.num_inference_steps !== undefined && options.num_inference_steps !== null) formData.num_inference_steps = String(options.num_inference_steps);
@@ -343,13 +344,13 @@ function recolorAiUpload(filePath, options = {}) {
           try {
             resolve(JSON.parse(res.data || "{}"));
           } catch (_err) {
-            reject(new Error("AI改色返回解析失败"));
+            reject(new Error("AI出图返回解析失败"));
           }
           return;
         }
-        reject(new Error(raw || "AI换色失败"));
+        reject(new Error(raw || "AI出图失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "AI换色失败"))
+      fail: (err) => reject(new Error((err && err.errMsg) || "AI出图失败"))
     });
   });
 }

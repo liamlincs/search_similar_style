@@ -96,14 +96,46 @@ function compressForUpload(filePath) {
   });
 }
 
+function filePathToDataUrl(filePath) {
+  return new Promise((resolve, reject) => {
+    if (!filePath) return resolve("");
+    const fs = wx.getFileSystemManager();
+    fs.readFile({
+      filePath,
+      encoding: "base64",
+      success: (res) => {
+        const ext = String(filePath).toLowerCase().split(".").pop() || "jpg";
+        const mime = ext === "png" ? "image/png" : (ext === "webp" ? "image/webp" : "image/jpeg");
+        resolve(`data:${mime};base64,${res.data || ""}`);
+      },
+      fail: (err) => reject(new Error((err && err.errMsg) || "读取参考图失败")),
+    });
+  });
+}
+
+function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, colorHint) {
+  const raw = String(userPrompt || "").trim();
+  const base = raw || (hasImage2 || hasImage3 ? "把参考图1的衣领合并到主图上" : "将主图生成一张自然真实的改款效果图");
+  let prompt = base
+    .replace(/参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
+    .replace(/参考图\s*2|参考图二|图\s*3|图三/g, "image 3")
+    .replace(/主图|原图|图\s*1|图一/g, "image 1");
+  if (colorHint) prompt += colorHint;
+  if (!hasImage2 && !hasImage3 && !colorHint) prompt += "\n保持主体、材质、光影和背景自然。";
+  return prompt;
+}
+
 Page({
   data: {
     mode: "fast", // fast | ai
     localImage: "",
+    referenceImage2: "",
+    referenceImage3: "",
     recoloredUrl: "",
     recoloredLocalUrl: "",
     recolorMaskBackend: "",
     recolorMaskMode: "",
+    aiUsedParamsText: "",
     processing: false,
     processingAi: false,
 
@@ -132,6 +164,7 @@ Page({
     fastParamsOpen: false,
     aiPrompt: "",
     aiRawMode: true,
+    aiUseColor: false,
   },
 
   goSearchPage() {
@@ -171,6 +204,28 @@ Page({
       },
       fail: () => wx.showToast({ title: "未选择图片", icon: "none" })
     });
+  },
+
+  chooseReferenceImage(e) {
+    const slot = Number((e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.slot) || 2);
+    wx.chooseMedia({
+      count: 1,
+      mediaType: ["image"],
+      success: async (res) => {
+        const file = (res.tempFiles || [])[0];
+        if (!file || !file.tempFilePath) return;
+        const uploadPath = await compressForUpload(file.tempFilePath);
+        const key = slot === 3 ? "referenceImage3" : "referenceImage2";
+        this.setData({ [key]: uploadPath, recoloredUrl: "", recoloredLocalUrl: "" });
+      },
+      fail: () => wx.showToast({ title: "未选择图片", icon: "none" })
+    });
+  },
+
+  removeReferenceImage(e) {
+    const slot = Number((e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.slot) || 2);
+    const key = slot === 3 ? "referenceImage3" : "referenceImage2";
+    this.setData({ [key]: "" });
   },
 
   setupStageAndImageRect() {
@@ -361,6 +416,10 @@ Page({
     this.setData({ aiRawMode: !!e.detail.value });
   },
 
+  onAiUseColorChange(e) {
+    this.setData({ aiUseColor: !!e.detail.value });
+  },
+
   buildRecolorPayload(useFullImage = false) {
     const img = this.data.imgRect;
     if (!img) {
@@ -405,6 +464,7 @@ Page({
         recoloredLocalUrl: localUrl,
         recolorMaskBackend: String(res.mask_backend || ""),
         recolorMaskMode: String(res.mask_mode || ""),
+        aiUsedParamsText: "",
       });
       wx.showToast({ title: "标准换色完成", icon: "none" });
     } catch (err) {
@@ -424,21 +484,35 @@ Page({
     try {
       const payload = this.buildRecolorPayload(true);
       const userPrompt = (this.data.aiPrompt || "").trim();
-      const colorHint = `目标色必须为 #${this.data.targetHex}。`;
-      payload.prompt = userPrompt
-        ? `${userPrompt}\n${colorHint}\n请严格按照目标色调整，不要改成其他颜色。`
-        : `将整张图主色调调整为 #${this.data.targetHex}。请严格按目标色处理，保持文字清晰和纹理自然。`;
+      const hasReference = !!(this.data.referenceImage2 || this.data.referenceImage3);
+      const hasImage2 = !!this.data.referenceImage2;
+      const hasImage3 = !!this.data.referenceImage3;
+      const colorHint = this.data.aiUseColor ? `\n目标色为 #${this.data.targetHex}，需要严格按该颜色处理。` : "";
+      payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, colorHint);
       payload.model = "Qwen/Qwen-Image-Edit-2509";
+      payload.cfg = 4;
       payload.num_inference_steps = 20;
-      payload.postprocess = !this.data.aiRawMode;
+      payload.postprocess = hasReference ? false : !this.data.aiRawMode;
+      if (this.data.referenceImage2) payload.image2 = await filePathToDataUrl(this.data.referenceImage2);
+      if (this.data.referenceImage3) payload.image3 = await filePathToDataUrl(this.data.referenceImage3);
       const res = await recolorAiUpload(this.data.localImage, payload);
       const remoteUrl = toAbsolute(res.recolored_url);
       const localUrl = await downloadToLocal(`${remoteUrl}${remoteUrl.includes("?") ? "&" : "?"}t=${Date.now()}`);
-      this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl, recolorMaskBackend: "", recolorMaskMode: "" });
-      wx.showToast({ title: "AI换色完成", icon: "none" });
+      const used = res.used_params || {};
+      const image2Status = used.has_image2 === undefined ? "unknown" : (used.has_image2 ? "yes" : "no");
+      const image3Status = used.has_image3 === undefined ? "unknown" : (used.has_image3 ? "yes" : "no");
+      const usedText = [
+        `prompt: ${used.prompt || payload.prompt || ""}`,
+        `cfg: ${used.cfg ?? payload.cfg ?? ""}`,
+        `steps: ${used.num_inference_steps ?? payload.num_inference_steps ?? ""}`,
+        `image2: ${image2Status}`,
+        `image3: ${image3Status}`,
+      ].join("\n");
+      this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl, recolorMaskBackend: "", recolorMaskMode: "", aiUsedParamsText: usedText });
+      wx.showToast({ title: "AI出图完成", icon: "none" });
     } catch (err) {
       console.error("[recolor:ai:error]", err);
-      wx.showToast({ title: err.message || "AI换色失败", icon: "none" });
+      wx.showToast({ title: err.message || "AI出图失败", icon: "none" });
     } finally {
       this.setData({ processingAi: false });
     }

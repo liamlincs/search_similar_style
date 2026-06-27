@@ -126,7 +126,7 @@
 
   <view class="bottom-nav">
     <view class="nav-item active" bindtap="goSearchPage">以图搜款</view>
-    <view class="nav-item" bindtap="goRecolorPage">局部换色</view>
+    <view class="nav-item" bindtap="goRecolorPage">AI出图</view>
     <view class="nav-item" bindtap="goPrintPage">拼图打印</view>
   </view>
 </view>

@@ -75,16 +75,65 @@
   line-height: 1.2;
 }
 .inline-ai-toggle {
-  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 8rpx;
   color: #475569;
   font-size: 22rpx;
 }
+.picked-row .inline-ai-toggle { margin-left: auto; }
 .small-switch {
   transform: scale(0.82);
   transform-origin: right center;
+}
+
+.ref-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12rpx;
+  margin: 8rpx 0 14rpx;
+}
+.ref-box {
+  position: relative;
+  height: 188rpx;
+  border-radius: 12rpx;
+  border: 2rpx dashed #cbd5e1;
+  background: #f8fafc;
+  overflow: hidden;
+}
+.ref-img {
+  width: 100%;
+  height: 100%;
+}
+.ref-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  font-size: 24rpx;
+}
+.ref-remove {
+  position: absolute;
+  right: 8rpx;
+  top: 8rpx;
+  padding: 4rpx 10rpx;
+  border-radius: 999rpx;
+  background: rgba(15, 23, 42, .78);
+  color: #fff;
+  font-size: 20rpx;
+  line-height: 1.4;
+}
+.ai-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14rpx;
+  margin: 8rpx 0 14rpx;
+  padding: 10rpx 12rpx;
+  border-radius: 12rpx;
+  background: #f8fafc;
+  border: 1rpx solid #e2e8f0;
 }
 
 .prompt-input { width: 100%; min-height: 160rpx; box-sizing: border-box; border: 2rpx solid #cbd5e1; border-radius: 12rpx; padding: 14rpx; font-size: 26rpx; color: #0f172a; background: #fff; }
