@@ -5125,8 +5125,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     for row in rows_in
                     if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
                 ]
-                keep_n = max(0, top_k - len(rescue_rows))
-                return (kept_rows[:keep_n] + rescue_rows)[:top_k]
+                target_n = max(top_k, len(rows_in))
+                keep_n = max(0, target_n - len(rescue_rows))
+                return (kept_rows[:keep_n] + rescue_rows)[:target_n]
 
             def _force_top_region_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
