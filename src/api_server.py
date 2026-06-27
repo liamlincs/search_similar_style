@@ -6664,6 +6664,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
+                        existing_row_keys = {
+                            _code_prior_key(str(row.get("style_code", "")))
+                            for row in rows
+                        }
+                        for code, (sim, image_name) in collar_code_matches.items():
+                            code_key = _code_prior_key(code)
+                            if not code_key or code_key in existing_row_keys:
+                                continue
+                            raw_score = (
+                                float(collar_contour_seed_score_base)
+                                + float(collar_contour_boost_scale) * max(0.0, float(sim))
+                                + float(code_prior_boost.get(code_key, 0.0))
+                            )
+                            z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                            disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                            disp = min(0.9999, max(0.0, float(disp)))
+                            rows.append(
+                                {
+                                    "style_code": code,
+                                    "best_standard_image": image_name,
+                                    "score": round(disp, 4),
+                                    "rank_score": round(float(raw_score), 6),
+                                }
+                            )
+                            existing_row_keys.add(code_key)
             accessory_like_region = False
             accessory_near_square_region = False
             crop_aspect = 0.0
