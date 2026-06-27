@@ -2104,6 +2104,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         pos_len = 0.0
         neg_len = 0.0
         hor_len = 0.0
+        pos_segments: List[tuple[float, float, float, float, float]] = []
+        neg_segments: List[tuple[float, float, float, float, float]] = []
         for x1, y1, x2, y2 in lines[:, 0, :]:
             dx = float(x2 - x1)
             dy = float(y2 - y1)
@@ -2113,8 +2115,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             angle = (math.degrees(math.atan2(dy, dx)) + 180.0) % 180.0
             if 20.0 <= angle <= 75.0:
                 pos_len += length
+                pos_segments.append((float(x1), float(y1), float(x2), float(y2), length))
             elif 105.0 <= angle <= 160.0:
                 neg_len += length
+                neg_segments.append((float(x1), float(y1), float(x2), float(y2), length))
             elif angle < 12.0 or angle > 168.0:
                 hor_len += length
         diag_len = pos_len + neg_len
@@ -2133,7 +2137,43 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if solid_count > 1:
             largest_solid = float(np.max(solid_stats[1:, cv2.CC_STAT_AREA])) / max(1.0, float(h * w))
         solid_penalty = 1.0 - min(0.50, max(0.0, largest_solid - 0.025) * 5.0)
-        return float(max(0.0, min(1.0, balance * density * horizontal_penalty * dark_fill_penalty * solid_penalty)))
+        base_score = balance * density * horizontal_penalty * dark_fill_penalty * solid_penalty
+
+        corner_points: List[tuple[float, float, float]] = []
+        corner_limit = max(10.0, float(min(h, w)) * 0.16)
+        for px1, py1, px2, py2, plen in pos_segments[:24]:
+            for nx1, ny1, nx2, ny2, nlen in neg_segments[:24]:
+                best_dist = 1e9
+                best_point = (0.0, 0.0)
+                for pa in ((px1, py1), (px2, py2)):
+                    for na in ((nx1, ny1), (nx2, ny2)):
+                        dist = math.hypot(float(pa[0] - na[0]), float(pa[1] - na[1]))
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_point = ((float(pa[0]) + float(na[0])) * 0.5, (float(pa[1]) + float(na[1])) * 0.5)
+                if best_dist > corner_limit:
+                    continue
+                weight = min(plen, nlen) / max(1.0, float(min(h, w)) * 0.18)
+                corner_points.append((best_point[0], best_point[1], min(1.0, weight)))
+        corner_points.sort(key=lambda item: item[2], reverse=True)
+        distinct_corners: List[tuple[float, float, float]] = []
+        for cx, cy, weight in corner_points:
+            if any(math.hypot(cx - ox, cy - oy) < corner_limit for ox, oy, _ in distinct_corners):
+                continue
+            distinct_corners.append((cx, cy, weight))
+            if len(distinct_corners) >= 4:
+                break
+        corner_strength = sum(weight for _cx, _cy, weight in distinct_corners)
+        corner_gate = min(1.0, corner_strength / 1.8)
+        if len(distinct_corners) <= 1:
+            corner_gate *= 0.65
+        if distinct_corners:
+            xs = [cx for cx, _cy, _weight in distinct_corners]
+            spread = (max(xs) - min(xs)) / max(1.0, float(w))
+            if spread < 0.18 and len(distinct_corners) >= 2:
+                corner_gate *= 0.82
+        gated_score = base_score * (0.45 + 0.55 * corner_gate)
+        return float(max(0.0, min(1.0, gated_score)))
 
     def _extract_collar_chevron_score(path: Path) -> float:
         try:
@@ -3427,7 +3467,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_chevron",
-                "version": 5,
+                "version": 6,
                 "standard_views": "collar_focus_components_topcomp_hough_mid_strip",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
