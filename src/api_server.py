@@ -413,7 +413,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_chevron_seed_score_base = float(search_cfg.get("collar_chevron_seed_score_base", 1.24))
     collar_chevron_max_injected = int(search_cfg.get("collar_chevron_max_injected", 48))
     collar_chevron_code_min_score = float(
-        search_cfg.get("collar_chevron_code_min_score", max(0.36, collar_chevron_standard_min_score - 0.12))
+        search_cfg.get("collar_chevron_code_min_score", max(0.28, collar_chevron_standard_min_score - 0.22))
     )
     collar_chevron_code_contour_min_score = float(search_cfg.get("collar_chevron_code_contour_min_score", 0.40))
     collar_chevron_code_contour_boost = float(search_cfg.get("collar_chevron_code_contour_boost", 0.32))
@@ -2200,10 +2200,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     + float(collar_chevron_score_boost) * chevron_score
                     + float(collar_chevron_code_contour_boost) * min(1.0, max(0.0, contour_sim)),
                 )
-                if (
-                    chevron_score < float(collar_chevron_standard_min_score)
-                    and contour_sim >= float(collar_chevron_code_fallback_contour_min_score)
-                ):
+                if contour_sim >= float(collar_chevron_code_fallback_contour_min_score):
                     score = max(
                         score,
                         float(collar_chevron_seed_score_base)
