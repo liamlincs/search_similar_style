@@ -2096,7 +2096,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         horizontal_penalty = 1.0 - min(0.5, hor_len / max(1e-6, hor_len + diag_len))
         dark_fill = float(np.mean((gray < 120.0) & (sat < 0.35)))
         dark_fill_penalty = 1.0 - min(0.55, max(0.0, dark_fill - 0.06) * 2.8)
-        return float(max(0.0, min(1.0, balance * density * horizontal_penalty * dark_fill_penalty)))
+        solid_mask = ((gray < 125.0) & (sat < 0.45)).astype(np.uint8)
+        solid_mask[: min(int(h * 0.08), 20), :] = 0
+        solid_count, _, solid_stats, _ = cv2.connectedComponentsWithStats(solid_mask, 8)
+        largest_solid = 0.0
+        if solid_count > 1:
+            largest_solid = float(np.max(solid_stats[1:, cv2.CC_STAT_AREA])) / max(1.0, float(h * w))
+        solid_penalty = 1.0 - min(0.50, max(0.0, largest_solid - 0.025) * 5.0)
+        return float(max(0.0, min(1.0, balance * density * horizontal_penalty * dark_fill_penalty * solid_penalty)))
 
     def _extract_collar_chevron_score(path: Path) -> float:
         try:
@@ -3346,7 +3353,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "collar_chevron",
-                "version": 3,
+                "version": 4,
                 "standard_views": "collar_focus_components_topcomp_hough_mid_strip",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
