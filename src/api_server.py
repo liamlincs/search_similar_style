@@ -2142,11 +2142,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return ranked, "", {}
         scored: List[tuple[str, float]] = []
         base_best_contour: Dict[str, tuple[float, str]] = {}
+        code_repeat_view_hits: Dict[str, set[str]] = {}
         for file_name, sig in collar_contour_cache.items():
             sim = max(float(query_sig @ sig) for query_sig in q_sigs)
             if q_mirror_sigs:
                 sim = max(sim, max(float(query_sig_mirror @ sig) for query_sig_mirror in q_mirror_sigs))
             base_file_name = file_name.split("@", 1)[0]
+            if sim >= float(collar_contour_repeat_min_score):
+                code = filename_to_style_code(base_file_name)
+                if code:
+                    code_repeat_view_hits.setdefault(code, set()).add(file_name)
             current_base = base_best_contour.get(base_file_name)
             if current_base is None or sim > current_base[0]:
                 base_best_contour[base_file_name] = (float(sim), file_name)
@@ -2227,7 +2232,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     continue
                 code_repeat_hits.setdefault(code, set()).add(base_file_name)
             for code, base_names in code_repeat_hits.items():
-                hit_count = len(base_names)
+                hit_count = max(len(base_names), len(code_repeat_view_hits.get(code, set())))
                 if hit_count < repeat_min_hits:
                     continue
                 repeat_steps = max(1, hit_count - repeat_min_hits + 1)
