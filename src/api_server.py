@@ -6669,13 +6669,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             display_score_scale=display_score_scale,
                             display_score_bias=display_score_bias,
                         )
-                        existing_row_keys = {
-                            _code_prior_key(str(row.get("style_code", "")))
+                        existing_rows_by_key = {
+                            _code_prior_key(str(row.get("style_code", ""))): row
                             for row in rows
                         }
                         for code, (sim, image_name) in collar_code_matches.items():
                             code_key = _code_prior_key(code)
-                            if not code_key or code_key in existing_row_keys:
+                            if not code_key:
                                 continue
                             raw_score = (
                                 float(collar_contour_seed_score_base)
@@ -6685,6 +6685,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
                             disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
                             disp = min(0.9999, max(0.0, float(disp)))
+                            existing_row = existing_rows_by_key.get(code_key)
+                            if existing_row is not None:
+                                if float(raw_score) > float(existing_row.get("rank_score", -1e9)):
+                                    existing_row["best_standard_image"] = image_name
+                                    existing_row["score"] = round(disp, 4)
+                                    existing_row["rank_score"] = round(float(raw_score), 6)
+                                continue
                             rows.append(
                                 {
                                     "style_code": code,
@@ -6693,7 +6700,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                     "rank_score": round(float(raw_score), 6),
                                 }
                             )
-                            existing_row_keys.add(code_key)
+                            existing_rows_by_key[code_key] = rows[-1]
             accessory_like_region = False
             accessory_near_square_region = False
             crop_aspect = 0.0
