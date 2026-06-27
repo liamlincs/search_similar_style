@@ -402,6 +402,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     collar_contour_min_score = float(search_cfg.get("collar_contour_min_score", 0.52))
     collar_contour_max_injected = int(search_cfg.get("collar_contour_max_injected", 24))
     collar_contour_size = int(search_cfg.get("collar_contour_size", 48))
+    collar_contour_query_component_views = bool(search_cfg.get("collar_contour_query_component_views", True))
+    collar_contour_query_max_sigs = int(search_cfg.get("collar_contour_query_max_sigs", 32))
     collar_contour_code_prior_boost = float(search_cfg.get("collar_contour_code_prior_boost", 0.10))
     collar_contour_region_score_base = float(search_cfg.get("collar_contour_region_score_base", 0.84))
     collar_contour_region_score_scale = float(search_cfg.get("collar_contour_region_score_scale", 0.18))
@@ -2037,6 +2039,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _extract_collar_contour_sig_from_image(image: Image.Image, size: int = 48) -> np.ndarray | None:
         sigs = _extract_collar_contour_sigs_from_image(image, size=size)
         return sigs[0] if sigs else None
+
+    def _append_unique_collar_sigs(dst: List[np.ndarray], sigs: List[np.ndarray], max_sigs: int) -> None:
+        for sig in sigs:
+            if len(dst) >= max(1, int(max_sigs)):
+                break
+            if all(float(sig @ existing) < 0.992 for existing in dst):
+                dst.append(sig)
 
     def _extract_collar_contour_sig(path: Path, size: int = 48) -> np.ndarray | None:
         try:
@@ -6628,10 +6637,48 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     try:
                         with Image.open(query_path) as q_im0:
                             q_img = q_im0.convert("RGB")
+                            if collar_contour_query_component_views:
+                                query_collar_tags = {
+                                    "top",
+                                    "top_narrow",
+                                    "upper_band",
+                                    "upper_narrow_band",
+                                    "top_left_band",
+                                    "top_right_band",
+                                    "collar_left_focus",
+                                    "collar_right_focus",
+                                    "collar_center_bridge",
+                                }
+                                for tag, view in _region_standard_views(q_img, max_component_views=3):
+                                    if not (
+                                        tag in query_collar_tags
+                                        or tag.startswith("comp")
+                                        or tag.startswith("top_comp")
+                                    ):
+                                        continue
+                                    _append_unique_collar_sigs(
+                                        q_collar_sigs,
+                                        _extract_collar_contour_sigs_from_image(view, size=collar_contour_size),
+                                        collar_contour_query_max_sigs,
+                                    )
                             q_collar_sig_mirrors = _extract_collar_contour_sigs_from_image(
                                 ImageOps.mirror(q_img),
                                 size=collar_contour_size,
                             )
+                            if collar_contour_query_component_views:
+                                mirrored_img = ImageOps.mirror(q_img)
+                                for tag, view in _region_standard_views(mirrored_img, max_component_views=3):
+                                    if not (
+                                        tag in query_collar_tags
+                                        or tag.startswith("comp")
+                                        or tag.startswith("top_comp")
+                                    ):
+                                        continue
+                                    _append_unique_collar_sigs(
+                                        q_collar_sig_mirrors,
+                                        _extract_collar_contour_sigs_from_image(view, size=collar_contour_size),
+                                        collar_contour_query_max_sigs,
+                                    )
                             if collar_chevron_enabled:
                                 q_collar_chevron_score = max(
                                     _extract_collar_chevron_score_from_image(q_img),
