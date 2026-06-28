@@ -380,6 +380,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     checker_seed_min_score = float(search_cfg.get("checker_seed_min_score", 0.08))
     checker_seed_max_injected = int(search_cfg.get("checker_seed_max_injected", 24))
     checker_crop_max_area = float(search_cfg.get("checker_crop_max_area", 0.28))
+    checker_large_crop_max_area = float(search_cfg.get("checker_large_crop_max_area", 0.42))
+    checker_large_crop_query_threshold = float(search_cfg.get("checker_large_crop_query_threshold", checker_query_threshold))
+    checker_large_crop_bw_mix = float(search_cfg.get("checker_large_crop_bw_mix", 0.45))
     checker_region_rescue_enabled = bool(search_cfg.get("checker_region_rescue_enabled", True))
     checker_region_rescue_min_seed = float(search_cfg.get("checker_region_rescue_min_seed", 1.38))
     checker_region_rescue_max_rows = int(search_cfg.get("checker_region_rescue_max_rows", 3))
@@ -6682,6 +6685,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 crop_active
                 and crop_final_area > max(0.0, min(1.0, float(checker_crop_max_area)))
             )
+            checker_large_crop_allowed = bool(
+                checker_large_crop_blocked
+                and q_pre_checker_profile is not None
+                and crop_final_area <= max(float(checker_crop_max_area), min(1.0, float(checker_large_crop_max_area)))
+                and float(q_pre_checker_profile.get("checker", 0.0)) >= float(checker_large_crop_query_threshold)
+                and float(q_pre_checker_profile.get("bw_mix", 0.0)) >= float(checker_large_crop_bw_mix)
+            )
             checker_blocked_by_region_probe = bool(
                 auto_region_probe_active
                 and region_best_score >= float(scene_text_suppress_when_region_min_score)
@@ -6689,7 +6699,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if (
                 checker_consistency_enabled
                 and not strict_small_region_crop
-                and not checker_large_crop_blocked
+                and (not checker_large_crop_blocked or checker_large_crop_allowed)
                 and not checker_blocked_by_region_probe
             ):
                 q_checker_profile = q_pre_checker_profile or _extract_checker_profile(query_path, grid=10)
