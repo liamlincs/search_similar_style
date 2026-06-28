@@ -448,6 +448,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pattern_min_score = float(search_cfg.get("sleeve_pattern_min_score", 0.48))
     sleeve_pattern_max_injected = int(search_cfg.get("sleeve_pattern_max_injected", 16))
     sleeve_pair_prior_boost = float(search_cfg.get("sleeve_pair_prior_boost", 0.08))
+    sleeve_pair_prior_candidate_boost = float(search_cfg.get("sleeve_pair_prior_candidate_boost", 0.20))
     sleeve_pattern_skip_when_full_accent = bool(search_cfg.get("sleeve_pattern_skip_when_full_accent", True))
     sleeve_pattern_crop_max_area = float(search_cfg.get("sleeve_pattern_crop_max_area", 0.28))
     sleeve_pattern_small_region_enabled = bool(search_cfg.get("sleeve_pattern_small_region_enabled", True))
@@ -2512,15 +2513,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     ) -> tuple[List[tuple[str, float]], str]:
         if not ranked or query_sig is None or not sleeve_pattern_cache:
             return ranked, ""
-        scored: List[tuple[str, float]] = []
+        scored: List[tuple[str, float, float]] = []
         for file_name, sig in sleeve_pattern_cache.items():
             sim = float(query_sig @ sig)
             if sim >= sleeve_pattern_min_score:
-                scored.append((file_name, sim))
+                base_name = file_name.split("@", 1)[0]
+                pair_prior = float(sleeve_pair_prior_cache.get(base_name, 0.0))
+                candidate_score = sim + max(0.0, sleeve_pair_prior_candidate_boost) * pair_prior
+                scored.append((file_name, sim, candidate_score))
         if not scored:
             return ranked, ""
-        scored.sort(key=lambda x: x[1], reverse=True)
-        injected = scored[: max(1, sleeve_pattern_max_injected)]
+        scored.sort(key=lambda x: x[2], reverse=True)
+        injected: List[tuple[str, float]] = []
+        injected_keys = set()
+        for file_name, sim, _candidate_score in scored:
+            key = _code_prior_key(filename_to_style_code(file_name))
+            if not key or key in injected_keys:
+                continue
+            injected_keys.add(key)
+            injected.append((file_name, sim))
+            if len(injected) >= max(1, sleeve_pattern_max_injected):
+                break
         merged: Dict[str, float] = {}
         for name, score in ranked:
             merged[name] = max(float(score), merged.get(name, -1e9))
