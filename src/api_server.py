@@ -4032,6 +4032,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       node.textContent = value || '';
     }
 
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const resp = await nativeFetch(...args);
+      if (resp.status === 401) {
+        window.location.href = '/catalog/login';
+      }
+      return resp;
+    };
+
     function uniqTags(tags) {
       return Array.from(new Set((tags || []).filter(Boolean)));
     }
@@ -4588,8 +4597,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           return;
         }
         if (event.key === 'Escape') {
-          if (pop) pop.classList.remove('open');
-          return;
+          if (pop && pop.classList.contains('open')) {
+            event.preventDefault();
+            event.stopPropagation();
+            pop.classList.remove('open');
+            return;
+          }
         }
         if (event.key === 'Enter' && pop && pop.classList.contains('open')) {
           const picked = pickActiveTagSuggest(pop, input);
@@ -4705,6 +4718,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     els.closeGalleryBtn.addEventListener('click', closeGallery);
     els.galleryModal.addEventListener('click', (event) => {
       if (event.target === els.galleryModal) closeGallery();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      if (els.importPreviewModal && els.importPreviewModal.classList.contains('open')) {
+        event.preventDefault();
+        closeImportPreview();
+        return;
+      }
+      if (els.galleryModal && els.galleryModal.classList.contains('open')) {
+        event.preventDefault();
+        closeGallery();
+        return;
+      }
+      if (els.importModal && els.importModal.classList.contains('open')) {
+        event.preventDefault();
+        closeImportModal();
+      }
     });
     document.addEventListener('click', () => {
       closeAllPickers();
