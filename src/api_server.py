@@ -332,6 +332,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_repeat_force_min_score = float(search_cfg.get("region_crop_repeat_force_min_score", 0.62))
     region_crop_repeat_force_min_hits = int(search_cfg.get("region_crop_repeat_force_min_hits", 4))
     region_crop_repeat_force_seed_score = float(search_cfg.get("region_crop_repeat_force_seed_score", 1.50))
+    region_crop_dominant_repeat_min_hits = int(search_cfg.get("region_crop_dominant_repeat_min_hits", 8))
+    region_crop_dominant_repeat_min_score = float(search_cfg.get("region_crop_dominant_repeat_min_score", 0.64))
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
     region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
@@ -5203,6 +5205,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and region_best_score < float(region_crop_large_result_rescue_order_max_best)
                 )
 
+            def _dominant_region_repeat_key() -> str:
+                if not region_repeat_force_scores:
+                    return ""
+                key, (score, hits) = max(
+                    region_repeat_force_scores.items(),
+                    key=lambda item: (int(item[1][1]), float(item[1][0])),
+                )
+                if int(hits) < max(1, int(region_crop_dominant_repeat_min_hits)):
+                    return ""
+                if float(score) < float(region_crop_dominant_repeat_min_score):
+                    return ""
+                return _code_prior_key(key)
+
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5341,7 +5356,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     force_topn_local = max(int(force_topn_local), int(region_crop_large_force_topn))
                 forced_rows: List[Dict[str, Any]] = []
-                repeat_force_allowed = not _large_weak_region_rescue_mode()
+                dominant_repeat_key = _dominant_region_repeat_key()
+                repeat_force_allowed = bool(dominant_repeat_key) or not _large_weak_region_rescue_mode()
                 if region_crop_repeat_force_enabled and repeat_force_allowed and region_repeat_force_scores:
                     for code, (repeat_score, hit_count) in sorted(
                         region_repeat_force_scores.items(),
@@ -5590,6 +5606,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         continue
                     if sim < region_crop_sleeve_rescue_min_sim or pair_prior < region_crop_sleeve_rescue_min_pair_prior:
                         continue
+                    dominant_repeat_key = _dominant_region_repeat_key()
+                    if dominant_repeat_key and _code_prior_key(code) != dominant_repeat_key:
+                        continue
                     current = float(region_code_scores.get(code, -1.0))
                     sleeve_score = sim + max(0.0, region_crop_sleeve_rescue_weight) * pair_prior
                     if sleeve_score > current:
@@ -5624,6 +5643,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     code = fields[0].strip()
                     key = _code_prior_key(code)
                     if not key or key in seen_keys:
+                        continue
+                    dominant_repeat_key = _dominant_region_repeat_key()
+                    if dominant_repeat_key and key != dominant_repeat_key:
                         continue
                     nums = fields[1].split("/")
                     if len(nums) < 3:
