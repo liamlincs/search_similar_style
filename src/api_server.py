@@ -2530,7 +2530,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         injected: List[tuple[str, float]] = []
         injected_keys = set()
         for file_name, sim, _candidate_score in scored:
-            key = _code_prior_key(filename_to_style_code(file_name))
+            key = re.sub(r"[^A-Za-z0-9_-]+", "", filename_to_style_code(file_name).strip().upper())
             if not key or key in injected_keys:
                 continue
             injected_keys.add(key)
