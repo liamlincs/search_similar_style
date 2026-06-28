@@ -393,6 +393,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
     accent_pattern_crop_enabled = bool(search_cfg.get("accent_pattern_crop_enabled", True))
+    accent_pattern_small_region_max_score = float(search_cfg.get("accent_pattern_small_region_max_score", 0.68))
     accent_region_rescue_enabled = bool(search_cfg.get("accent_region_rescue_enabled", True))
     accent_region_rescue_min_sim = float(search_cfg.get("accent_region_rescue_min_sim", 0.70))
     accent_region_rescue_max_rows = int(search_cfg.get("accent_region_rescue_max_rows", 3))
@@ -5068,6 +5069,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             checker_candidates_debug = ""
             accent_debug = ""
             accent_candidates_debug = ""
+            accent_small_region_allowed = False
             sleeve_debug = ""
             sleeve_candidates_debug = ""
             accessory_debug = ""
@@ -5935,8 +5937,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and accent_region_rescue_enabled
-                    and not strict_small_region_crop
-                    and not partial_region_crop
+                    and ((not strict_small_region_crop and not partial_region_crop) or accent_small_region_allowed)
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and accent_candidates_debug
@@ -6660,10 +6661,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             strip_crop_accent_disabled = bool(
                 crop_active and use_strip_mode and region_crop_disable_accent_when_strip
             )
+            accent_small_region_allowed = bool(
+                crop_active
+                and (strict_small_region_crop or partial_region_crop)
+                and region_best_score <= max(0.0, float(accent_pattern_small_region_max_score))
+            )
             accent_pattern_allowed = (
                 accent_pattern_enabled
-                and not strict_small_region_crop
-                and not partial_region_crop
+                and ((not strict_small_region_crop and not partial_region_crop) or accent_small_region_allowed)
                 and not strip_crop_accent_disabled
                 and (not crop_active or accent_pattern_crop_enabled)
             )
