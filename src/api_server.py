@@ -2484,17 +2484,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ], dtype=np.float32)
 
         v = np.concatenate([
-            grid_gray.reshape(-1) * 0.20,
-            grid_mask.reshape(-1) * 0.45,
-            edge_y * 2.30,
-            edge_x * 0.70,
-            band_profile * 2.80,
-            sleeve_row_profile * 4.80,
-            proj_y * 1.20,
-            proj_x * 0.80,
-            hist_vec * 0.45,
-            sleeve_structure * 7.00,
-            shape_vec * 0.90,
+            grid_gray.reshape(-1) * 0.06,
+            grid_mask.reshape(-1) * 0.28,
+            edge_y * 3.20,
+            edge_x * 0.28,
+            band_profile * 4.60,
+            sleeve_row_profile * 8.20,
+            proj_y * 1.80,
+            proj_x * 0.35,
+            hist_vec * 0.08,
+            sleeve_structure * 10.00,
+            shape_vec * 1.35,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -3081,9 +3081,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "sleeve_pattern",
-                "version": 6,
+                "version": 7,
                 "size": 32,
-                "standard_views": "grid_halves_bands_components_comp_stripes",
+                "standard_views": "grid_halves_bands_components_comp_stripes_band_weighted",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
