@@ -450,6 +450,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pair_prior_boost = float(search_cfg.get("sleeve_pair_prior_boost", 0.08))
     sleeve_pattern_skip_when_full_accent = bool(search_cfg.get("sleeve_pattern_skip_when_full_accent", True))
     sleeve_pattern_crop_max_area = float(search_cfg.get("sleeve_pattern_crop_max_area", 0.28))
+    sleeve_pattern_small_region_enabled = bool(search_cfg.get("sleeve_pattern_small_region_enabled", True))
+    sleeve_pattern_small_region_max_score = float(search_cfg.get("sleeve_pattern_small_region_max_score", 0.72))
     accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
     accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
@@ -5488,7 +5490,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and region_crop_sleeve_rescue_enabled
-                    and not strict_small_region_crop
+                    and (not strict_small_region_crop or sleeve_small_region_rescue_allowed)
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
@@ -5519,7 +5521,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and region_crop_sleeve_rescue_enabled
-                    and not strict_small_region_crop
+                    and (not strict_small_region_crop or sleeve_small_region_rescue_allowed)
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and sleeve_candidates_debug
@@ -7021,10 +7023,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and accessory_near_square_region
                 and bool(accessory_candidates_debug)
             )
-            suppress_sleeve_for_small_region_query = bool(strict_small_region_crop)
             suppress_sleeve_for_large_region_query = bool(
                 crop_active
                 and crop_final_area > max(0.0, min(1.0, float(sleeve_pattern_crop_max_area)))
+            )
+            sleeve_small_region_rescue_allowed = bool(
+                crop_active
+                and strict_small_region_crop
+                and sleeve_pattern_small_region_enabled
+                and not suppress_sleeve_for_large_region_query
+                and region_best_score <= max(0.0, float(sleeve_pattern_small_region_max_score))
+            )
+            suppress_sleeve_for_small_region_query = bool(
+                strict_small_region_crop and not sleeve_small_region_rescue_allowed
             )
             if (
                 sleeve_pattern_enabled
