@@ -318,6 +318,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_large_result_rescue_min_score = float(search_cfg.get("region_crop_large_result_rescue_min_score", 0.64))
     region_crop_large_result_rescue_top_delta = float(search_cfg.get("region_crop_large_result_rescue_top_delta", 0.055))
     region_crop_large_result_rescue_topn = int(search_cfg.get("region_crop_large_result_rescue_topn", 16))
+    region_crop_large_result_rescue_order_max_best = float(
+        search_cfg.get("region_crop_large_result_rescue_order_max_best", 0.72)
+    )
     region_crop_force_top_enabled = bool(search_cfg.get("region_crop_force_top_enabled", True))
     region_crop_force_top_min_score = float(search_cfg.get("region_crop_force_top_min_score", 0.80))
     region_crop_force_topn = int(search_cfg.get("region_crop_force_topn", 1))
@@ -5192,6 +5195,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and region_best_score < float(region_crop_force_top_min_score)
                 )
 
+            def _large_region_rescue_order_mode() -> bool:
+                return bool(
+                    crop_active
+                    and not strict_small_region_crop
+                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                    and region_best_score < float(region_crop_large_result_rescue_order_max_best)
+                )
+
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5208,6 +5219,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 )
                 rescue_topn_local = max(1, region_crop_result_rescue_topn)
                 large_weak_region_rescue = _large_weak_region_rescue_mode()
+                large_region_rescue_order = _large_region_rescue_order_mode()
                 if large_weak_region_rescue:
                     min_region_rescue_score = min(
                         float(min_region_rescue_score),
@@ -5273,13 +5285,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     row = broad_by_key.get(key)
                     if row is not None:
                         rescue_row = dict(row)
-                        if large_weak_region_rescue:
+                        if large_region_rescue_order:
                             rescue_row["_region_rescue_keep"] = True
                         rescue_rows.append(rescue_row)
                         continue
                     fallback_row = _fallback_rescue_row(key)
                     if fallback_row is not None:
-                        if large_weak_region_rescue:
+                        if large_region_rescue_order:
                             fallback_row["_region_rescue_keep"] = True
                         rescue_rows.append(fallback_row)
                 if not rescue_rows:
