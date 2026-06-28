@@ -5184,6 +5184,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if boosted_codes:
                     region_boost_debug = ",".join(boosted_codes)
 
+            def _large_weak_region_rescue_mode() -> bool:
+                return bool(
+                    crop_active
+                    and not strict_small_region_crop
+                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                    and region_best_score < float(region_crop_force_top_min_score)
+                )
+
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5199,12 +5207,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     strict_small_region_result_rescue_min_score if strict_small_region_crop else region_crop_result_rescue_min_score
                 )
                 rescue_topn_local = max(1, region_crop_result_rescue_topn)
-                if (
-                    crop_active
-                    and not strict_small_region_crop
-                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
-                    and region_best_score < float(region_crop_force_top_min_score)
-                ):
+                large_weak_region_rescue = _large_weak_region_rescue_mode()
+                if large_weak_region_rescue:
                     min_region_rescue_score = min(
                         float(min_region_rescue_score),
                         max(
@@ -5268,10 +5272,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 for key in missing_keys:
                     row = broad_by_key.get(key)
                     if row is not None:
-                        rescue_rows.append(dict(row))
+                        rescue_row = dict(row)
+                        if large_weak_region_rescue:
+                            rescue_row["_region_rescue_keep"] = True
+                        rescue_rows.append(rescue_row)
                         continue
                     fallback_row = _fallback_rescue_row(key)
                     if fallback_row is not None:
+                        if large_weak_region_rescue:
+                            fallback_row["_region_rescue_keep"] = True
                         rescue_rows.append(fallback_row)
                 if not rescue_rows:
                     return rows_in
@@ -5320,12 +5329,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     force_topn_local = max(int(force_topn_local), int(region_crop_large_force_topn))
                 forced_rows: List[Dict[str, Any]] = []
-                repeat_force_allowed = not (
-                    crop_active
-                    and not strict_small_region_crop
-                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
-                    and region_best_score < float(region_crop_force_top_min_score)
-                )
+                repeat_force_allowed = not _large_weak_region_rescue_mode()
                 if region_crop_repeat_force_enabled and repeat_force_allowed and region_repeat_force_scores:
                     for code, (repeat_score, hit_count) in sorted(
                         region_repeat_force_scores.items(),
@@ -5423,10 +5427,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     return rows_in
                 def _row_region_score(row: Dict[str, Any]) -> float:
                     code_key = _code_prior_key(str(row.get("style_code", "")))
-                    return max(
+                    region_score = max(
                         float(region_code_scores.get(str(row.get("style_code", "")), -1.0)),
                         float(region_code_scores.get(code_key, -1.0)),
                     )
+                    if row.get("_region_rescue_keep"):
+                        region_score = max(
+                            region_score,
+                            float(row.get("rank_score", -1.0)) - max(0.0, float(region_crop_code_prior_boost)),
+                        )
+                    return region_score
 
                 rows_for_order = list(rows_in)
                 if collar_candidate_scores:
@@ -7253,6 +7263,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         base_url = _external_base_url(request)
         for row in rows:
             row.pop("_force_keep", None)
+            row.pop("_region_rescue_keep", None)
             img = str(row.get("best_standard_image", "")).strip()
             row["best_standard_image_url"] = _build_image_url(base_url, img)
         rows = _enrich_search_rows(base_url, rows)
