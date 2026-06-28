@@ -453,6 +453,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     sleeve_pattern_crop_max_area = float(search_cfg.get("sleeve_pattern_crop_max_area", 0.28))
     sleeve_pattern_small_region_enabled = bool(search_cfg.get("sleeve_pattern_small_region_enabled", True))
     sleeve_pattern_small_region_max_score = float(search_cfg.get("sleeve_pattern_small_region_max_score", 0.72))
+    sleeve_pattern_large_region_rescue_enabled = bool(search_cfg.get("sleeve_pattern_large_region_rescue_enabled", True))
+    sleeve_pattern_large_region_rescue_max_area = float(search_cfg.get("sleeve_pattern_large_region_rescue_max_area", 0.40))
+    sleeve_pattern_large_region_rescue_max_score = float(search_cfg.get("sleeve_pattern_large_region_rescue_max_score", 0.74))
     accessory_pattern_enabled = bool(search_cfg.get("accessory_pattern_enabled", False))
     accessory_pattern_seed_score_base = float(search_cfg.get("accessory_pattern_seed_score_base", 0.92))
     accessory_pattern_boost_scale = float(search_cfg.get("accessory_pattern_boost_scale", 0.24))
@@ -7053,9 +7056,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and accessory_near_square_region
                 and bool(accessory_candidates_debug)
             )
-            suppress_sleeve_for_large_region_query = bool(
+            sleeve_large_region_query = bool(
                 crop_active
                 and crop_final_area > max(0.0, min(1.0, float(sleeve_pattern_crop_max_area)))
+            )
+            sleeve_large_region_rescue_allowed = bool(
+                sleeve_large_region_query
+                and sleeve_pattern_large_region_rescue_enabled
+                and crop_final_area <= max(0.0, min(1.0, float(sleeve_pattern_large_region_rescue_max_area)))
+                and region_best_score <= max(0.0, float(sleeve_pattern_large_region_rescue_max_score))
+            )
+            suppress_sleeve_for_large_region_query = bool(
+                sleeve_large_region_query and not sleeve_large_region_rescue_allowed
             )
             sleeve_small_region_rescue_allowed = bool(
                 crop_active
