@@ -515,6 +515,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_region_rescue_min_ratio = float(search_cfg.get("scene_text_region_rescue_min_ratio", 0.66))
     scene_text_region_rescue_max_rows = int(search_cfg.get("scene_text_region_rescue_max_rows", 3))
     scene_text_suppress_when_region_min_score = float(search_cfg.get("scene_text_suppress_when_region_min_score", 0.62))
+    scene_text_small_region_max_score = float(search_cfg.get("scene_text_small_region_max_score", 0.68))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -5065,6 +5066,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             scene_text_tokens: List[str] = []
+            scene_text_small_region_allowed = False
             checker_debug = ""
             checker_candidates_debug = ""
             accent_debug = ""
@@ -6015,7 +6017,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if not (
                     crop_active
                     and scene_text_region_rescue_enabled
-                    and not strict_small_region_crop
+                    and (not strict_small_region_crop or scene_text_small_region_allowed)
                     and active_match_mode == "similar_style"
                     and search_scope == "region_primary"
                     and scene_text_tokens
@@ -6023,7 +6025,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and rows_in
                 ):
                     return rows_in
-                if region_best_score >= float(scene_text_suppress_when_region_min_score):
+                if region_best_score >= float(scene_text_suppress_when_region_min_score) and not scene_text_small_region_allowed:
                     return rows_in
                 image_tokens = dict(scene_text_index.get("image_tokens", {}))
                 token_idf = dict(scene_text_index.get("token_idf", {}))
@@ -7092,12 +7094,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            scene_text_small_region_allowed = bool(
+                crop_active
+                and (strict_small_region_crop or partial_region_crop)
+                and region_best_score <= max(0.0, float(scene_text_small_region_max_score))
+            )
             scene_text_blocked_by_region = bool(
                 region_probe_active
                 and (search_scope == "region_primary" or auto_region_probe_active)
                 and region_best_score >= float(scene_text_suppress_when_region_min_score)
+                and not scene_text_small_region_allowed
             )
-            if scene_text_hint_enabled and not strict_small_region_crop and not scene_text_blocked_by_region:
+            if (
+                scene_text_hint_enabled
+                and (not strict_small_region_crop or scene_text_small_region_allowed)
+                and not scene_text_blocked_by_region
+            ):
                 ranked_images, scene_text_tokens = merge_scene_text_candidates(
                     ranked_images,
                     query_path,
