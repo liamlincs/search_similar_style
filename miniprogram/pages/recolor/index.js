@@ -113,15 +113,16 @@ function filePathToDataUrl(filePath) {
   });
 }
 
-function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, colorHint) {
+function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, targetHex) {
   const raw = String(userPrompt || "").trim();
   const base = raw || (hasImage2 || hasImage3 ? "把参考图1的衣领合并到主图上" : "将主图生成一张自然真实的改款效果图");
   let prompt = base
     .replace(/参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
     .replace(/参考图\s*2|参考图二|图\s*3|图三/g, "image 3")
     .replace(/主图|原图|图\s*1|图一/g, "image 1");
-  if (colorHint) prompt += colorHint;
-  if (!hasImage2 && !hasImage3 && !colorHint) prompt += "\n保持主体、材质、光影和背景自然。";
+  if (!hasImage2 && !hasImage3) {
+    prompt += `\n目标色：#${String(targetHex || "").toUpperCase()}。保持主体、材质、光影和背景自然。`;
+  }
   return prompt;
 }
 
@@ -163,8 +164,7 @@ Page({
     feather: 2,
     fastParamsOpen: false,
     aiPrompt: "",
-    aiRawMode: true,
-    aiUseColor: false,
+    aiPromptPlaceholder: "AI出图：把参考图1的衣领合并到主图上\nAI换色：把主图衣服改成目标色",
   },
 
   goSearchPage() {
@@ -412,14 +412,6 @@ Page({
     this.setData({ fastParamsOpen: !this.data.fastParamsOpen });
   },
 
-  onAiRawModeChange(e) {
-    this.setData({ aiRawMode: !!e.detail.value });
-  },
-
-  onAiUseColorChange(e) {
-    this.setData({ aiUseColor: !!e.detail.value });
-  },
-
   buildRecolorPayload(useFullImage = false) {
     const img = this.data.imgRect;
     if (!img) {
@@ -466,10 +458,10 @@ Page({
         recolorMaskMode: String(res.mask_mode || ""),
         aiUsedParamsText: "",
       });
-      wx.showToast({ title: "标准换色完成", icon: "none" });
+      wx.showToast({ title: "抠图换色完成", icon: "none" });
     } catch (err) {
       console.error("[recolor:error]", err);
-      wx.showToast({ title: err.message || "标准换色失败", icon: "none" });
+      wx.showToast({ title: err.message || "抠图换色失败", icon: "none" });
     } finally {
       this.setData({ processing: false });
     }
@@ -487,12 +479,11 @@ Page({
       const hasReference = !!(this.data.referenceImage2 || this.data.referenceImage3);
       const hasImage2 = !!this.data.referenceImage2;
       const hasImage3 = !!this.data.referenceImage3;
-      const colorHint = this.data.aiUseColor ? `\n目标色为 #${this.data.targetHex}，需要严格按该颜色处理。` : "";
-      payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, colorHint);
+      payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.cfg = 4;
       payload.num_inference_steps = 20;
-      payload.postprocess = hasReference ? false : !this.data.aiRawMode;
+      payload.postprocess = hasReference ? false : false;
       if (this.data.referenceImage2) payload.image2 = await filePathToDataUrl(this.data.referenceImage2);
       if (this.data.referenceImage3) payload.image3 = await filePathToDataUrl(this.data.referenceImage3);
       const res = await recolorAiUpload(this.data.localImage, payload);
