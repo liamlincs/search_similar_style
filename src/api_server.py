@@ -315,6 +315,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_result_rescue_min_score = float(search_cfg.get("region_crop_result_rescue_min_score", 0.74))
     region_crop_result_rescue_topn = int(search_cfg.get("region_crop_result_rescue_topn", 8))
     region_crop_result_rescue_scan_codes = int(search_cfg.get("region_crop_result_rescue_scan_codes", 80))
+    region_crop_large_result_rescue_min_score = float(search_cfg.get("region_crop_large_result_rescue_min_score", 0.64))
+    region_crop_large_result_rescue_top_delta = float(search_cfg.get("region_crop_large_result_rescue_top_delta", 0.055))
+    region_crop_large_result_rescue_topn = int(search_cfg.get("region_crop_large_result_rescue_topn", 16))
     region_crop_force_top_enabled = bool(search_cfg.get("region_crop_force_top_enabled", True))
     region_crop_force_top_min_score = float(search_cfg.get("region_crop_force_top_min_score", 0.80))
     region_crop_force_topn = int(search_cfg.get("region_crop_force_topn", 1))
@@ -5195,9 +5198,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 min_region_rescue_score = (
                     strict_small_region_result_rescue_min_score if strict_small_region_crop else region_crop_result_rescue_min_score
                 )
+                rescue_topn_local = max(1, region_crop_result_rescue_topn)
+                if (
+                    crop_active
+                    and not strict_small_region_crop
+                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                    and region_best_score < float(region_crop_force_top_min_score)
+                ):
+                    min_region_rescue_score = min(
+                        float(min_region_rescue_score),
+                        max(
+                            float(region_crop_large_result_rescue_min_score),
+                            float(region_best_score) - max(0.0, float(region_crop_large_result_rescue_top_delta)),
+                        ),
+                    )
+                    rescue_topn_local = max(rescue_topn_local, int(region_crop_large_result_rescue_topn))
                 rescue_codes = [
                     code
-                    for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True)[: max(1, region_crop_result_rescue_topn)]
+                    for code, score in sorted(region_code_scores.items(), key=lambda item: item[1], reverse=True)[:rescue_topn_local]
                     if float(score) >= min_region_rescue_score
                 ]
                 if not rescue_codes:
@@ -5302,7 +5320,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     force_topn_local = max(int(force_topn_local), int(region_crop_large_force_topn))
                 forced_rows: List[Dict[str, Any]] = []
-                if region_crop_repeat_force_enabled and region_repeat_force_scores:
+                repeat_force_allowed = not (
+                    crop_active
+                    and not strict_small_region_crop
+                    and crop_final_area >= max(0.0, min(1.0, float(region_crop_large_force_top_area)))
+                    and region_best_score < float(region_crop_force_top_min_score)
+                )
+                if region_crop_repeat_force_enabled and repeat_force_allowed and region_repeat_force_scores:
                     for code, (repeat_score, hit_count) in sorted(
                         region_repeat_force_scores.items(),
                         key=lambda item: (item[1][1], item[1][0]),
