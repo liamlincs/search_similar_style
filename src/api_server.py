@@ -664,6 +664,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     continue
                 seen.add(key)
                 views.append((f"comp{idx}", img.crop(key)))
+                if hh >= 72 and ww >= 24:
+                    for sub_idx, (sy0, sy1) in enumerate(((0.00, 0.44), (0.24, 0.70), (0.50, 0.92), (0.62, 1.00))):
+                        sx0 = max(0, x - pad_x)
+                        sx1 = min(w, x + ww + pad_x)
+                        sub_y0 = max(0, y + int(hh * sy0) - max(4, int(pad_y * 0.45)))
+                        sub_y1 = min(h, y + int(hh * sy1) + max(4, int(pad_y * 0.45)))
+                        sub_key = (sx0, sub_y0, sx1, sub_y1)
+                        if sx1 - sx0 < 24 or sub_y1 - sub_y0 < 24 or sub_key in seen:
+                            continue
+                        seen.add(sub_key)
+                        views.append((f"comp{idx}_stripe{sub_idx}", img.crop(sub_key)))
             pair_idx = 0
             for left_idx in range(len(top_comps)):
                 _la, (lx, ly, lww, lhh) = top_comps[left_idx]
@@ -723,10 +734,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "region_crop_recall",
-                "version": 6,
+                "version": 7,
                 "backend": region_crop_recall_backend,
                 "weights": [region_w_clip, region_w_shape, region_w_color, region_w_stripe],
-                "standard_views": "grid_halves_bands_components_topdetail_collar_mid_strip",
+                "standard_views": "grid_halves_bands_components_topdetail_collar_mid_strip_comp_stripes",
                 "standard_crop_ratio": float(region_standard_crop_ratio),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
@@ -2365,6 +2376,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         colorful[: min(int(h * 0.08), 32), :] = False
         if int(colorful.sum()) < 80:
             return None
+        stripe_detail = (
+            colorful
+            | ((gray < 112.0) & (maxc > 18.0))
+            | ((gray > 168.0) & (gray < 246.0) & (sat < 0.22))
+        )
+        stripe_detail[: min(int(h * 0.08), 32), :] = False
 
         ys, xs = np.where(colorful)
         y0, y1 = int(ys.min()), int(ys.max())
@@ -2376,7 +2393,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         y0 = max(0, y0 - pad_y)
         y1 = min(h, y1 + pad_y + 1)
         crop_rgb = rgb[y0:y1, x0:x1]
-        crop_mask = colorful[y0:y1, x0:x1]
+        crop_mask = stripe_detail[y0:y1, x0:x1]
         if crop_rgb.shape[0] < 20 or crop_rgb.shape[1] < 20 or int(crop_mask.sum()) < 60:
             return None
 
@@ -3064,9 +3081,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "sleeve_pattern",
-                "version": 5,
+                "version": 6,
                 "size": 32,
-                "standard_views": "grid_halves_bands_components",
+                "standard_views": "grid_halves_bands_components_comp_stripes",
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
