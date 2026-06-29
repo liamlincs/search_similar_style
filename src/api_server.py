@@ -345,6 +345,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
     region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
+    region_crop_sleeve_rescue_strong_sim = float(search_cfg.get("region_crop_sleeve_rescue_strong_sim", 0.84))
+    region_crop_sleeve_rescue_strong_min_pair_prior = float(
+        search_cfg.get("region_crop_sleeve_rescue_strong_min_pair_prior", 0.50)
+    )
     region_crop_sleeve_rescue_weight = float(search_cfg.get("region_crop_sleeve_rescue_weight", 0.18))
     region_crop_color_consistency_enabled = bool(search_cfg.get("region_crop_color_consistency_enabled", True))
     region_crop_color_consistency_weight = float(search_cfg.get("region_crop_color_consistency_weight", 0.14))
@@ -5264,6 +5268,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     return ""
                 return _code_prior_key(key)
 
+            def _sleeve_rescue_candidate_allowed(sim: float, pair_prior: float) -> bool:
+                if float(sim) < float(region_crop_sleeve_rescue_min_sim):
+                    return False
+                if float(pair_prior) >= float(region_crop_sleeve_rescue_min_pair_prior):
+                    return True
+                return bool(
+                    float(sim) >= float(region_crop_sleeve_rescue_strong_sim)
+                    and float(pair_prior) >= float(region_crop_sleeve_rescue_strong_min_pair_prior)
+                )
+
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5650,7 +5664,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         pair_prior = float(nums[2])
                     except ValueError:
                         continue
-                    if sim < region_crop_sleeve_rescue_min_sim or pair_prior < region_crop_sleeve_rescue_min_pair_prior:
+                    if not _sleeve_rescue_candidate_allowed(sim, pair_prior):
                         continue
                     dominant_repeat_key = _dominant_region_repeat_key()
                     if dominant_repeat_key and _code_prior_key(code) != dominant_repeat_key:
@@ -5702,7 +5716,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         pair_prior = float(nums[2])
                     except ValueError:
                         continue
-                    if sim < region_crop_sleeve_rescue_min_sim or pair_prior < region_crop_sleeve_rescue_min_pair_prior:
+                    if not _sleeve_rescue_candidate_allowed(sim, pair_prior):
                         continue
                     ranked_item = best_ranked_by_key.get(key)
                     if ranked_item is None:
