@@ -355,10 +355,15 @@ def _crop_data_url_image(
         y = float(np.clip(y_ratio, 0.0, 1.0))
         cw = float(np.clip(w_ratio, 0.01, 1.0))
         ch = float(np.clip(h_ratio, 0.01, 1.0))
-        x0 = int(round(x * iw))
-        y0 = int(round(y * ih))
-        x1 = min(iw, max(x0 + 1, int(round((x + cw) * iw))))
-        y1 = min(ih, max(y0 + 1, int(round((y + ch) * ih))))
+        # User boxes are often tight around the collar edge. Keep context around the crop,
+        # especially below the collar, so center tabs/buttons are not lost.
+        pad_x = cw * 0.08
+        pad_top = ch * 0.08
+        pad_bottom = ch * 0.45
+        x0 = int(round(max(0.0, x - pad_x) * iw))
+        y0 = int(round(max(0.0, y - pad_top) * ih))
+        x1 = min(iw, max(x0 + 1, int(round(min(1.0, x + cw + pad_x) * iw))))
+        y1 = min(ih, max(y0 + 1, int(round(min(1.0, y + ch + pad_bottom) * ih))))
         if x1 <= x0 or y1 <= y0:
             return image_data_url
         cropped = img.crop((x0, y0, x1, y1))
@@ -446,9 +451,10 @@ def recolor_region_ai(
         final_prompt = (
             f"{final_prompt}\n"
             "Use image 2 as the cropped component reference. Use image 3 as the target mask: "
-            "copy the component's shape, color, trim, stripe/dot details and fabric texture from image 2, "
+            "copy the complete component's shape, color, trim, stripe/dot details, fabric texture, "
+            "and any center small ornament, tab, pendant, buttons or placket detail from image 2, "
             "scale and place it to fill the white mask area on image 1, blend only inside the mask, "
-            "and keep all non-mask areas unchanged. Do not redesign, shrink, simplify or recolor the component."
+            "and keep all non-mask areas unchanged. Do not remove, redesign, shrink, simplify or recolor the component."
         )
 
     payload: dict = {
