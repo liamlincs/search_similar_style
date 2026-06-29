@@ -5293,6 +5293,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and float(pair_prior) >= float(region_crop_sleeve_rescue_strong_min_pair_prior)
                 )
 
+            def _strong_sleeve_rescue_candidate(sim: float, pair_prior: float) -> bool:
+                return bool(
+                    float(sim) >= float(region_crop_sleeve_rescue_strong_sim)
+                    and float(pair_prior) >= float(region_crop_sleeve_rescue_strong_min_pair_prior)
+                )
+
             def _rescue_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
                 nonlocal region_rescue_debug
                 if not (
@@ -5682,7 +5688,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if not _sleeve_rescue_candidate_allowed(sim, pair_prior):
                         continue
                     dominant_repeat_key = _dominant_region_repeat_key()
-                    if dominant_repeat_key and _code_prior_key(code) != dominant_repeat_key:
+                    if (
+                        dominant_repeat_key
+                        and _code_prior_key(code) != dominant_repeat_key
+                        and not _strong_sleeve_rescue_candidate(sim, pair_prior)
+                    ):
                         continue
                     current = float(region_code_scores.get(code, -1.0))
                     sleeve_score = sim + max(0.0, region_crop_sleeve_rescue_weight) * pair_prior
@@ -5719,9 +5729,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     key = _code_prior_key(code)
                     if not key or key in seen_keys:
                         continue
-                    dominant_repeat_key = _dominant_region_repeat_key()
-                    if dominant_repeat_key and key != dominant_repeat_key:
-                        continue
                     nums = fields[1].split("/")
                     if len(nums) < 3:
                         continue
@@ -5732,6 +5739,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     except ValueError:
                         continue
                     if not _sleeve_rescue_candidate_allowed(sim, pair_prior):
+                        continue
+                    dominant_repeat_key = _dominant_region_repeat_key()
+                    if (
+                        dominant_repeat_key
+                        and key != dominant_repeat_key
+                        and not _strong_sleeve_rescue_candidate(sim, pair_prior)
+                    ):
                         continue
                     ranked_item = best_ranked_by_key.get(key)
                     if ranked_item is None:
