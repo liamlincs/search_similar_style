@@ -62,10 +62,20 @@
       <view
         wx:if="{{referenceImage2}}"
         class="stage ref-stage"
+        bindtouchstart="handleRefTouchStart"
+        bindtouchmove="handleRefTouchMove"
+        bindtouchend="handleRefTouchEnd"
       >
         <image class="stage-img" src="{{referenceImage2}}" mode="aspectFit" />
+        <view
+          wx:if="{{componentRect}}"
+          class="sel-rect ref-sel"
+          style="left: {{componentRect.x}}px; top: {{componentRect.y}}px; width: {{componentRect.w}}px; height: {{componentRect.h}}px;"
+        >
+          <view class="sel-label">衣领</view>
+        </view>
       </view>
-      <view wx:if="{{referenceImage2}}" class="hint">部件图尽量清晰展示要融合的衣领</view>
+      <view wx:if="{{referenceImage2}}" class="hint">框选衣领和中间装饰，尽量少框衣服背景</view>
       <view class="field-title">融合说明</view>
       <textarea
         class="prompt-input"

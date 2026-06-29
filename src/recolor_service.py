@@ -374,6 +374,46 @@ def _crop_data_url_image(
         return image_data_url
 
 
+def _prepare_component_reference_data_url(
+    image_data_url: str | None,
+    x_ratio: float | None,
+    y_ratio: float | None,
+    w_ratio: float | None,
+    h_ratio: float | None,
+) -> str | None:
+    cropped = _crop_data_url_image(image_data_url, x_ratio, y_ratio, w_ratio, h_ratio)
+    if not cropped or "," not in cropped:
+        return cropped
+
+    from io import BytesIO
+
+    try:
+        _header, b64 = cropped.split(",", 1)
+        raw = base64.b64decode(b64)
+        img = Image.open(BytesIO(raw))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+
+        global _REMBG_SESSION
+        if _REMBG_SESSION is None:
+            from rembg import new_session
+            _REMBG_SESSION = new_session(_REMBG_MODEL)
+        from rembg import remove
+
+        cutout = remove(
+            img,
+            session=_REMBG_SESSION,
+            post_process_mask=True,
+        )
+        if not isinstance(cutout, Image.Image):
+            cutout = Image.fromarray(np.array(cutout).astype(np.uint8))
+        cutout = cutout.convert("RGBA")
+        out = BytesIO()
+        cutout.save(out, format="PNG")
+        return f"data:image/png;base64,{base64.b64encode(out.getvalue()).decode('ascii')}"
+    except Exception:
+        return cropped
+
+
 def recolor_region_ai(
     file_bytes: bytes,
     suffix: str,
@@ -441,14 +481,27 @@ def recolor_region_ai(
     img.save(src_buf, format="PNG")
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
-    # For component transfer, pass the complete reference image to the model.
-    # Cropped reference patches were often copied as rectangular blocks.
-    reference_image2 = image2
+    # For component transfer, send a cleaned cutout when the mini program provides
+    # a component box. Raw rectangular crops were often copied as patches.
+    reference_image2 = _prepare_component_reference_data_url(
+        image2,
+        image2_crop_x,
+        image2_crop_y,
+        image2_crop_w,
+        image2_crop_h,
+    )
     has_reference_images = bool(reference_image2 or image3)
     target_region_blend = False
     final_prompt = prompt.strip() or (
         f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
     )
+    if reference_image2 and image2_crop_x is not None:
+        final_prompt = (
+            f"{final_prompt}\n"
+            "image 2 is a cleaned collar component reference. Preserve its dark collar color, white trim, "
+            "black dot/stripe details and center tab ornament when transferring it onto image 1. "
+            "Do not copy rectangular crop background."
+        )
 
     payload: dict = {
         "model": model,
