@@ -1,7 +1,7 @@
 <view class="container">
   <view class="hero">
-    <view class="title">换色与AI出图</view>
-    <view class="subtitle">抠图换色支持自动抠主体；AI出图支持提示词改色和多图合成</view>
+    <view class="title">{{enterpriseAiEnabled ? '换色与出图' : '抠图换色'}}</view>
+    <view class="subtitle">{{enterpriseAiEnabled ? '抠图换色支持自动抠主体和个性化出图' : '自动识别主体区域，快速调整衣服颜色'}}</view>
   </view>
 
   <view class="card">
@@ -12,13 +12,13 @@
   </view>
 
   <view class="card">
-    <view class="mode-switch">
+    <view wx:if="{{enterpriseAiEnabled}}" class="mode-switch">
       <view class="mode-item {{mode === 'fast' ? 'active' : ''}}" data-mode="fast" bindtap="switchMode">抠图换色</view>
-      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">AI出图</view>
+      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">出图</view>
     </view>
 
     <view class="field">
-      <view class="field-title">{{mode === 'fast' ? '抠图换色目标色' : 'AI出图目标色'}}</view>
+      <view class="field-title">{{enterpriseAiEnabled && mode === 'ai' ? '出图目标色' : '目标色'}}</view>
       <view class="wheel-wrap">
         <view class="wheel-touch" bindtouchstart="onWheelTouchStart" bindtouchmove="onWheelTouchMove">
           <view class="color-wheel"></view>
@@ -31,19 +31,19 @@
       <view class="picked-row">
         <view class="color-chip" style="background:#{{targetHex}};"></view>
         <view class="picked">当前颜色：#{{targetHex}}</view>
-        <view wx:if="{{mode === 'fast'}}" class="inline-action" bindtap="toggleFastParams">
+        <view wx:if="{{!enterpriseAiEnabled || mode === 'fast'}}" class="inline-action" bindtap="toggleFastParams">
           高级参数 {{fastParamsOpen ? '⌃' : '›'}}
         </view>
       </view>
     </view>
 
-    <view wx:if="{{mode === 'fast'}}">
+    <view wx:if="{{!enterpriseAiEnabled || mode === 'fast'}}">
       <view wx:if="{{fastParamsOpen}}" class="field"><text>强度：{{strength}}%</text><slider min="0" max="100" value="{{strength}}" bindchange="onStrengthChange" /></view>
       <view wx:if="{{fastParamsOpen}}" class="field"><text>羽化：{{feather}}%</text><slider min="0" max="10" value="{{feather}}" bindchange="onFeatherChange" /></view>
       <button class="btn btn-primary run" loading="{{processing}}" disabled="{{processingAi}}" bindtap="runRecolor">开始抠图换色</button>
     </view>
 
-    <view wx:if="{{mode === 'ai'}}">
+    <view wx:if="{{enterpriseAiEnabled && mode === 'ai'}}">
       <view class="ref-grid">
         <view class="ref-box" bindtap="chooseReferenceImage" data-slot="2">
           <image wx:if="{{referenceImage2}}" class="ref-img" src="{{referenceImage2}}" mode="aspectFill" />
@@ -56,7 +56,7 @@
           <view wx:if="{{referenceImage3}}" class="ref-remove" catchtap="removeReferenceImage" data-slot="3">移除</view>
         </view>
       </view>
-      <view class="field-title">AI出图提示词</view>
+      <view class="field-title">出图提示词</view>
       <textarea
         class="prompt-input"
         maxlength="500"
@@ -64,23 +64,23 @@
         placeholder="{{aiPromptPlaceholder}}"
         bindinput="onAiPromptInput"
       />
-      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始AI出图</button>
+      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始出图</button>
     </view>
   </view>
 
   <view class="card" wx:if="{{recoloredUrl}}">
     <view class="subtitle2">结果图（点击放大）</view>
     <image class="result-img" src="{{recoloredLocalUrl || recoloredUrl}}" mode="aspectFit" bindtap="previewResult" binderror="onResultImageError" />
-    <view wx:if="{{mode === 'fast' && recolorMaskBackend}}" class="mode-tip">
+    <view wx:if="{{(!enterpriseAiEnabled || mode === 'fast') && recolorMaskBackend}}" class="mode-tip">
       抠图后端：{{recolorMaskBackend}}（{{recolorMaskMode || 'auto'}}）
     </view>
-    <view wx:if="{{mode === 'ai' && aiUsedParamsText}}" class="mode-tip debug-tip">{{aiUsedParamsText}}</view>
+    <view wx:if="{{enterpriseAiEnabled && mode === 'ai' && aiUsedParamsText}}" class="mode-tip debug-tip">{{aiUsedParamsText}}</view>
     <view class="url-tip">结果地址：{{recoloredUrl}}</view>
   </view>
 
   <view class="bottom-nav">
     <view class="nav-item" bindtap="goSearchPage">以图搜款</view>
-    <view class="nav-item active" bindtap="goRecolorPage">AI出图</view>
+    <view class="nav-item active" bindtap="goRecolorPage">{{enterpriseAiEnabled ? '出图' : '抠图换色'}}</view>
     <view class="nav-item" bindtap="goPrintPage">拼图打印</view>
   </view>
 </view>

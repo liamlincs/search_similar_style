@@ -344,13 +344,13 @@ function recolorAiUpload(filePath, options = {}) {
           try {
             resolve(JSON.parse(res.data || "{}"));
           } catch (_err) {
-            reject(new Error("AI出图返回解析失败"));
+            reject(new Error("出图返回解析失败"));
           }
           return;
         }
-        reject(new Error(raw || "AI出图失败"));
+        reject(new Error(raw || "出图失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "AI出图失败"))
+      fail: (err) => reject(new Error((err && err.errMsg) || "出图失败"))
     });
   });
 }

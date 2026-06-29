@@ -44,6 +44,9 @@
     "save_query_images": true,
     "query_image_dir": "outputs/debug_queries"
   },
+  "ai_generation": {
+    "seed": 2180967052
+  },
   "paths": {
     "standard_dir": "data/standard_samples",
     "standard_pattern": "*",

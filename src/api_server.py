@@ -213,6 +213,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     cfg = _load_cfg(config_path)
     path_cfg = cfg.get("paths", {})
     search_cfg = cfg.get("search", {})
+    ai_generation_cfg = cfg.get("ai_generation", {})
+    ai_generation_seed_raw = ai_generation_cfg.get("seed", None)
+    ai_generation_seed: int | None = None
+    if ai_generation_seed_raw is not None and str(ai_generation_seed_raw).strip() != "":
+        try:
+            ai_generation_seed = int(ai_generation_seed_raw)
+        except (TypeError, ValueError):
+            raise ValueError("ai_generation.seed must be an integer or null")
 
     standard_dir = Path(path_cfg.get("standard_dir", "data/standard_samples"))
     standard_pattern = str(path_cfg.get("standard_pattern", "*"))
@@ -7566,7 +7574,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 strength=strength,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                seed=seed,
+                seed=ai_generation_seed if ai_generation_seed is not None else seed,
                 cfg=cfg if cfg is not None else cfg_scale,
                 num_inference_steps=num_inference_steps,
                 postprocess=bool(int(postprocess)),

@@ -17,6 +17,7 @@ const config = {
   },
   recolorPath: "/recolor",
   recolorAiPath: "/recolor-ai",
+  enableEnterpriseAiGeneration: true,
   includeImageBase64: false,
   timeout: 300000,
   recolorUpload: {

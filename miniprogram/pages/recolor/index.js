@@ -129,6 +129,7 @@ function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, targetHex) {
 Page({
   data: {
     mode: "fast", // fast | ai
+    enterpriseAiEnabled: !!config.enableEnterpriseAiGeneration,
     localImage: "",
     referenceImage2: "",
     referenceImage3: "",
@@ -164,7 +165,7 @@ Page({
     feather: 2,
     fastParamsOpen: false,
     aiPrompt: "",
-    aiPromptPlaceholder: "AI出图：把参考图1的衣领合并到主图上\nAI换色：把主图衣服改成目标色",
+    aiPromptPlaceholder: "出图：把参考图1的衣领合并到主图上\n换色：把主图衣服改成目标色",
   },
 
   goSearchPage() {
@@ -180,6 +181,7 @@ Page({
   switchMode(e) {
     const mode = e.currentTarget.dataset.mode;
     if (!mode || (mode !== "fast" && mode !== "ai")) return;
+    if (mode === "ai" && !this.data.enterpriseAiEnabled) return;
     this.setData({ mode });
   },
 
@@ -468,6 +470,10 @@ Page({
   },
 
   async runAiRecolor() {
+    if (!this.data.enterpriseAiEnabled) {
+      wx.showToast({ title: "当前版本未开放该功能", icon: "none" });
+      return;
+    }
     if (!this.data.localImage || this.data.processing || this.data.processingAi) {
       wx.showToast({ title: "请先选择图片", icon: "none" });
       return;
@@ -500,10 +506,10 @@ Page({
         `image3: ${image3Status}`,
       ].join("\n");
       this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl, recolorMaskBackend: "", recolorMaskMode: "", aiUsedParamsText: usedText });
-      wx.showToast({ title: "AI出图完成", icon: "none" });
+      wx.showToast({ title: "出图完成", icon: "none" });
     } catch (err) {
       console.error("[recolor:ai:error]", err);
-      wx.showToast({ title: err.message || "AI出图失败", icon: "none" });
+      wx.showToast({ title: err.message || "出图失败", icon: "none" });
     } finally {
       this.setData({ processingAi: false });
     }
