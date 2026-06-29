@@ -560,6 +560,20 @@ Page({
     };
   },
 
+  expandRectPayload(rect, xScale = 2.0, yScale = 2.4) {
+    if (!rect) return null;
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const w = clamp(rect.w * xScale, 0.01, 1);
+    const h = clamp(rect.h * yScale, 0.01, 1);
+    return {
+      x: clamp(cx - w / 2, 0, 1 - w),
+      y: clamp(cy - h / 2, 0, 1 - h),
+      w,
+      h,
+    };
+  },
+
   async runRecolor() {
     if (!this.data.localImage || this.data.processing || this.data.processingAi) {
       wx.showToast({ title: "请先选择图片", icon: "none" });
@@ -615,11 +629,12 @@ Page({
         return;
       }
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
-      if (targetRect) {
-        payload.x_ratio = targetRect.x;
-        payload.y_ratio = targetRect.y;
-        payload.w_ratio = targetRect.w;
-        payload.h_ratio = targetRect.h;
+      const editRect = hasImage2 ? this.expandRectPayload(targetRect) : targetRect;
+      if (editRect) {
+        payload.x_ratio = editRect.x;
+        payload.y_ratio = editRect.y;
+        payload.w_ratio = editRect.w;
+        payload.h_ratio = editRect.h;
       }
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.cfg = 4;

@@ -355,15 +355,10 @@ def _crop_data_url_image(
         y = float(np.clip(y_ratio, 0.0, 1.0))
         cw = float(np.clip(w_ratio, 0.01, 1.0))
         ch = float(np.clip(h_ratio, 0.01, 1.0))
-        # User boxes are often tight around the collar edge. Keep context around the crop,
-        # especially below the collar, so center tabs/buttons are not lost.
-        pad_x = cw * 0.08
-        pad_top = ch * 0.08
-        pad_bottom = ch * 0.18
-        x0 = int(round(max(0.0, x - pad_x) * iw))
-        y0 = int(round(max(0.0, y - pad_top) * ih))
-        x1 = min(iw, max(x0 + 1, int(round(min(1.0, x + cw + pad_x) * iw))))
-        y1 = min(ih, max(y0 + 1, int(round(min(1.0, y + ch + pad_bottom) * ih))))
+        x0 = int(round(x * iw))
+        y0 = int(round(y * ih))
+        x1 = min(iw, max(x0 + 1, int(round((x + cw) * iw))))
+        y1 = min(ih, max(y0 + 1, int(round((y + ch) * ih))))
         if x1 <= x0 or y1 <= y0:
             return image_data_url
         cropped = img.crop((x0, y0, x1, y1))
@@ -372,46 +367,6 @@ def _crop_data_url_image(
         return f"data:image/png;base64,{base64.b64encode(out.getvalue()).decode('ascii')}"
     except Exception:
         return image_data_url
-
-
-def _prepare_component_reference_data_url(
-    image_data_url: str | None,
-    x_ratio: float | None,
-    y_ratio: float | None,
-    w_ratio: float | None,
-    h_ratio: float | None,
-) -> str | None:
-    cropped = _crop_data_url_image(image_data_url, x_ratio, y_ratio, w_ratio, h_ratio)
-    if not cropped or "," not in cropped:
-        return cropped
-
-    from io import BytesIO
-
-    try:
-        _header, b64 = cropped.split(",", 1)
-        raw = base64.b64decode(b64)
-        img = Image.open(BytesIO(raw))
-        img = ImageOps.exif_transpose(img).convert("RGB")
-
-        global _REMBG_SESSION
-        if _REMBG_SESSION is None:
-            from rembg import new_session
-            _REMBG_SESSION = new_session(_REMBG_MODEL)
-        from rembg import remove
-
-        cutout = remove(
-            img,
-            session=_REMBG_SESSION,
-            post_process_mask=True,
-        )
-        if not isinstance(cutout, Image.Image):
-            cutout = Image.fromarray(np.array(cutout).astype(np.uint8))
-        cutout = cutout.convert("RGBA")
-        out = BytesIO()
-        cutout.save(out, format="PNG")
-        return f"data:image/png;base64,{base64.b64encode(out.getvalue()).decode('ascii')}"
-    except Exception:
-        return cropped
 
 
 def recolor_region_ai(
@@ -481,26 +436,19 @@ def recolor_region_ai(
     img.save(src_buf, format="PNG")
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
-    # For component transfer, send a cleaned cutout when the mini program provides
-    # a component box. Raw rectangular crops were often copied as patches.
-    reference_image2 = _prepare_component_reference_data_url(
-        image2,
-        image2_crop_x,
-        image2_crop_y,
-        image2_crop_w,
-        image2_crop_h,
-    )
-    has_reference_images = bool(reference_image2 or image3)
-    target_region_blend = False
+    cropped_image2 = _crop_data_url_image(image2, image2_crop_x, image2_crop_y, image2_crop_w, image2_crop_h)
+    has_reference_images = bool(cropped_image2 or image3)
+    target_mask_as_image3 = bool(cropped_image2 and not image3 and not full_image_mode)
     final_prompt = prompt.strip() or (
         f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
     )
-    if reference_image2 and image2_crop_x is not None:
+    if target_mask_as_image3:
         final_prompt = (
             f"{final_prompt}\n"
-            "image 2 is a cleaned collar component reference. Preserve its dark collar color, white trim, "
-            "black dot/stripe details and center tab ornament when transferring it onto image 1. "
-            "Do not copy rectangular crop background."
+            "Use image 2 as the cropped component reference. Use image 3 as the target mask: "
+            "copy the component's shape, color, trim, stripe/dot details and fabric texture from image 2, "
+            "scale and place it to fill the white mask area on image 1, blend only inside the mask, "
+            "and keep all non-mask areas unchanged."
         )
 
     payload: dict = {
@@ -520,10 +468,12 @@ def recolor_region_ai(
         payload["cfg"] = float(np.clip(cfg, 0.1, 20.0))
     if num_inference_steps is not None:
         payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
-    if reference_image2:
-        payload["image2"] = reference_image2
+    if cropped_image2:
+        payload["image2"] = cropped_image2
     if image3:
         payload["image3"] = image3
+    elif target_mask_as_image3:
+        payload["image3"] = f"data:image/png;base64,{mask_b64}"
 
     req = urllib.request.Request(
         SILICONFLOW_API_URL,
@@ -557,7 +507,7 @@ def recolor_region_ai(
     except Exception as exc:
         raise ValueError(f"下载预览结果失败: {exc}") from exc
 
-    if target_region_blend:
+    if target_mask_as_image3:
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
         local_mask = _build_soft_mask(
@@ -619,8 +569,8 @@ def recolor_region_ai(
             "prompt": final_prompt,
             "task_mode": "reference_generate" if has_reference_images else "recolor_edit",
             "mask_mode": (
-                "manual_bbox_local_blend"
-                if target_region_blend
+                "manual_bbox_target_mask"
+                if target_mask_as_image3
                 else "reference_images"
                 if has_reference_images
                 else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox"))
@@ -632,10 +582,21 @@ def recolor_region_ai(
             "cfg": payload.get("cfg"),
             "num_inference_steps": payload.get("num_inference_steps"),
             "strength_hint": strength,
-            "has_image2": bool(reference_image2),
+            "has_image2": bool(cropped_image2),
             "has_image3": bool(image3),
-            "has_target_mask": False,
-            "local_blend": target_region_blend,
-            "image2_crop": None,
+            "has_target_mask": target_mask_as_image3,
+            "image2_crop": (
+                {
+                    "x": image2_crop_x,
+                    "y": image2_crop_y,
+                    "w": image2_crop_w,
+                    "h": image2_crop_h,
+                }
+                if image2_crop_x is not None
+                and image2_crop_y is not None
+                and image2_crop_w is not None
+                and image2_crop_h is not None
+                else None
+            ),
         },
     }
