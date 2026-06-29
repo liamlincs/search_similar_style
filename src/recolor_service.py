@@ -446,7 +446,9 @@ def recolor_region_ai(
         final_prompt = (
             f"{final_prompt}\n"
             "Use image 2 as the cropped component reference. Use image 3 as the target mask: "
-            "blend the component only inside the white mask area on image 1, and keep all non-mask areas unchanged."
+            "copy the component's shape, color, trim, stripe/dot details and fabric texture from image 2, "
+            "scale and place it to fill the white mask area on image 1, blend only inside the mask, "
+            "and keep all non-mask areas unchanged. Do not redesign, shrink, simplify or recolor the component."
         )
 
     payload: dict = {

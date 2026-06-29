@@ -115,10 +115,10 @@ function filePathToDataUrl(filePath) {
 
 function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, targetHex) {
   const raw = String(userPrompt || "").trim();
-  const base = raw || (hasImage2 || hasImage3 ? "把部件图1的衣领合并到主图上" : "将主图生成一张自然真实的改款效果图");
+  const base = raw || (hasImage2 || hasImage3 ? "把部件的衣领合并到主图上" : "将主图生成一张自然真实的改款效果图");
   let prompt = base
-    .replace(/部件图\s*1|部件图一|参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
     .replace(/部件图\s*2|部件图二|参考图\s*2|参考图二|图\s*3|图三/g, "image 3")
+    .replace(/部件图\s*1|部件图一|部件图|部件|参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
     .replace(/主图|原图|图\s*1|图一/g, "image 1");
   if (!hasImage2 && !hasImage3) {
     prompt += `\n目标色：#${String(targetHex || "").toUpperCase()}。保持主体、材质、光影和背景自然。`;
@@ -173,7 +173,7 @@ Page({
     feather: 2,
     fastParamsOpen: false,
     aiPrompt: "",
-    aiPromptPlaceholder: "融合预览：把部件图1的衣领合并到主图上\n改色预览：把主图衣服改成目标色",
+    aiPromptPlaceholder: "融合预览：把部件的衣领合并到主图上\n改色预览：把主图衣服改成目标色",
   },
 
   goSearchPage() {
@@ -560,6 +560,20 @@ Page({
     };
   },
 
+  expandRectPayload(rect, xScale = 2.0, yScale = 2.4) {
+    if (!rect) return null;
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    const w = clamp(rect.w * xScale, 0.01, 1);
+    const h = clamp(rect.h * yScale, 0.01, 1);
+    return {
+      x: clamp(cx - w / 2, 0, 1 - w),
+      y: clamp(cy - h / 2, 0, 1 - h),
+      w,
+      h,
+    };
+  },
+
   async runRecolor() {
     if (!this.data.localImage || this.data.processing || this.data.processingAi) {
       wx.showToast({ title: "请先选择图片", icon: "none" });
@@ -615,11 +629,12 @@ Page({
         return;
       }
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
-      if (targetRect) {
-        payload.x_ratio = targetRect.x;
-        payload.y_ratio = targetRect.y;
-        payload.w_ratio = targetRect.w;
-        payload.h_ratio = targetRect.h;
+      const editRect = hasImage2 ? this.expandRectPayload(targetRect) : targetRect;
+      if (editRect) {
+        payload.x_ratio = editRect.x;
+        payload.y_ratio = editRect.y;
+        payload.w_ratio = editRect.w;
+        payload.h_ratio = editRect.h;
       }
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.cfg = 4;
