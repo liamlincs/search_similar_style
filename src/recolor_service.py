@@ -359,7 +359,7 @@ def _crop_data_url_image(
         # especially below the collar, so center tabs/buttons are not lost.
         pad_x = cw * 0.08
         pad_top = ch * 0.08
-        pad_bottom = ch * 0.45
+        pad_bottom = ch * 0.18
         x0 = int(round(max(0.0, x - pad_x) * iw))
         y0 = int(round(max(0.0, y - pad_top) * ih))
         x1 = min(iw, max(x0 + 1, int(round(min(1.0, x + cw + pad_x) * iw))))
@@ -441,20 +441,22 @@ def recolor_region_ai(
     img.save(src_buf, format="PNG")
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
-    cropped_image2 = _crop_data_url_image(image2, image2_crop_x, image2_crop_y, image2_crop_w, image2_crop_h)
-    has_reference_images = bool(cropped_image2 or image3)
-    target_mask_as_image3 = bool(cropped_image2 and not image3 and not full_image_mode)
+    # For component transfer, pass the complete reference image to the model.
+    # Cropped reference patches were often copied as rectangular blocks.
+    reference_image2 = image2
+    has_reference_images = bool(reference_image2 or image3)
+    target_region_blend = bool(reference_image2 and not image3 and not full_image_mode)
     final_prompt = prompt.strip() or (
         f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
     )
-    if target_mask_as_image3:
+    if target_region_blend:
         final_prompt = (
             f"{final_prompt}\n"
-            "Use image 2 as the cropped component reference. Use image 3 as the target mask: "
-            "copy the complete component's shape, color, trim, stripe/dot details, fabric texture, "
-            "and any center small ornament, tab, pendant, buttons or placket detail from image 2, "
-            "scale and place it to fill the white mask area on image 1, blend only inside the mask, "
-            "and keep all non-mask areas unchanged. Do not remove, redesign, shrink, simplify or recolor the component."
+            "Use image 2 only as a visual reference. Identify the complete collar component in image 2, "
+            "including its shape, color, trim, stripe/dot details, fabric texture, and any center small ornament, "
+            "tab, pendant, buttons or placket detail. Transfer that collar naturally onto the neckline of image 1. "
+            "Do not copy any rectangular patch, background, hanger, body area, or shirt stripes from image 2. "
+            "Do not place the collar behind the head, do not make it oversized, and do not remove or recolor details."
         )
 
     payload: dict = {
@@ -474,12 +476,10 @@ def recolor_region_ai(
         payload["cfg"] = float(np.clip(cfg, 0.1, 20.0))
     if num_inference_steps is not None:
         payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
-    if cropped_image2:
-        payload["image2"] = cropped_image2
+    if reference_image2:
+        payload["image2"] = reference_image2
     if image3:
         payload["image3"] = image3
-    elif target_mask_as_image3:
-        payload["image3"] = f"data:image/png;base64,{mask_b64}"
 
     req = urllib.request.Request(
         SILICONFLOW_API_URL,
@@ -513,7 +513,7 @@ def recolor_region_ai(
     except Exception as exc:
         raise ValueError(f"下载预览结果失败: {exc}") from exc
 
-    if target_mask_as_image3:
+    if target_region_blend:
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
         local_mask = _build_soft_mask(
@@ -575,8 +575,8 @@ def recolor_region_ai(
             "prompt": final_prompt,
             "task_mode": "reference_generate" if has_reference_images else "recolor_edit",
             "mask_mode": (
-                "manual_bbox_target_mask"
-                if target_mask_as_image3
+                "manual_bbox_local_blend"
+                if target_region_blend
                 else "reference_images"
                 if has_reference_images
                 else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox"))
@@ -588,21 +588,10 @@ def recolor_region_ai(
             "cfg": payload.get("cfg"),
             "num_inference_steps": payload.get("num_inference_steps"),
             "strength_hint": strength,
-            "has_image2": bool(cropped_image2),
+            "has_image2": bool(reference_image2),
             "has_image3": bool(image3),
-            "has_target_mask": target_mask_as_image3,
-            "image2_crop": (
-                {
-                    "x": image2_crop_x,
-                    "y": image2_crop_y,
-                    "w": image2_crop_w,
-                    "h": image2_crop_h,
-                }
-                if image2_crop_x is not None
-                and image2_crop_y is not None
-                and image2_crop_w is not None
-                and image2_crop_h is not None
-                else None
-            ),
+            "has_target_mask": False,
+            "local_blend": target_region_blend,
+            "image2_crop": None,
         },
     }

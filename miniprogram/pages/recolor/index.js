@@ -560,20 +560,6 @@ Page({
     };
   },
 
-  expandRectPayload(rect, xScale = 2.0, yScale = 2.4) {
-    if (!rect) return null;
-    const cx = rect.x + rect.w / 2;
-    const cy = rect.y + rect.h / 2;
-    const w = clamp(rect.w * xScale, 0.01, 1);
-    const h = clamp(rect.h * yScale, 0.01, 1);
-    return {
-      x: clamp(cx - w / 2, 0, 1 - w),
-      y: clamp(cy - h / 2, 0, 1 - h),
-      w,
-      h,
-    };
-  },
-
   async runRecolor() {
     if (!this.data.localImage || this.data.processing || this.data.processingAi) {
       wx.showToast({ title: "请先选择图片", icon: "none" });
@@ -623,29 +609,17 @@ Page({
         wx.showToast({ title: "请先在主图框选目标位置", icon: "none" });
         return;
       }
-      const componentCrop = this.buildRectPayload(this.data.componentRect, this.data.refImgRect);
-      if (hasImage2 && !componentCrop) {
-        wx.showToast({ title: "请先在部件图框选部件", icon: "none" });
-        return;
-      }
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
-      const editRect = hasImage2 ? this.expandRectPayload(targetRect) : targetRect;
-      if (editRect) {
-        payload.x_ratio = editRect.x;
-        payload.y_ratio = editRect.y;
-        payload.w_ratio = editRect.w;
-        payload.h_ratio = editRect.h;
+      if (targetRect) {
+        payload.x_ratio = targetRect.x;
+        payload.y_ratio = targetRect.y;
+        payload.w_ratio = targetRect.w;
+        payload.h_ratio = targetRect.h;
       }
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.cfg = 4;
       payload.num_inference_steps = 20;
       payload.postprocess = hasReference ? false : false;
-      if (componentCrop) {
-        payload.image2_crop_x = componentCrop.x;
-        payload.image2_crop_y = componentCrop.y;
-        payload.image2_crop_w = componentCrop.w;
-        payload.image2_crop_h = componentCrop.h;
-      }
       if (this.data.referenceImage2) payload.image2 = await filePathToDataUrl(this.data.referenceImage2);
       if (this.data.referenceImage3) payload.image3 = await filePathToDataUrl(this.data.referenceImage3);
       const res = await recolorAiUpload(this.data.localImage, payload);

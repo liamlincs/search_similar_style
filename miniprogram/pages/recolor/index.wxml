@@ -62,20 +62,10 @@
       <view
         wx:if="{{referenceImage2}}"
         class="stage ref-stage"
-        bindtouchstart="handleRefTouchStart"
-        bindtouchmove="handleRefTouchMove"
-        bindtouchend="handleRefTouchEnd"
       >
         <image class="stage-img" src="{{referenceImage2}}" mode="aspectFit" />
-        <view
-          wx:if="{{componentRect}}"
-          class="sel-rect ref-sel"
-          style="left: {{componentRect.x}}px; top: {{componentRect.y}}px; width: {{componentRect.w}}px; height: {{componentRect.h}}px;"
-        >
-          <view class="sel-label">部件</view>
-        </view>
       </view>
-      <view wx:if="{{referenceImage2}}" class="hint">在部件图上框选需要融合的部件</view>
+      <view wx:if="{{referenceImage2}}" class="hint">部件图需包含完整衣领和中间小饰品</view>
       <view class="field-title">融合说明</view>
       <textarea
         class="prompt-input"
@@ -94,7 +84,6 @@
     <view wx:if="{{(!enterpriseAiEnabled || mode === 'fast') && recolorMaskBackend}}" class="mode-tip">
       抠图后端：{{recolorMaskBackend}}（{{recolorMaskMode || 'auto'}}）
     </view>
-    <view wx:if="{{enterpriseAiEnabled && mode === 'ai' && aiUsedParamsText}}" class="mode-tip debug-tip">{{aiUsedParamsText}}</view>
     <view class="url-tip">结果地址：{{recoloredUrl}}</view>
   </view>
 
