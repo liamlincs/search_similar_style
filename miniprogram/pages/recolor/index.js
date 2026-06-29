@@ -108,17 +108,17 @@ function filePathToDataUrl(filePath) {
         const mime = ext === "png" ? "image/png" : (ext === "webp" ? "image/webp" : "image/jpeg");
         resolve(`data:${mime};base64,${res.data || ""}`);
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "读取参考图失败")),
+      fail: (err) => reject(new Error((err && err.errMsg) || "读取部件图失败")),
     });
   });
 }
 
 function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, targetHex) {
   const raw = String(userPrompt || "").trim();
-  const base = raw || (hasImage2 || hasImage3 ? "把参考图1的衣领合并到主图上" : "将主图生成一张自然真实的改款效果图");
+  const base = raw || (hasImage2 || hasImage3 ? "把部件图1的衣领合并到主图上" : "将主图生成一张自然真实的改款效果图");
   let prompt = base
-    .replace(/参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
-    .replace(/参考图\s*2|参考图二|图\s*3|图三/g, "image 3")
+    .replace(/部件图\s*1|部件图一|参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
+    .replace(/部件图\s*2|部件图二|参考图\s*2|参考图二|图\s*3|图三/g, "image 3")
     .replace(/主图|原图|图\s*1|图一/g, "image 1");
   if (!hasImage2 && !hasImage3) {
     prompt += `\n目标色：#${String(targetHex || "").toUpperCase()}。保持主体、材质、光影和背景自然。`;
@@ -156,16 +156,24 @@ Page({
     stageTop: 0,
     imgRect: null,
     selRect: null,
+    refStageLeft: 0,
+    refStageTop: 0,
+    refImgRect: null,
+    componentRect: null,
     dragMode: "",
     dragStartX: 0,
     dragStartY: 0,
     dragSelStart: null,
+    refDragMode: "",
+    refDragStartX: 0,
+    refDragStartY: 0,
+    refDragSelStart: null,
 
     strength: 80,
     feather: 2,
     fastParamsOpen: false,
     aiPrompt: "",
-    aiPromptPlaceholder: "出图：把参考图1的衣领合并到主图上\n换色：把主图衣服改成目标色",
+    aiPromptPlaceholder: "融合预览：把部件图1的衣领合并到主图上\n改色预览：把主图衣服改成目标色",
   },
 
   goSearchPage() {
@@ -218,7 +226,10 @@ Page({
         if (!file || !file.tempFilePath) return;
         const uploadPath = await compressForUpload(file.tempFilePath);
         const key = slot === 3 ? "referenceImage3" : "referenceImage2";
-        this.setData({ [key]: uploadPath, recoloredUrl: "", recoloredLocalUrl: "" });
+        this.setData(
+          { [key]: uploadPath, recoloredUrl: "", recoloredLocalUrl: "", componentRect: null, refImgRect: null },
+          () => this.setupRefImageRect()
+        );
       },
       fail: () => wx.showToast({ title: "未选择图片", icon: "none" })
     });
@@ -262,6 +273,38 @@ Page({
     });
   },
 
+  setupRefImageRect() {
+    const filePath = this.data.referenceImage2;
+    if (!filePath) return;
+    wx.getImageInfo({
+      src: filePath,
+      success: (imgInfo) => {
+        const q = wx.createSelectorQuery();
+        q.select(".ref-stage").boundingClientRect();
+        q.exec((res) => {
+          const box = (res && res[0]) || null;
+          if (!box || !box.width || !box.height) return;
+          const stageW = box.width;
+          const stageH = box.height;
+          const stageLeft = box.left || 0;
+          const stageTop = box.top || 0;
+          const iw = imgInfo.width || stageW;
+          const ih = imgInfo.height || stageH;
+          const scale = Math.min(stageW / iw, stageH / ih);
+          const drawW = iw * scale;
+          const drawH = ih * scale;
+          const refImgRect = {
+            x: (stageW - drawW) / 2,
+            y: (stageH - drawH) / 2,
+            w: drawW,
+            h: drawH,
+          };
+          this.setData({ refStageLeft: stageLeft, refStageTop: stageTop, refImgRect });
+        });
+      }
+    });
+  },
+
   refreshStageOffset(cb) {
     const q = wx.createSelectorQuery();
     q.select(".stage").boundingClientRect();
@@ -292,6 +335,7 @@ Page({
   },
 
   handleStageTouchStart(e) {
+    if (!(this.data.enterpriseAiEnabled && this.data.mode === "ai")) return;
     this.refreshStageOffset(() => {
       const t = (e.touches || [])[0];
       const p = getTouchPoint(t);
@@ -310,6 +354,7 @@ Page({
   },
 
   handleStageTouchMove(e) {
+    if (!(this.data.enterpriseAiEnabled && this.data.mode === "ai")) return;
     const t = (e.touches || [])[0];
     const p = getTouchPoint(t);
     if (!p || !this.data.imgRect || !this.data.dragMode) return;
@@ -339,6 +384,70 @@ Page({
 
   handleStageTouchEnd() {
     this.setData({ dragMode: "", dragSelStart: null });
+  },
+
+  refreshRefStageOffset(cb) {
+    const q = wx.createSelectorQuery();
+    q.select(".ref-stage").boundingClientRect();
+    q.exec((res) => {
+      const box = (res && res[0]) || null;
+      if (!box) return typeof cb === "function" ? cb() : null;
+      this.setData({ refStageLeft: box.left || 0, refStageTop: box.top || 0 }, () => {
+        if (typeof cb === "function") cb();
+      });
+    });
+  },
+
+  handleRefTouchStart(e) {
+    if (!(this.data.enterpriseAiEnabled && this.data.mode === "ai")) return;
+    this.refreshRefStageOffset(() => {
+      const t = (e.touches || [])[0];
+      const p = getTouchPoint(t);
+      if (!p || !this.data.refImgRect) return;
+      const x = p.x - this.data.refStageLeft;
+      const y = p.y - this.data.refStageTop;
+      const imgRect = this.data.refImgRect;
+      if (x < imgRect.x || x > imgRect.x + imgRect.w || y < imgRect.y || y > imgRect.y + imgRect.h) return;
+      const sel = this.data.componentRect;
+      if (this._pointInSel(x, y, sel)) {
+        this.setData({ refDragMode: "move", refDragStartX: x, refDragStartY: y, refDragSelStart: { ...sel } });
+      } else {
+        this.setData({ refDragMode: "create", refDragStartX: x, refDragStartY: y, refDragSelStart: null, componentRect: { x, y, w: 1, h: 1 } });
+      }
+    });
+  },
+
+  handleRefTouchMove(e) {
+    if (!(this.data.enterpriseAiEnabled && this.data.mode === "ai")) return;
+    const t = (e.touches || [])[0];
+    const p = getTouchPoint(t);
+    if (!p || !this.data.refImgRect || !this.data.refDragMode) return;
+    const x = p.x - this.data.refStageLeft;
+    const y = p.y - this.data.refStageTop;
+    const imgRect = this.data.refImgRect;
+
+    if (this.data.refDragMode === "create") {
+      const x0 = this.data.refDragStartX;
+      const y0 = this.data.refDragStartY;
+      const sel = this._clampSelToImgRect(
+        { x: Math.min(x0, x), y: Math.min(y0, y), w: Math.abs(x - x0), h: Math.abs(y - y0) },
+        imgRect
+      );
+      this.setData({ componentRect: sel });
+      return;
+    }
+
+    if (this.data.refDragMode === "move" && this.data.refDragSelStart) {
+      const dx = x - this.data.refDragStartX;
+      const dy = y - this.data.refDragStartY;
+      const s0 = this.data.refDragSelStart;
+      const sel = this._clampSelToImgRect({ x: s0.x + dx, y: s0.y + dy, w: s0.w, h: s0.h }, imgRect);
+      this.setData({ componentRect: sel });
+    }
+  },
+
+  handleRefTouchEnd() {
+    this.setData({ refDragMode: "", refDragSelStart: null });
   },
 
   pickColorFromWheel(clientX, clientY) {
@@ -441,6 +550,16 @@ Page({
     };
   },
 
+  buildRectPayload(sel, img) {
+    if (!sel || !img) return null;
+    return {
+      x: clamp((sel.x - img.x) / img.w, 0, 1),
+      y: clamp((sel.y - img.y) / img.h, 0, 1),
+      w: clamp(sel.w / img.w, 0.01, 1),
+      h: clamp(sel.h / img.h, 0.01, 1),
+    };
+  },
+
   async runRecolor() {
     if (!this.data.localImage || this.data.processing || this.data.processingAi) {
       wx.showToast({ title: "请先选择图片", icon: "none" });
@@ -485,11 +604,33 @@ Page({
       const hasReference = !!(this.data.referenceImage2 || this.data.referenceImage3);
       const hasImage2 = !!this.data.referenceImage2;
       const hasImage3 = !!this.data.referenceImage3;
+      const targetRect = this.buildRectPayload(this.data.selRect, this.data.imgRect);
+      if (hasImage2 && !targetRect) {
+        wx.showToast({ title: "请先在主图框选目标位置", icon: "none" });
+        return;
+      }
+      const componentCrop = this.buildRectPayload(this.data.componentRect, this.data.refImgRect);
+      if (hasImage2 && !componentCrop) {
+        wx.showToast({ title: "请先在部件图框选部件", icon: "none" });
+        return;
+      }
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
+      if (targetRect) {
+        payload.x_ratio = targetRect.x;
+        payload.y_ratio = targetRect.y;
+        payload.w_ratio = targetRect.w;
+        payload.h_ratio = targetRect.h;
+      }
       payload.model = "Qwen/Qwen-Image-Edit-2509";
       payload.cfg = 4;
       payload.num_inference_steps = 20;
       payload.postprocess = hasReference ? false : false;
+      if (componentCrop) {
+        payload.image2_crop_x = componentCrop.x;
+        payload.image2_crop_y = componentCrop.y;
+        payload.image2_crop_w = componentCrop.w;
+        payload.image2_crop_h = componentCrop.h;
+      }
       if (this.data.referenceImage2) payload.image2 = await filePathToDataUrl(this.data.referenceImage2);
       if (this.data.referenceImage3) payload.image3 = await filePathToDataUrl(this.data.referenceImage3);
       const res = await recolorAiUpload(this.data.localImage, payload);
@@ -506,10 +647,10 @@ Page({
         `image3: ${image3Status}`,
       ].join("\n");
       this.setData({ recoloredUrl: remoteUrl, recoloredLocalUrl: localUrl, recolorMaskBackend: "", recolorMaskMode: "", aiUsedParamsText: usedText });
-      wx.showToast({ title: "出图完成", icon: "none" });
+      wx.showToast({ title: "预览完成", icon: "none" });
     } catch (err) {
       console.error("[recolor:ai:error]", err);
-      wx.showToast({ title: err.message || "出图失败", icon: "none" });
+      wx.showToast({ title: err.message || "预览失败", icon: "none" });
     } finally {
       this.setData({ processingAi: false });
     }

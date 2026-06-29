@@ -329,6 +329,46 @@ def recolor_region(
     }
 
 
+def _crop_data_url_image(
+    image_data_url: str | None,
+    x_ratio: float | None,
+    y_ratio: float | None,
+    w_ratio: float | None,
+    h_ratio: float | None,
+) -> str | None:
+    if not image_data_url:
+        return None
+    if x_ratio is None or y_ratio is None or w_ratio is None or h_ratio is None:
+        return image_data_url
+    if "," not in image_data_url:
+        return image_data_url
+
+    from io import BytesIO
+
+    try:
+        _header, b64 = image_data_url.split(",", 1)
+        raw = base64.b64decode(b64)
+        img = Image.open(BytesIO(raw))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        iw, ih = img.size
+        x = float(np.clip(x_ratio, 0.0, 1.0))
+        y = float(np.clip(y_ratio, 0.0, 1.0))
+        cw = float(np.clip(w_ratio, 0.01, 1.0))
+        ch = float(np.clip(h_ratio, 0.01, 1.0))
+        x0 = int(round(x * iw))
+        y0 = int(round(y * ih))
+        x1 = min(iw, max(x0 + 1, int(round((x + cw) * iw))))
+        y1 = min(ih, max(y0 + 1, int(round((y + ch) * ih))))
+        if x1 <= x0 or y1 <= y0:
+            return image_data_url
+        cropped = img.crop((x0, y0, x1, y1))
+        out = BytesIO()
+        cropped.save(out, format="PNG")
+        return f"data:image/png;base64,{base64.b64encode(out.getvalue()).decode('ascii')}"
+    except Exception:
+        return image_data_url
+
+
 def recolor_region_ai(
     file_bytes: bytes,
     suffix: str,
@@ -348,9 +388,13 @@ def recolor_region_ai(
     postprocess: bool = True,
     image2: str | None = None,
     image3: str | None = None,
+    image2_crop_x: float | None = None,
+    image2_crop_y: float | None = None,
+    image2_crop_w: float | None = None,
+    image2_crop_h: float | None = None,
 ) -> dict:
     if not api_key:
-        raise ValueError("缺少 SILICONFLOW_API_KEY，无法调用 AI 出图")
+        raise ValueError("缺少 SILICONFLOW_API_KEY，无法调用融合预览")
 
     from io import BytesIO
 
@@ -392,10 +436,18 @@ def recolor_region_ai(
     img.save(src_buf, format="PNG")
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
-    has_reference_images = bool(image2 or image3)
+    cropped_image2 = _crop_data_url_image(image2, image2_crop_x, image2_crop_y, image2_crop_w, image2_crop_h)
+    has_reference_images = bool(cropped_image2 or image3)
+    target_mask_as_image3 = bool(cropped_image2 and not image3 and not full_image_mode)
     final_prompt = prompt.strip() or (
         f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
     )
+    if target_mask_as_image3:
+        final_prompt = (
+            f"{final_prompt}\n"
+            "Use image 2 as the cropped component reference. Use image 3 as the target mask: "
+            "blend the component only inside the white mask area on image 1, and keep all non-mask areas unchanged."
+        )
 
     payload: dict = {
         "model": model,
@@ -414,10 +466,12 @@ def recolor_region_ai(
         payload["cfg"] = float(np.clip(cfg, 0.1, 20.0))
     if num_inference_steps is not None:
         payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
-    if image2:
-        payload["image2"] = image2
+    if cropped_image2:
+        payload["image2"] = cropped_image2
     if image3:
         payload["image3"] = image3
+    elif target_mask_as_image3:
+        payload["image3"] = f"data:image/png;base64,{mask_b64}"
 
     req = urllib.request.Request(
         SILICONFLOW_API_URL,
@@ -449,9 +503,24 @@ def recolor_region_ai(
         if out_img.size != (w, h):
             out_img = out_img.resize((w, h), resample=Image.BICUBIC)
     except Exception as exc:
-        raise ValueError(f"下载 AI 出图结果失败: {exc}") from exc
+        raise ValueError(f"下载预览结果失败: {exc}") from exc
 
-    if postprocess and not has_reference_images:
+    if target_mask_as_image3:
+        out_arr = np.array(out_img).astype(np.float32) / 255.0
+        src_arr = np.array(img).astype(np.float32) / 255.0
+        local_mask = _build_soft_mask(
+            h=out_arr.shape[0],
+            w=out_arr.shape[1],
+            x0=int(round(x_ratio * out_arr.shape[1])),
+            y0=int(round(y_ratio * out_arr.shape[0])),
+            x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
+            y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
+            feather_px=max(2, int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.006))),
+        )
+        alpha = local_mask[:, :, None]
+        merged = src_arr * (1.0 - alpha) + out_arr * alpha
+        out_img = Image.fromarray(np.clip(merged * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+    elif postprocess and not has_reference_images:
         # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
@@ -498,7 +567,9 @@ def recolor_region_ai(
             "prompt": final_prompt,
             "task_mode": "reference_generate" if has_reference_images else "recolor_edit",
             "mask_mode": (
-                "reference_images"
+                "manual_bbox_target_mask"
+                if target_mask_as_image3
+                else "reference_images"
                 if has_reference_images
                 else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox"))
             ),
@@ -509,7 +580,21 @@ def recolor_region_ai(
             "cfg": payload.get("cfg"),
             "num_inference_steps": payload.get("num_inference_steps"),
             "strength_hint": strength,
-            "has_image2": bool(image2),
+            "has_image2": bool(cropped_image2),
             "has_image3": bool(image3),
+            "has_target_mask": target_mask_as_image3,
+            "image2_crop": (
+                {
+                    "x": image2_crop_x,
+                    "y": image2_crop_y,
+                    "w": image2_crop_w,
+                    "h": image2_crop_h,
+                }
+                if image2_crop_x is not None
+                and image2_crop_y is not None
+                and image2_crop_w is not None
+                and image2_crop_h is not None
+                else None
+            ),
         },
     }

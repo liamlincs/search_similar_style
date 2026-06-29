@@ -1,24 +1,38 @@
 <view class="container">
   <view class="hero">
-    <view class="title">{{enterpriseAiEnabled ? '换色与出图' : '抠图换色'}}</view>
-    <view class="subtitle">{{enterpriseAiEnabled ? '抠图换色支持自动抠主体和个性化出图' : '自动识别主体区域，快速调整衣服颜色'}}</view>
+    <view class="title">{{enterpriseAiEnabled ? '换色与搭配预览' : '抠图换色'}}</view>
+    <view class="subtitle">{{enterpriseAiEnabled ? '抠图换色支持自动抠主体和局部融合预览' : '自动识别主体区域，快速调整衣服颜色'}}</view>
   </view>
 
   <view class="card">
     <button class="btn btn-primary" bindtap="chooseImage">选择主图</button>
-    <view wx:if="{{localImage}}" class="stage">
+    <view
+      wx:if="{{localImage}}"
+      class="stage"
+      bindtouchstart="handleStageTouchStart"
+      bindtouchmove="handleStageTouchMove"
+      bindtouchend="handleStageTouchEnd"
+    >
       <image class="stage-img" src="{{localImage}}" mode="aspectFit" />
+      <view
+        wx:if="{{enterpriseAiEnabled && mode === 'ai' && selRect}}"
+        class="sel-rect"
+        style="left: {{selRect.x}}px; top: {{selRect.y}}px; width: {{selRect.w}}px; height: {{selRect.h}}px;"
+      >
+        <view class="sel-label">目标</view>
+      </view>
     </view>
+    <view wx:if="{{enterpriseAiEnabled && mode === 'ai' && localImage}}" class="hint">在主图上框选要融合的位置</view>
   </view>
 
   <view class="card">
     <view wx:if="{{enterpriseAiEnabled}}" class="mode-switch">
       <view class="mode-item {{mode === 'fast' ? 'active' : ''}}" data-mode="fast" bindtap="switchMode">抠图换色</view>
-      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">出图</view>
+      <view class="mode-item {{mode === 'ai' ? 'active' : ''}}" data-mode="ai" bindtap="switchMode">融合预览</view>
     </view>
 
     <view class="field">
-      <view class="field-title">{{enterpriseAiEnabled && mode === 'ai' ? '出图目标色' : '目标色'}}</view>
+      <view class="field-title">{{enterpriseAiEnabled && mode === 'ai' ? '预览目标色' : '目标色'}}</view>
       <view class="wheel-wrap">
         <view class="wheel-touch" bindtouchstart="onWheelTouchStart" bindtouchmove="onWheelTouchMove">
           <view class="color-wheel"></view>
@@ -44,19 +58,25 @@
     </view>
 
     <view wx:if="{{enterpriseAiEnabled && mode === 'ai'}}">
-      <view class="ref-grid">
-        <view class="ref-box" bindtap="chooseReferenceImage" data-slot="2">
-          <image wx:if="{{referenceImage2}}" class="ref-img" src="{{referenceImage2}}" mode="aspectFill" />
-          <view wx:else class="ref-empty">参考图1</view>
-          <view wx:if="{{referenceImage2}}" class="ref-remove" catchtap="removeReferenceImage" data-slot="2">移除</view>
-        </view>
-        <view class="ref-box" bindtap="chooseReferenceImage" data-slot="3">
-          <image wx:if="{{referenceImage3}}" class="ref-img" src="{{referenceImage3}}" mode="aspectFill" />
-          <view wx:else class="ref-empty">参考图2</view>
-          <view wx:if="{{referenceImage3}}" class="ref-remove" catchtap="removeReferenceImage" data-slot="3">移除</view>
+      <button class="btn btn-ghost" bindtap="chooseReferenceImage" data-slot="2">{{referenceImage2 ? '重新选择部件图' : '选择部件图'}}</button>
+      <view
+        wx:if="{{referenceImage2}}"
+        class="stage ref-stage"
+        bindtouchstart="handleRefTouchStart"
+        bindtouchmove="handleRefTouchMove"
+        bindtouchend="handleRefTouchEnd"
+      >
+        <image class="stage-img" src="{{referenceImage2}}" mode="aspectFit" />
+        <view
+          wx:if="{{componentRect}}"
+          class="sel-rect ref-sel"
+          style="left: {{componentRect.x}}px; top: {{componentRect.y}}px; width: {{componentRect.w}}px; height: {{componentRect.h}}px;"
+        >
+          <view class="sel-label">部件</view>
         </view>
       </view>
-      <view class="field-title">出图提示词</view>
+      <view wx:if="{{referenceImage2}}" class="hint">在部件图上框选需要融合的部件</view>
+      <view class="field-title">融合说明</view>
       <textarea
         class="prompt-input"
         maxlength="500"
@@ -64,7 +84,7 @@
         placeholder="{{aiPromptPlaceholder}}"
         bindinput="onAiPromptInput"
       />
-      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始出图</button>
+      <button class="btn btn-primary run" loading="{{processingAi}}" disabled="{{processing}}" bindtap="runAiRecolor">开始预览</button>
     </view>
   </view>
 
@@ -80,7 +100,7 @@
 
   <view class="bottom-nav">
     <view class="nav-item" bindtap="goSearchPage">以图搜款</view>
-    <view class="nav-item active" bindtap="goRecolorPage">{{enterpriseAiEnabled ? '出图' : '抠图换色'}}</view>
+    <view class="nav-item active" bindtap="goRecolorPage">{{enterpriseAiEnabled ? '融合预览' : '抠图换色'}}</view>
     <view class="nav-item" bindtap="goPrintPage">拼图打印</view>
   </view>
 </view>

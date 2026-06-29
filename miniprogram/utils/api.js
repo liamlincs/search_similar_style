@@ -319,6 +319,10 @@ function recolorAiUpload(filePath, options = {}) {
   if (options.num_inference_steps !== undefined && options.num_inference_steps !== null) formData.num_inference_steps = String(options.num_inference_steps);
   if (options.image2) formData.image2 = String(options.image2);
   if (options.image3) formData.image3 = String(options.image3);
+  if (options.image2_crop_x !== undefined && options.image2_crop_x !== null) formData.image2_crop_x = String(options.image2_crop_x);
+  if (options.image2_crop_y !== undefined && options.image2_crop_y !== null) formData.image2_crop_y = String(options.image2_crop_y);
+  if (options.image2_crop_w !== undefined && options.image2_crop_w !== null) formData.image2_crop_w = String(options.image2_crop_w);
+  if (options.image2_crop_h !== undefined && options.image2_crop_h !== null) formData.image2_crop_h = String(options.image2_crop_h);
   return new Promise((resolve, reject) => {
     wx.uploadFile({
       url: finalUrl,
@@ -337,20 +341,20 @@ function recolorAiUpload(filePath, options = {}) {
           return;
         }
         if (res.statusCode === 524) {
-          reject(new Error("AI处理超时(524)，请稍后重试或简化提示词"));
+          reject(new Error("处理超时(524)，请稍后重试或简化说明"));
           return;
         }
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
             resolve(JSON.parse(res.data || "{}"));
           } catch (_err) {
-            reject(new Error("出图返回解析失败"));
+            reject(new Error("预览返回解析失败"));
           }
           return;
         }
-        reject(new Error(raw || "出图失败"));
+        reject(new Error(raw || "预览失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "出图失败"))
+      fail: (err) => reject(new Error((err && err.errMsg) || "预览失败"))
     });
   });
 }

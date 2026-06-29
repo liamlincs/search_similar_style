@@ -7553,6 +7553,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         postprocess: int = Form(1),
         image2: str | None = Form(None),
         image3: str | None = Form(None),
+        image2_crop_x: float | None = Form(None),
+        image2_crop_y: float | None = Form(None),
+        image2_crop_w: float | None = Form(None),
+        image2_crop_h: float | None = Form(None),
     ) -> Dict[str, Any]:
         suffix = Path(file.filename or "").suffix.lower() or ".jpg"
         if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -7580,6 +7584,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 postprocess=bool(int(postprocess)),
                 image2=image2,
                 image3=image3,
+                image2_crop_x=image2_crop_x,
+                image2_crop_y=image2_crop_y,
+                image2_crop_w=image2_crop_w,
+                image2_crop_h=image2_crop_h,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
