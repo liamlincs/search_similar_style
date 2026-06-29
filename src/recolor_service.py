@@ -445,19 +445,10 @@ def recolor_region_ai(
     # Cropped reference patches were often copied as rectangular blocks.
     reference_image2 = image2
     has_reference_images = bool(reference_image2 or image3)
-    target_region_blend = bool(reference_image2 and not image3 and not full_image_mode)
+    target_region_blend = False
     final_prompt = prompt.strip() or (
         f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
     )
-    if target_region_blend:
-        final_prompt = (
-            f"{final_prompt}\n"
-            "Use image 2 only as a visual reference. Identify the complete collar component in image 2, "
-            "including its shape, color, trim, stripe/dot details, fabric texture, and any center small ornament, "
-            "tab, pendant, buttons or placket detail. Transfer that collar naturally onto the neckline of image 1. "
-            "Do not copy any rectangular patch, background, hanger, body area, or shirt stripes from image 2. "
-            "Do not place the collar behind the head, do not make it oversized, and do not remove or recolor details."
-        )
 
     payload: dict = {
         "model": model,
