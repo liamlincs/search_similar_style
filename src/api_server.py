@@ -4872,8 +4872,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if max_edge > 0:
             edge = max(128, min(2048, int(max_edge)))
             out_fp = _ensure_preview(fp, edge, q)
-            return FileResponse(path=str(out_fp), media_type="image/jpeg")
-        return FileResponse(path=str(fp))
+            return FileResponse(
+                path=str(out_fp),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=604800, immutable"},
+            )
+        return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
 
     @app.post("/api/v1/catalog/imports/commit")
     def api_commit_catalog_import(payload: CatalogImportCommitRequest) -> Dict[str, Any]:
@@ -4964,8 +4968,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if max_edge > 0:
             edge = max(128, min(2048, int(max_edge)))
             out_fp = _ensure_preview(fp, edge, q)
-            return FileResponse(path=str(out_fp), media_type="image/jpeg")
-        return FileResponse(path=str(fp))
+            return FileResponse(
+                path=str(out_fp),
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=604800, immutable"},
+            )
+        return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/image-url", response_model=ImageUrlResponse)
     def refresh_image_url(request: Request, image_name: str) -> Dict[str, Any]:
