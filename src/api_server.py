@@ -5511,6 +5511,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if _code_prior_key(str(row.get("style_code", ""))) not in forced_keys
                 ]
                 target_n = max(top_k, len(rows_in))
+                diversity_rows = [row for row in kept_rows if row.get("_sleeve_diversity_keep")]
+                if diversity_rows:
+                    diversity_keys = {
+                        _code_prior_key(str(row.get("style_code", "")))
+                        for row in diversity_rows
+                    }
+                    kept_rows = [
+                        row
+                        for row in kept_rows
+                        if _code_prior_key(str(row.get("style_code", ""))) not in diversity_keys
+                    ]
+                    return (forced_rows + diversity_rows + kept_rows)[:target_n]
                 return (forced_rows + kept_rows)[:target_n]
 
             def _order_region_primary_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -5587,7 +5599,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             }
                         )
                         existing_keys.add(code_key)
-                protected_rows = [row for row in rows_for_order if row.get("_force_keep")]
+                protected_source_rows = [row for row in rows_for_order if row.get("_force_keep")]
+                diversity_rows = [row for row in protected_source_rows if row.get("_sleeve_diversity_keep")]
+                if diversity_rows:
+                    diversity_keys = {
+                        _code_prior_key(str(row.get("style_code", "")))
+                        for row in diversity_rows
+                    }
+                    regular_protected_rows = [
+                        row
+                        for row in protected_source_rows
+                        if _code_prior_key(str(row.get("style_code", ""))) not in diversity_keys
+                    ]
+                    protected_rows = regular_protected_rows[: max(0, top_k - len(diversity_rows))] + diversity_rows
+                else:
+                    protected_rows = protected_source_rows
                 protected_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in protected_rows}
                 sortable_rows = [
                     row
@@ -5806,6 +5832,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     if diverse_index is not None:
                         diverse_row = sleeve_rows.pop(diverse_index)
+                        diverse_row["_sleeve_diversity_keep"] = True
+                        diverse_row["_region_rescue_keep"] = True
                         insert_at = max(0, visible_sleeve_slots - 1)
                         sleeve_rows.insert(insert_at, diverse_row)
                 sleeve_debug_rescue = ",".join(
@@ -7425,6 +7453,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for row in rows:
             row.pop("_force_keep", None)
             row.pop("_region_rescue_keep", None)
+            row.pop("_sleeve_diversity_keep", None)
             row.pop("_sleeve_sim", None)
             row.pop("_sleeve_pair_prior", None)
             img = str(row.get("best_standard_image", "")).strip()
