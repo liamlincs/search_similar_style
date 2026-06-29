@@ -345,7 +345,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_crop_sleeve_rescue_enabled = bool(search_cfg.get("region_crop_sleeve_rescue_enabled", True))
     region_crop_sleeve_rescue_min_sim = float(search_cfg.get("region_crop_sleeve_rescue_min_sim", 0.70))
     region_crop_sleeve_rescue_min_pair_prior = float(search_cfg.get("region_crop_sleeve_rescue_min_pair_prior", 0.70))
-    region_crop_sleeve_rescue_strong_sim = float(search_cfg.get("region_crop_sleeve_rescue_strong_sim", 0.84))
+    region_crop_sleeve_rescue_strong_sim = float(search_cfg.get("region_crop_sleeve_rescue_strong_sim", 0.82))
     region_crop_sleeve_rescue_strong_min_pair_prior = float(
         search_cfg.get("region_crop_sleeve_rescue_strong_min_pair_prior", 0.50)
     )
