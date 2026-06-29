@@ -5767,12 +5767,47 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             "score": round(disp, 4),
                             "rank_score": round(raw_score, 6),
                             "_force_keep": True,
+                            "_sleeve_sim": round(float(sim), 6),
+                            "_sleeve_pair_prior": round(float(pair_prior), 6),
                         }
                     )
                     seen_keys.add(key)
                 if not sleeve_rows:
                     return rows_in
                 sleeve_rows.sort(key=lambda row: float(row.get("rank_score", 0.0)), reverse=True)
+                if strict_small_region_crop and len(sleeve_rows) > top_k:
+                    sleeve_keys_all = {
+                        _code_prior_key(str(row.get("style_code", "")))
+                        for row in sleeve_rows
+                    }
+                    forced_visible_count = sum(
+                        1
+                        for row in rows_in
+                        if row.get("_force_keep")
+                        and _code_prior_key(str(row.get("style_code", ""))) not in sleeve_keys_all
+                    )
+                    visible_sleeve_slots = max(1, top_k - forced_visible_count)
+                    low_pair_limit = float(region_crop_sleeve_rescue_strong_min_pair_prior) + 0.05
+                    min_diverse_rank = max(
+                        float(display_score_bias),
+                        float(region_crop_sleeve_rescue_strong_sim)
+                        + max(0.0, float(region_crop_sleeve_rescue_weight))
+                        * float(region_crop_sleeve_rescue_strong_min_pair_prior),
+                    )
+                    diverse_index = next(
+                        (
+                            idx
+                            for idx, row in enumerate(sleeve_rows[visible_sleeve_slots:], start=visible_sleeve_slots)
+                            if float(row.get("_sleeve_sim", 0.0)) >= float(region_crop_sleeve_rescue_strong_sim)
+                            and float(row.get("_sleeve_pair_prior", 0.0)) <= low_pair_limit
+                            and float(row.get("rank_score", 0.0)) >= min_diverse_rank
+                        ),
+                        None,
+                    )
+                    if diverse_index is not None:
+                        diverse_row = sleeve_rows.pop(diverse_index)
+                        insert_at = max(0, visible_sleeve_slots - 1)
+                        sleeve_rows.insert(insert_at, diverse_row)
                 sleeve_debug_rescue = ",".join(
                     f"{row.get('style_code', '')}:{float(row.get('rank_score', 0.0)):.3f}"
                     for row in sleeve_rows[:top_k]
@@ -7390,6 +7425,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         for row in rows:
             row.pop("_force_keep", None)
             row.pop("_region_rescue_keep", None)
+            row.pop("_sleeve_sim", None)
+            row.pop("_sleeve_pair_prior", None)
             img = str(row.get("best_standard_image", "")).strip()
             row["best_standard_image_url"] = _build_image_url(base_url, img)
         rows = _enrich_search_rows(base_url, rows)
