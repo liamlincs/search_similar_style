@@ -62,6 +62,10 @@ from catalog_store import CatalogStore
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
 
+def _style_code_key(code: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "", str(code).strip().upper())
+
+
 def _expand_region_crop(
     x: float,
     y: float,
@@ -834,10 +838,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
     label_memory_refs: List[tuple[str, np.ndarray]] = []
     scene_text_index: Dict[str, Any] | None = None
+    standard_image_by_code_key: Dict[str, str] = {}
 
     def _reload_search_assets(reason: str = "startup") -> None:
         nonlocal names, feats, secondary_names, secondary_feats, region_names, region_feats
         nonlocal rerank_candidate_cache, label_memory_refs, scene_text_index
+        nonlocal standard_image_by_code_key
         t_reload = time.perf_counter()
         next_names, next_feats = build_feature_db_with_cache(
             standard_dir,
@@ -924,6 +930,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 time.perf_counter() - t0,
             )
 
+        next_standard_image_by_code_key: Dict[str, str] = {}
+        for image_name in list(next_names) + list(next_region_names):
+            base_name = str(image_name).split("@", 1)[0]
+            code_key = _style_code_key(filename_to_style_code(base_name))
+            if code_key and code_key not in next_standard_image_by_code_key:
+                next_standard_image_by_code_key[code_key] = base_name
+
         with search_assets_lock:
             names = next_names
             feats = next_feats
@@ -934,6 +947,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rerank_candidate_cache = next_rerank_candidate_cache
             label_memory_refs = next_label_memory_refs
             scene_text_index = next_scene_text_index
+            standard_image_by_code_key = next_standard_image_by_code_key
         logging.info("search assets reloaded: reason=%s in %.2fs", reason, time.perf_counter() - t_reload)
 
     _reload_search_assets("startup")
@@ -5159,6 +5173,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 req_rerank_candidate_cache = rerank_candidate_cache
                 req_label_memory_refs = label_memory_refs
                 req_scene_text_index = scene_text_index
+                req_standard_image_by_code_key = standard_image_by_code_key
 
             query_hint_code = try_extract_query_style_code(query_path) if ocr_hint_enabled else ""
             scene_text_tokens: List[str] = []
@@ -5196,7 +5211,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             code_prior_boost = dict(base_code_prior_boost)
 
             def _code_prior_key(code: str) -> str:
-                return re.sub(r"[^A-Za-z0-9_-]+", "", str(code).strip().upper())
+                return _style_code_key(code)
 
             def _rows_from_ranked(
                 ranked_in: List[tuple[str, float]],
@@ -5720,7 +5735,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         continue
                     ranked_item = best_ranked_by_key.get(key)
                     if ranked_item is None:
-                        continue
+                        fallback_image = region_code_best_images.get(key) or req_standard_image_by_code_key.get(key, "")
+                        if not fallback_image:
+                            continue
+                        ranked_item = (fallback_image, 0.0)
                     image_name, ranked_score = ranked_item
                     raw_score = max(float(seed_score), float(ranked_score))
                     z = float(display_score_scale) * (raw_score - float(display_score_bias))
