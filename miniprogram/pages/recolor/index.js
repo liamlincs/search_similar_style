@@ -145,6 +145,7 @@ Page({
     hsvS: 1,
     hsvV: 1,
     targetHex: "FB8C00",
+    targetColor: "#FB8C00",
     wheelSize: 220,
     wheelRadius: 110,
     wheelCenterX: 110,
@@ -476,12 +477,14 @@ Page({
         px = cx + dx * k;
         py = cy + dy * k;
       }
+      const targetHex = rgbToHex(rgb.r, rgb.g, rgb.b);
       this.setData({
         hsvH: hue,
         hsvS: sat,
         pickX: px,
         pickY: py,
-        targetHex: rgbToHex(rgb.r, rgb.g, rgb.b),
+        targetHex,
+        targetColor: `#${targetHex}`,
       });
     });
   },
@@ -504,7 +507,8 @@ Page({
     const v = clamp(Number(e.detail.value) / 100, 0, 1);
     const { hsvH, hsvS } = this.data;
     const rgb = hsvToRgb(hsvH, hsvS, v);
-    this.setData({ hsvV: v, targetHex: rgbToHex(rgb.r, rgb.g, rgb.b) });
+    const targetHex = rgbToHex(rgb.r, rgb.g, rgb.b);
+    this.setData({ hsvV: v, targetHex, targetColor: `#${targetHex}` });
   },
 
   onStrengthChange(e) {

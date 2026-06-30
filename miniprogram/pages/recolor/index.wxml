@@ -43,7 +43,7 @@
       <view class="field-title sm">明度</view>
       <slider min="0" max="100" value="{{hsvV * 100}}" bindchange="onValueChange" />
       <view class="picked-row">
-        <view class="color-chip" style="background:#{{targetHex}};"></view>
+        <view class="color-chip" style="background-color: {{targetColor}};"></view>
         <view class="picked">当前颜色：#{{targetHex}}</view>
         <view wx:if="{{!enterpriseAiEnabled || mode === 'fast'}}" class="inline-action" bindtap="toggleFastParams">
           高级参数 {{fastParamsOpen ? '⌃' : '›'}}
