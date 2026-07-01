@@ -515,7 +515,7 @@ def recolor_region_ai(
         payload: dict = {
             "model": model,
             "prompt": final_prompt,
-            "image": image_inputs,
+            "image": image_inputs if len(image_inputs) > 1 else image_inputs[0],
             "sequential_image_generation": sequential_image_generation,
             "size": size,
             "output_format": output_format,

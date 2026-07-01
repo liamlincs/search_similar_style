@@ -819,7 +819,6 @@ Page({
     try {
       const payload = this.buildRecolorPayload(true);
       const userPrompt = (this.data.aiPrompt || "").trim();
-      const hasReference = !!(this.data.referenceImage2 || this.data.referenceImage3);
       const hasImage2 = !!this.data.referenceImage2;
       const hasImage3 = !!this.data.referenceImage3;
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
