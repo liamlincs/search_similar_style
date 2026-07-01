@@ -7725,6 +7725,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logging.exception("recolor-ai failed unexpectedly")
+            raise HTTPException(status_code=500, detail=f"融合预览服务异常: {exc}") from exc
 
     app.state.ready = True
     app.state.ready_detail = "ready"

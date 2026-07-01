@@ -30,7 +30,7 @@ _REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp").strip() or "u2netp"
 _RECOLOR_MAX_SIDE = int(os.getenv("RECOLOR_MAX_SIDE", "1600"))
 _ARK_INPUT_MAX_SIDE = int(os.getenv("ARK_INPUT_MAX_SIDE", "1024"))
 _ARK_INPUT_JPEG_QUALITY = int(os.getenv("ARK_INPUT_JPEG_QUALITY", "88"))
-_ARK_USE_DATA_URL_INPUTS = os.getenv("ARK_USE_DATA_URL_INPUTS", "").strip().lower() in {"1", "true", "yes"}
+_ARK_USE_DATA_URL_INPUTS = os.getenv("ARK_USE_DATA_URL_INPUTS", "1").strip().lower() not in {"0", "false", "no"}
 
 
 def _truncate_for_log(value: str, limit: int = 2000) -> str:
