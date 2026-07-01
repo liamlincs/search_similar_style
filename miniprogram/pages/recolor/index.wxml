@@ -84,7 +84,6 @@
       >
         <image class="stage-img" src="{{referenceImage2}}" mode="aspectFit" />
       </view>
-      <view wx:if="{{referenceImage2}}" class="hint">部件图尽量清晰展示要融合的衣领</view>
       <view class="field-title">融合说明</view>
       <textarea
         class="prompt-input"
