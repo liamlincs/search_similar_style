@@ -83,6 +83,7 @@
         class="stage ref-stage"
       >
         <image class="stage-img" src="{{referenceImage2}}" mode="aspectFit" />
+        <view class="ref-remove" catchtap="removeReferenceImage" data-slot="2">删除</view>
       </view>
       <view class="field-title">融合说明</view>
       <textarea
