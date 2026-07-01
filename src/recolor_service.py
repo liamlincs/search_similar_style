@@ -28,6 +28,9 @@ ARK_IMAGE_GENERATION_URL = os.getenv(
 _REMBG_SESSION = None
 _REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp").strip() or "u2netp"
 _RECOLOR_MAX_SIDE = int(os.getenv("RECOLOR_MAX_SIDE", "1600"))
+_ARK_INPUT_MAX_SIDE = int(os.getenv("ARK_INPUT_MAX_SIDE", "1024"))
+_ARK_INPUT_JPEG_QUALITY = int(os.getenv("ARK_INPUT_JPEG_QUALITY", "88"))
+_ARK_USE_DATA_URL_INPUTS = os.getenv("ARK_USE_DATA_URL_INPUTS", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _truncate_for_log(value: str, limit: int = 2000) -> str:
@@ -404,10 +407,24 @@ def _data_url_to_bytes(data_url: str) -> tuple[bytes, str]:
 
 
 def _write_ark_input_bytes(raw: bytes, ext: str, public_base_url: str) -> str:
-    safe_ext = ext.strip(".").lower() or "png"
+    from io import BytesIO
+
+    try:
+        img = Image.open(BytesIO(raw))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img = _downscale_if_needed(img, _ARK_INPUT_MAX_SIDE)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=int(np.clip(_ARK_INPUT_JPEG_QUALITY, 50, 95)), optimize=True)
+        raw = buf.getvalue()
+        safe_ext = "jpg"
+    except Exception:
+        safe_ext = ext.strip(".").lower() or "jpg"
+        if safe_ext == "jpeg":
+            safe_ext = "jpg"
     name = f"{uuid.uuid4().hex}.{safe_ext}"
     out_path = RECOLOR_ARK_INPUT_DIR / name
     out_path.write_bytes(raw)
+    logging.info("ark input file written path=%s bytes=%d", out_path.name, len(raw))
     if not public_base_url:
         return ""
     return f"{public_base_url.rstrip('/')}/recolor-static/ark_inputs/{name}"
@@ -472,7 +489,8 @@ def recolor_region_ai(
 
     full_image_mode = x_ratio <= 0.001 and y_ratio <= 0.001 and w_ratio >= 0.999 and h_ratio >= 0.999
     src_buf = BytesIO()
-    img.save(src_buf, format="PNG")
+    ark_src_img = _downscale_if_needed(img, _ARK_INPUT_MAX_SIDE)
+    ark_src_img.save(src_buf, format="JPEG", quality=int(np.clip(_ARK_INPUT_JPEG_QUALITY, 50, 95)), optimize=True)
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
     has_reference_images = bool(image2 or image3)
@@ -480,15 +498,15 @@ def recolor_region_ai(
         f"把图1的衣服改为 #{target_hex.upper()}，保持主体、材质、光影和背景自然。"
     )
 
-    src_data_url = f"data:image/png;base64,{src_b64}"
-    if public_base_url:
+    src_data_url = f"data:image/jpeg;base64,{src_b64}"
+    if public_base_url and not _ARK_USE_DATA_URL_INPUTS:
         image_inputs = [_write_ark_input_data_url(src_data_url, public_base_url)]
     else:
         image_inputs = [src_data_url]
     if image2:
-        image_inputs.append(_write_ark_input_data_url(image2, public_base_url) if public_base_url and image2.startswith("data:") else image2)
+        image_inputs.append(_write_ark_input_data_url(image2, public_base_url) if public_base_url and not _ARK_USE_DATA_URL_INPUTS and image2.startswith("data:") else image2)
     if image3:
-        image_inputs.append(_write_ark_input_data_url(image3, public_base_url) if public_base_url and image3.startswith("data:") else image3)
+        image_inputs.append(_write_ark_input_data_url(image3, public_base_url) if public_base_url and not _ARK_USE_DATA_URL_INPUTS and image3.startswith("data:") else image3)
 
     payload: dict = {
         "model": model,
