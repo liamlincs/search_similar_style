@@ -159,8 +159,7 @@ function filePathToDataUrl(filePath) {
 
 function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, targetHex) {
   const raw = String(userPrompt || "").trim();
-  const base = raw || (hasImage2 || hasImage3 ? "把部件的深蓝衣领和中间白色装饰片合并到主图衣领位置，保留白色黑点边，不改变主图其他区域" : "将主图生成一张自然真实的改款效果图");
-  let prompt = base
+  let prompt = raw
     .replace(/部件图\s*2|部件图二|参考图\s*2|参考图二|图\s*3|图三/g, "image 3")
     .replace(/部件图\s*1|部件图一|部件图|部件|参考图\s*1|参考图一|图\s*2|图二/g, "image 2")
     .replace(/主图|原图|图\s*1|图一/g, "image 1");
@@ -218,7 +217,7 @@ Page({
     feather: 2,
     fastParamsOpen: false,
     aiPrompt: "",
-    aiPromptPlaceholder: "融合预览：把部件的深蓝衣领和中间白色装饰片合并到主图衣领位置，保留白色黑点边，不改变主图其他区域\n改色预览：把主图衣服改成目标色",
+    aiPromptPlaceholder: "融合：将部件图的衣领合并到主图上\n改色：把主图衣服改成目标色",
 
     meterPanelOpen: false,
     meterScanning: false,
@@ -818,6 +817,10 @@ Page({
     try {
       const payload = this.buildRecolorPayload(true);
       const userPrompt = (this.data.aiPrompt || "").trim();
+      if (!userPrompt) {
+        wx.showToast({ title: "请先输入融合说明", icon: "none" });
+        return;
+      }
       const hasImage2 = !!this.data.referenceImage2;
       const hasImage3 = !!this.data.referenceImage3;
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
