@@ -499,70 +499,86 @@ def recolor_region_ai(
     )
 
     src_data_url = f"data:image/jpeg;base64,{src_b64}"
-    if public_base_url and not _ARK_USE_DATA_URL_INPUTS:
-        image_inputs = [_write_ark_input_data_url(src_data_url, public_base_url)]
-    else:
-        image_inputs = [src_data_url]
-    if image2:
-        image_inputs.append(_write_ark_input_data_url(image2, public_base_url) if public_base_url and not _ARK_USE_DATA_URL_INPUTS and image2.startswith("data:") else image2)
-    if image3:
-        image_inputs.append(_write_ark_input_data_url(image3, public_base_url) if public_base_url and not _ARK_USE_DATA_URL_INPUTS and image3.startswith("data:") else image3)
 
-    payload: dict = {
-        "model": model,
-        "prompt": final_prompt,
-        "image": image_inputs,
-        "sequential_image_generation": sequential_image_generation,
-        "size": size,
-        "output_format": output_format,
-        "watermark": bool(watermark),
-    }
-    if negative_prompt:
-        payload["negative_prompt"] = negative_prompt
+    def build_image_inputs(use_data_urls: bool) -> list[str]:
+        inputs = [src_data_url]
+        if public_base_url and not use_data_urls:
+            inputs = [_write_ark_input_data_url(src_data_url, public_base_url)]
+        if image2:
+            inputs.append(_write_ark_input_data_url(image2, public_base_url) if public_base_url and not use_data_urls and image2.startswith("data:") else image2)
+        if image3:
+            inputs.append(_write_ark_input_data_url(image3, public_base_url) if public_base_url and not use_data_urls and image3.startswith("data:") else image3)
+        return inputs
 
-    logging.info(
-        "ark image request model=%s size=%s output_format=%s watermark=%s sequential=%s image_count=%d prompt=%s images=%s",
-        model,
-        size,
-        output_format,
-        bool(watermark),
-        sequential_image_generation,
-        len(image_inputs),
-        _truncate_for_log(final_prompt, 1000),
-        [_summarize_image_input(item) for item in image_inputs],
-    )
+    def call_ark(use_data_urls: bool, attempt_label: str) -> dict:
+        image_inputs = build_image_inputs(use_data_urls)
+        payload: dict = {
+            "model": model,
+            "prompt": final_prompt,
+            "image": image_inputs,
+            "sequential_image_generation": sequential_image_generation,
+            "size": size,
+            "output_format": output_format,
+            "watermark": bool(watermark),
+        }
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
 
-    req = urllib.request.Request(
-        ARK_IMAGE_GENERATION_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            status = getattr(resp, "status", None) or getattr(resp, "code", None)
-            body = resp.read().decode("utf-8")
-            logging.info("ark image response status=%s body=%s", status, _truncate_for_log(body, 4000))
-            data = json.loads(body)
-    except urllib.error.HTTPError as exc:
-        err_body = ""
-        try:
-            err_body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            err_body = ""
-        logging.error(
-            "ark image http error status=%s reason=%s body=%s",
-            getattr(exc, "code", ""),
-            getattr(exc, "reason", ""),
-            _truncate_for_log(err_body, 4000),
+        logging.info(
+            "ark image request attempt=%s model=%s size=%s output_format=%s watermark=%s sequential=%s image_count=%d prompt=%s images=%s",
+            attempt_label,
+            model,
+            size,
+            output_format,
+            bool(watermark),
+            sequential_image_generation,
+            len(image_inputs),
+            _truncate_for_log(final_prompt, 1000),
+            [_summarize_image_input(item) for item in image_inputs],
         )
-        raise ValueError(f"调用火山方舟失败: HTTP {getattr(exc, 'code', '')} {_truncate_for_log(err_body, 1000)}") from exc
-    except Exception as exc:
-        logging.exception("ark image request failed")
-        raise ValueError(f"调用火山方舟失败: {exc}") from exc
+
+        req = urllib.request.Request(
+            ARK_IMAGE_GENERATION_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                status = getattr(resp, "status", None) or getattr(resp, "code", None)
+                body = resp.read().decode("utf-8")
+                logging.info("ark image response attempt=%s status=%s body=%s", attempt_label, status, _truncate_for_log(body, 4000))
+                return json.loads(body)
+        except urllib.error.HTTPError as exc:
+            err_body = ""
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                err_body = ""
+            logging.error(
+                "ark image http error attempt=%s status=%s reason=%s body=%s",
+                attempt_label,
+                getattr(exc, "code", ""),
+                getattr(exc, "reason", ""),
+                _truncate_for_log(err_body, 4000),
+            )
+            raise ValueError(f"调用火山方舟失败: HTTP {getattr(exc, 'code', '')} {_truncate_for_log(err_body, 1000)}") from exc
+        except Exception as exc:
+            logging.exception("ark image request failed attempt=%s", attempt_label)
+            raise ValueError(f"调用火山方舟失败: {exc}") from exc
+
+    use_data_url_inputs = _ARK_USE_DATA_URL_INPUTS or not public_base_url
+    try:
+        data = call_ark(use_data_url_inputs, "data_url" if use_data_url_inputs else "url")
+    except ValueError as exc:
+        if (not use_data_url_inputs) and "Timeout while downloading url" in str(exc):
+            logging.info("ark image retry with data urls after url download timeout")
+            data = call_ark(True, "data_url_retry")
+        else:
+            raise
 
     images = data.get("data") or data.get("images") or []
     if not images or not isinstance(images[0], dict) or not images[0].get("url"):
