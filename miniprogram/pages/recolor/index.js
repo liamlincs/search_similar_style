@@ -822,30 +822,7 @@ Page({
       const hasReference = !!(this.data.referenceImage2 || this.data.referenceImage3);
       const hasImage2 = !!this.data.referenceImage2;
       const hasImage3 = !!this.data.referenceImage3;
-      const targetRect = this.buildRectPayload(this.data.selRect, this.data.imgRect);
-      if (hasImage2 && !targetRect) {
-        wx.showToast({ title: "请先在主图框选目标位置", icon: "none" });
-        return;
-      }
-      const componentCrop = this.buildRectPayload(this.data.componentRect, this.data.refImgRect);
-      if (hasImage2 && !componentCrop) {
-        wx.showToast({ title: "请先在部件图框选衣领", icon: "none" });
-        return;
-      }
       payload.prompt = buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, this.data.targetHex);
-      const editRect = hasImage2 ? this.expandRectPayload(targetRect) : targetRect;
-      if (editRect) {
-        payload.x_ratio = editRect.x;
-        payload.y_ratio = editRect.y;
-        payload.w_ratio = editRect.w;
-        payload.h_ratio = editRect.h;
-      }
-      if (componentCrop) {
-        payload.image2_crop_x = componentCrop.x;
-        payload.image2_crop_y = componentCrop.y;
-        payload.image2_crop_w = componentCrop.w;
-        payload.image2_crop_h = componentCrop.h;
-      }
       if (this.data.referenceImage2) payload.image2 = await filePathToDataUrl(this.data.referenceImage2);
       if (this.data.referenceImage3) payload.image3 = await filePathToDataUrl(this.data.referenceImage3);
       const res = await recolorAiUpload(this.data.localImage, payload);

@@ -5,7 +5,9 @@ import base64
 import json
 import uuid
 import urllib.request
+import urllib.error
 import os
+import logging
 from pathlib import Path
 from collections import deque
 
@@ -26,6 +28,21 @@ ARK_IMAGE_GENERATION_URL = os.getenv(
 _REMBG_SESSION = None
 _REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp").strip() or "u2netp"
 _RECOLOR_MAX_SIDE = int(os.getenv("RECOLOR_MAX_SIDE", "1600"))
+
+
+def _truncate_for_log(value: str, limit: int = 2000) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+
+def _summarize_image_input(value: str) -> str:
+    text = str(value or "")
+    if text.startswith("data:"):
+        header = text.split(",", 1)[0]
+        return f"{header},<base64 {max(0, len(text) - len(header) - 1)} chars>"
+    return _truncate_for_log(text, 500)
 
 
 def _parse_hex_color(hex_color: str) -> tuple[float, float, float]:
@@ -485,6 +502,18 @@ def recolor_region_ai(
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
 
+    logging.info(
+        "ark image request model=%s size=%s output_format=%s watermark=%s sequential=%s image_count=%d prompt=%s images=%s",
+        model,
+        size,
+        output_format,
+        bool(watermark),
+        sequential_image_generation,
+        len(image_inputs),
+        _truncate_for_log(final_prompt, 1000),
+        [_summarize_image_input(item) for item in image_inputs],
+    )
+
     req = urllib.request.Request(
         ARK_IMAGE_GENERATION_URL,
         data=json.dumps(payload).encode("utf-8"),
@@ -496,15 +525,33 @@ def recolor_region_ai(
     )
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
+            status = getattr(resp, "status", None) or getattr(resp, "code", None)
             body = resp.read().decode("utf-8")
+            logging.info("ark image response status=%s body=%s", status, _truncate_for_log(body, 4000))
             data = json.loads(body)
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            err_body = ""
+        logging.error(
+            "ark image http error status=%s reason=%s body=%s",
+            getattr(exc, "code", ""),
+            getattr(exc, "reason", ""),
+            _truncate_for_log(err_body, 4000),
+        )
+        raise ValueError(f"调用火山方舟失败: HTTP {getattr(exc, 'code', '')} {_truncate_for_log(err_body, 1000)}") from exc
     except Exception as exc:
+        logging.exception("ark image request failed")
         raise ValueError(f"调用火山方舟失败: {exc}") from exc
 
     images = data.get("data") or data.get("images") or []
     if not images or not isinstance(images[0], dict) or not images[0].get("url"):
+        logging.error("ark image missing url response=%s", _truncate_for_log(json.dumps(data, ensure_ascii=False), 4000))
         raise ValueError(f"火山方舟未返回图片链接: {data}")
     result_url = str(images[0]["url"])
+    logging.info("ark image result url=%s", _truncate_for_log(result_url, 1000))
 
     try:
         with urllib.request.urlopen(result_url, timeout=120) as img_resp:
@@ -515,6 +562,7 @@ def recolor_region_ai(
         if out_img.size != (w, h):
             out_img = out_img.resize((w, h), resample=Image.BICUBIC)
     except Exception as exc:
+        logging.exception("ark image result download failed url=%s", _truncate_for_log(result_url, 1000))
         raise ValueError(f"下载预览结果失败: {exc}") from exc
 
     if postprocess and not has_reference_images:

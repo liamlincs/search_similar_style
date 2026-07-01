@@ -303,20 +303,11 @@ function recolorAiUpload(filePath, options = {}) {
   const finalUrl = `${config.baseUrl}${recolorPath}`;
   const formData = {
     target_hex: options.target_hex || "FF5500",
-    x_ratio: String(options.x_ratio ?? 0.2),
-    y_ratio: String(options.y_ratio ?? 0.2),
-    w_ratio: String(options.w_ratio ?? 0.4),
-    h_ratio: String(options.h_ratio ?? 0.4),
-    strength: String(options.strength ?? 0.7),
   };
   if (options.prompt) formData.prompt = String(options.prompt);
   if (options.negative_prompt) formData.negative_prompt = String(options.negative_prompt);
   if (options.image2) formData.image2 = String(options.image2);
   if (options.image3) formData.image3 = String(options.image3);
-  if (options.image2_crop_x !== undefined && options.image2_crop_x !== null) formData.image2_crop_x = String(options.image2_crop_x);
-  if (options.image2_crop_y !== undefined && options.image2_crop_y !== null) formData.image2_crop_y = String(options.image2_crop_y);
-  if (options.image2_crop_w !== undefined && options.image2_crop_w !== null) formData.image2_crop_w = String(options.image2_crop_w);
-  if (options.image2_crop_h !== undefined && options.image2_crop_h !== null) formData.image2_crop_h = String(options.image2_crop_h);
   return new Promise((resolve, reject) => {
     wx.uploadFile({
       url: finalUrl,
