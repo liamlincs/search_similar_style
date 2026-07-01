@@ -45,7 +45,12 @@
     "query_image_dir": "outputs/debug_queries"
   },
   "ai_generation": {
-    "seed": 2180967052
+    "seed": 2180967052,
+    "model": "doubao-seedream-5-0-260128",
+    "size": "2K",
+    "output_format": "png",
+    "sequential_image_generation": "disabled",
+    "watermark": false
   },
   "paths": {
     "standard_dir": "data/standard_samples",

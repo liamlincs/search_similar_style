@@ -49,6 +49,36 @@
           高级参数 {{fastParamsOpen ? '⌃' : '›'}}
         </view>
       </view>
+      <view class="meter-bar">
+        <button class="meter-btn" loading="{{meterMeasuring}}" bindtap="measureTargetColor">仪器测色</button>
+      </view>
+      <view class="meter-status-row">
+        <view class="meter-status">
+          {{meterDeviceName ? meterDeviceName + ' · ' : ''}}{{meterStatus}}
+        </view>
+        <view class="meter-link" bindtap="toggleMeterPanel">{{meterPanelOpen ? '收起' : '连接设备'}}</view>
+      </view>
+      <view wx:if="{{meterLastLabText}}" class="meter-lab">{{meterLastLabText}}</view>
+      <view wx:if="{{meterPanelOpen}}" class="meter-panel">
+        <view class="meter-panel-head">
+          <view class="meter-panel-title">附近设备</view>
+          <view class="meter-panel-actions">
+            <view class="meter-text-action" bindtap="startMeterScan">{{meterScanning ? '扫描中' : '重新扫描'}}</view>
+            <view wx:if="{{meterDeviceName}}" class="meter-text-action muted" bindtap="disconnectMeter">断开</view>
+          </view>
+        </view>
+        <view wx:if="{{!meterDevices.length}}" class="meter-empty">未发现设备时，请确认仪器已开机并靠近手机</view>
+        <view
+          wx:for="{{meterDevices}}"
+          wx:key="deviceId"
+          class="meter-device"
+          data-device="{{item}}"
+          bindtap="connectMeter"
+        >
+          <view class="meter-device-name">{{item.name}}</view>
+          <view class="meter-device-meta">RSSI {{item.RSSI || '--'}}</view>
+        </view>
+      </view>
     </view>
 
     <view wx:if="{{!enterpriseAiEnabled || mode === 'fast'}}">

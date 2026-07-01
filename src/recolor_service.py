@@ -16,8 +16,13 @@ BASE_DIR = Path(__file__).resolve().parent
 RECOLOR_DIR = BASE_DIR / "recolor_runtime"
 RECOLOR_OUTPUT_DIR = RECOLOR_DIR / "outputs"
 RECOLOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+RECOLOR_ARK_INPUT_DIR = RECOLOR_DIR / "ark_inputs"
+RECOLOR_ARK_INPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/images/generations"
+ARK_IMAGE_GENERATION_URL = os.getenv(
+    "ARK_IMAGE_GENERATION_URL",
+    "https://ark.cn-beijing.volces.com/api/v3/images/generations",
+)
 _REMBG_SESSION = None
 _REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp").strip() or "u2netp"
 _RECOLOR_MAX_SIDE = int(os.getenv("RECOLOR_MAX_SIDE", "1600"))
@@ -369,6 +374,33 @@ def _crop_data_url_image(
         return image_data_url
 
 
+def _data_url_to_bytes(data_url: str) -> tuple[bytes, str]:
+    if "," not in data_url:
+        raise ValueError("invalid data url")
+    header, b64 = data_url.split(",", 1)
+    ext = "png"
+    if "image/jpeg" in header or "image/jpg" in header:
+        ext = "jpg"
+    elif "image/webp" in header:
+        ext = "webp"
+    return base64.b64decode(b64), ext
+
+
+def _write_ark_input_bytes(raw: bytes, ext: str, public_base_url: str) -> str:
+    safe_ext = ext.strip(".").lower() or "png"
+    name = f"{uuid.uuid4().hex}.{safe_ext}"
+    out_path = RECOLOR_ARK_INPUT_DIR / name
+    out_path.write_bytes(raw)
+    if not public_base_url:
+        return ""
+    return f"{public_base_url.rstrip('/')}/recolor-static/ark_inputs/{name}"
+
+
+def _write_ark_input_data_url(data_url: str, public_base_url: str) -> str:
+    raw, ext = _data_url_to_bytes(data_url)
+    return _write_ark_input_bytes(raw, ext, public_base_url)
+
+
 def recolor_region_ai(
     file_bytes: bytes,
     suffix: str,
@@ -392,9 +424,14 @@ def recolor_region_ai(
     image2_crop_y: float | None = None,
     image2_crop_w: float | None = None,
     image2_crop_h: float | None = None,
+    size: str = "2K",
+    watermark: bool = False,
+    output_format: str = "png",
+    sequential_image_generation: str = "disabled",
+    public_base_url: str = "",
 ) -> dict:
     if not api_key:
-        raise ValueError("缺少 SILICONFLOW_API_KEY，无法调用融合预览")
+        raise ValueError("缺少 ARK_API_KEY，无法调用融合预览")
 
     from io import BytesIO
 
@@ -417,66 +454,39 @@ def recolor_region_ai(
     y1 = min(h, y0 + bh)
 
     full_image_mode = x_ratio <= 0.001 and y_ratio <= 0.001 and w_ratio >= 0.999 and h_ratio >= 0.999
-    mask_backend = "manual_bbox"
-    if full_image_mode and postprocess:
-        auto_mask, mask_backend = _auto_subject_mask_from_image(img)
-        mask = (auto_mask > 0.25).astype(np.uint8)
-    else:
-        mask = np.zeros((h, w), dtype=np.uint8)
-        if x1 > x0 and y1 > y0:
-            mask[y0:y1, x0:x1] = 1
-
-    # 生成可视蒙版图（白色=需要改色，黑色=保留）
-    mask_img = Image.fromarray((mask * 255).astype(np.uint8), mode="L")
-    mask_buf = BytesIO()
-    mask_img.save(mask_buf, format="PNG")
-    mask_b64 = base64.b64encode(mask_buf.getvalue()).decode("ascii")
-
     src_buf = BytesIO()
     img.save(src_buf, format="PNG")
     src_b64 = base64.b64encode(src_buf.getvalue()).decode("ascii")
 
-    cropped_image2 = _crop_data_url_image(image2, image2_crop_x, image2_crop_y, image2_crop_w, image2_crop_h)
-    has_reference_images = bool(cropped_image2 or image3)
-    target_mask_as_image3 = bool(cropped_image2 and not image3 and not full_image_mode)
+    has_reference_images = bool(image2 or image3)
     final_prompt = prompt.strip() or (
-        f"将白色蒙版区域改为 #{target_hex.upper()}，保持纹理、光影和细节一致；非蒙版区域保持不变。"
+        f"把图1的衣服改为 #{target_hex.upper()}，保持主体、材质、光影和背景自然。"
     )
-    if target_mask_as_image3:
-        final_prompt = (
-            f"{final_prompt}\n"
-            "Use image 2 as the cropped component reference. Use image 3 as the target mask: "
-            "copy the component's shape, color, trim, stripe/dot details and fabric texture from image 2, "
-            "scale and place it to fill the white mask area on image 1, blend only inside the mask, "
-            "and keep all non-mask areas unchanged."
-        )
+
+    src_data_url = f"data:image/png;base64,{src_b64}"
+    if public_base_url:
+        image_inputs = [_write_ark_input_data_url(src_data_url, public_base_url)]
+    else:
+        image_inputs = [src_data_url]
+    if image2:
+        image_inputs.append(_write_ark_input_data_url(image2, public_base_url) if public_base_url and image2.startswith("data:") else image2)
+    if image3:
+        image_inputs.append(_write_ark_input_data_url(image3, public_base_url) if public_base_url and image3.startswith("data:") else image3)
 
     payload: dict = {
         "model": model,
         "prompt": final_prompt,
-        "image": f"data:image/png;base64,{src_b64}",
+        "image": image_inputs,
+        "sequential_image_generation": sequential_image_generation,
+        "size": size,
+        "output_format": output_format,
+        "watermark": bool(watermark),
     }
-    # 有参考图时 image2/image3 留给用户传入的素材；否则才用 image2 传蒙版辅助局部编辑。
-    # 原生模式(关闭后处理)下，整图不传蒙版，更贴近 playground 的直出行为。
-    if not has_reference_images and not (full_image_mode and not postprocess):
-        payload["image2"] = f"data:image/png;base64,{mask_b64}"
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
-    if seed is not None:
-        payload["seed"] = int(seed)
-    if cfg is not None:
-        payload["cfg"] = float(np.clip(cfg, 0.1, 20.0))
-    if num_inference_steps is not None:
-        payload["num_inference_steps"] = int(np.clip(num_inference_steps, 1, 100))
-    if cropped_image2:
-        payload["image2"] = cropped_image2
-    if image3:
-        payload["image3"] = image3
-    elif target_mask_as_image3:
-        payload["image3"] = f"data:image/png;base64,{mask_b64}"
 
     req = urllib.request.Request(
-        SILICONFLOW_API_URL,
+        ARK_IMAGE_GENERATION_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
@@ -489,11 +499,11 @@ def recolor_region_ai(
             body = resp.read().decode("utf-8")
             data = json.loads(body)
     except Exception as exc:
-        raise ValueError(f"调用 SiliconFlow 失败: {exc}") from exc
+        raise ValueError(f"调用火山方舟失败: {exc}") from exc
 
-    images = data.get("images") or []
+    images = data.get("data") or data.get("images") or []
     if not images or not isinstance(images[0], dict) or not images[0].get("url"):
-        raise ValueError(f"SiliconFlow 未返回图片链接: {data}")
+        raise ValueError(f"火山方舟未返回图片链接: {data}")
     result_url = str(images[0]["url"])
 
     try:
@@ -507,22 +517,7 @@ def recolor_region_ai(
     except Exception as exc:
         raise ValueError(f"下载预览结果失败: {exc}") from exc
 
-    if target_mask_as_image3:
-        out_arr = np.array(out_img).astype(np.float32) / 255.0
-        src_arr = np.array(img).astype(np.float32) / 255.0
-        local_mask = _build_soft_mask(
-            h=out_arr.shape[0],
-            w=out_arr.shape[1],
-            x0=int(round(x_ratio * out_arr.shape[1])),
-            y0=int(round(y_ratio * out_arr.shape[0])),
-            x1=min(out_arr.shape[1], int(round((x_ratio + w_ratio) * out_arr.shape[1]))),
-            y1=min(out_arr.shape[0], int(round((y_ratio + h_ratio) * out_arr.shape[0]))),
-            feather_px=max(2, int(round(min(out_arr.shape[1], out_arr.shape[0]) * 0.006))),
-        )
-        alpha = local_mask[:, :, None]
-        merged = src_arr * (1.0 - alpha) + out_arr * alpha
-        out_img = Image.fromarray(np.clip(merged * 255.0, 0, 255).astype(np.uint8), mode="RGB")
-    elif postprocess and not has_reference_images:
+    if postprocess and not has_reference_images:
         # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
@@ -564,39 +559,21 @@ def recolor_region_ai(
         "bbox": {"x": x0, "y": y0, "w": max(1, x1 - x0), "h": max(1, y1 - y0)},
         "mode": "ai",
         "used_params": {
-            "provider": "siliconflow",
+            "provider": "volcengine_ark",
             "model": model,
             "prompt": final_prompt,
             "task_mode": "reference_generate" if has_reference_images else "recolor_edit",
-            "mask_mode": (
-                "manual_bbox_target_mask"
-                if target_mask_as_image3
-                else "reference_images"
-                if has_reference_images
-                else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox"))
-            ),
-            "mask_backend": mask_backend,
+            "mask_mode": "none_multi_image" if has_reference_images else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox")),
+            "mask_backend": "",
             "postprocess": bool(postprocess and not has_reference_images),
             "negative_prompt": negative_prompt,
             "seed": seed,
             "cfg": payload.get("cfg"),
             "num_inference_steps": payload.get("num_inference_steps"),
             "strength_hint": strength,
-            "has_image2": bool(cropped_image2),
+            "has_image2": bool(image2),
             "has_image3": bool(image3),
-            "has_target_mask": target_mask_as_image3,
-            "image2_crop": (
-                {
-                    "x": image2_crop_x,
-                    "y": image2_crop_y,
-                    "w": image2_crop_w,
-                    "h": image2_crop_h,
-                }
-                if image2_crop_x is not None
-                and image2_crop_y is not None
-                and image2_crop_w is not None
-                and image2_crop_h is not None
-                else None
-            ),
+            "has_target_mask": False,
+            "image2_crop": None,
         },
     }

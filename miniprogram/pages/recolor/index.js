@@ -1,5 +1,7 @@
 const { recolorUpload, recolorAiUpload } = require("../../utils/api");
 const config = require("../../utils/config");
+const { ColorMeter } = require("../../utils/color_meter_bluetooth");
+const { labToHex, retry } = require("../../utils/color_meter_utils");
 
 function toAbsolute(pathOrUrl) {
   if (!pathOrUrl) return "";
@@ -48,6 +50,48 @@ function hsvToRgb(h, s, v) {
     g: Math.round((g1 + m) * 255),
     b: Math.round((b1 + m) * 255),
   };
+}
+
+function rgbToHsv(r, g, b) {
+  const rr = clamp(Number(r) || 0, 0, 255) / 255;
+  const gg = clamp(Number(g) || 0, 0, 255) / 255;
+  const bb = clamp(Number(b) || 0, 0, 255) / 255;
+  const max = Math.max(rr, gg, bb);
+  const min = Math.min(rr, gg, bb);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === rr) h = ((gg - bb) / d) % 6;
+    else if (max === gg) h = (bb - rr) / d + 2;
+    else h = (rr - gg) / d + 4;
+    h *= 60;
+  }
+  if (h < 0) h += 360;
+  return {
+    h,
+    s: max === 0 ? 0 : d / max,
+    v: max,
+  };
+}
+
+function hexToRgb(hex) {
+  const raw = String(hex || "").replace(/^#/, "");
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return null;
+  return {
+    r: parseInt(raw.slice(0, 2), 16),
+    g: parseInt(raw.slice(2, 4), 16),
+    b: parseInt(raw.slice(4, 6), 16),
+  };
+}
+
+function scoreMeterDevice(device) {
+  const name = String((device && (device.name || device.localName)) || "").toLowerCase();
+  let score = 0;
+  if (/color|colour|meter|spectro|colormeter|色差|测色|颜色/.test(name)) score += 100;
+  if (/iphone|ipad|macbook|watch|airpods/.test(name)) score -= 50;
+  const rssi = Number(device && device.RSSI);
+  if (Number.isFinite(rssi)) score += Math.max(-20, Math.min(20, Math.round((rssi + 80) / 2)));
+  return score;
 }
 
 function downloadToLocal(url) {
@@ -175,6 +219,47 @@ Page({
     fastParamsOpen: false,
     aiPrompt: "",
     aiPromptPlaceholder: "融合预览：把部件的深蓝衣领和中间白色装饰片合并到主图衣领位置，保留白色黑点边，不改变主图其他区域\n改色预览：把主图衣服改成目标色",
+
+    meterPanelOpen: false,
+    meterScanning: false,
+    meterConnecting: false,
+    meterMeasuring: false,
+    meterDevices: [],
+    meterDeviceName: "",
+    meterStatus: "未连接色差仪",
+    meterLastLab: null,
+    meterLastLabText: "",
+  },
+
+  onLoad() {
+    this._meterListener = (ev) => {
+      if (ev.type === "disconnect") {
+        this.setData({ meterStatus: "色差仪已断开", meterDeviceName: "" });
+      }
+      if (ev.type === "connected") {
+        const name = (ColorMeter.connected && ColorMeter.connected.name) || "已连接设备";
+        this.setData({ meterStatus: "色差仪已连接", meterDeviceName: name });
+      }
+    };
+    ColorMeter.init();
+    ColorMeter.subscribe(this._meterListener);
+    if (ColorMeter.connected) {
+      this.setData({
+        meterStatus: "色差仪已连接",
+        meterDeviceName: ColorMeter.connected.name || "已连接设备",
+      });
+    }
+  },
+
+  onUnload() {
+    if (this._meterScanHandler) {
+      ColorMeter.stopScan(this._meterScanHandler);
+      this._meterScanHandler = null;
+    }
+    if (this._meterListener) {
+      ColorMeter.unsubscribe(this._meterListener);
+      this._meterListener = null;
+    }
   },
 
   goSearchPage() {
@@ -523,6 +608,121 @@ Page({
     this.setData({ aiPrompt: e.detail.value || "" });
   },
 
+  applyTargetHex(targetHex, extra) {
+    const rgb = hexToRgb(targetHex);
+    if (!rgb) return;
+    const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+    const radius = this.data.wheelRadius;
+    const angle = ((hsv.h - 90) * Math.PI) / 180;
+    const dist = hsv.s * radius;
+    this.setData({
+      hsvH: hsv.h,
+      hsvS: hsv.s,
+      hsvV: hsv.v,
+      pickX: this.data.wheelCenterX + Math.cos(angle) * dist,
+      pickY: this.data.wheelCenterY + Math.sin(angle) * dist,
+      targetHex,
+      targetColor: `#${targetHex}`,
+      ...(extra || {}),
+    });
+  },
+
+  toggleMeterPanel() {
+    const nextOpen = !this.data.meterPanelOpen;
+    this.setData({ meterPanelOpen: nextOpen });
+    if (nextOpen && !ColorMeter.connected && !this.data.meterScanning) {
+      this.startMeterScan();
+    }
+  },
+
+  async startMeterScan() {
+    if (this.data.meterScanning) return;
+    try {
+      await ColorMeter.init();
+      if (this._meterScanHandler) ColorMeter.stopScan(this._meterScanHandler);
+      this._meterScanHandler = (res) => {
+        const found = (res.devices || []).filter((device) => device.name || device.localName);
+        if (!found.length) return;
+        const merged = [...this.data.meterDevices];
+        found.forEach((device) => {
+          const name = device.name || device.localName || "";
+          const normalized = { ...device, name };
+          const idx = merged.findIndex((i) => i.deviceId === normalized.deviceId);
+          if (idx >= 0) merged[idx] = normalized;
+          else merged.push(normalized);
+        });
+        merged.sort((a, b) => scoreMeterDevice(b) - scoreMeterDevice(a));
+        this.setData({ meterDevices: merged });
+      };
+      this.setData({ meterScanning: true, meterDevices: [], meterStatus: "正在扫描色差仪" });
+      await ColorMeter.startScan(this._meterScanHandler, 10000);
+      setTimeout(() => {
+        if (this.data.meterScanning) this.setData({ meterScanning: false, meterStatus: ColorMeter.connected ? "色差仪已连接" : "扫描完成" });
+      }, 10200);
+    } catch (err) {
+      console.error("[color-meter:scan:error]", err);
+      this.setData({ meterScanning: false, meterStatus: "蓝牙不可用或未授权" });
+      wx.showToast({ title: "蓝牙不可用或未授权", icon: "none" });
+    }
+  },
+
+  async connectMeter(e) {
+    const device = e.currentTarget.dataset.device;
+    if (!device || this.data.meterConnecting) return;
+    this.setData({ meterConnecting: true, meterStatus: "正在连接色差仪" });
+    try {
+      if (this._meterScanHandler) {
+        ColorMeter.stopScan(this._meterScanHandler);
+        this._meterScanHandler = null;
+      }
+      await ColorMeter.connect(device);
+      await retry(() => ColorMeter.getDeviceInfo(), 1).catch(() => null);
+      this.setData({
+        meterConnecting: false,
+        meterScanning: false,
+        meterDeviceName: device.name || "已连接设备",
+        meterStatus: "色差仪已连接",
+      });
+      wx.showToast({ title: "色差仪已连接", icon: "none" });
+    } catch (err) {
+      console.error("[color-meter:connect:error]", err);
+      await ColorMeter.disconnect().catch(() => null);
+      this.setData({ meterConnecting: false, meterStatus: "连接失败" });
+      wx.showToast({ title: "连接失败", icon: "none" });
+    }
+  },
+
+  async disconnectMeter() {
+    await ColorMeter.disconnect().catch(() => null);
+    this.setData({ meterDeviceName: "", meterStatus: "未连接色差仪" });
+  },
+
+  async measureTargetColor() {
+    if (this.data.meterMeasuring) return;
+    if (!ColorMeter.connected) {
+      this.setData({ meterPanelOpen: true });
+      wx.showToast({ title: "请先连接色差仪", icon: "none" });
+      return;
+    }
+    this.setData({ meterMeasuring: true, meterStatus: "正在测量目标色" });
+    try {
+      const lab = await retry(() => ColorMeter.measureAndGetLab(), 2);
+      const targetHex = labToHex(lab);
+      this.applyTargetHex(targetHex, {
+        meterLastLab: lab,
+        meterLastLabText: `Lab：L ${lab.L.toFixed(2)} / a ${lab.a.toFixed(2)} / b ${lab.b.toFixed(2)}`,
+        meterStatus: `测量完成 #${targetHex}`,
+      });
+      wx.showToast({ title: "已设为目标色", icon: "none" });
+    } catch (err) {
+      console.error("[color-meter:measure:error]", err);
+      this.setData({ meterStatus: "测量失败" });
+      wx.showToast({ title: "测量失败", icon: "none" });
+    } finally {
+      this.setData({ meterMeasuring: false });
+    }
+  },
+
   toggleFastParams() {
     this.setData({ fastParamsOpen: !this.data.fastParamsOpen });
   },
@@ -640,10 +840,6 @@ Page({
         payload.w_ratio = editRect.w;
         payload.h_ratio = editRect.h;
       }
-      payload.model = "Qwen/Qwen-Image-Edit-2509";
-      payload.cfg = 4;
-      payload.num_inference_steps = 20;
-      payload.postprocess = hasReference ? false : false;
       if (componentCrop) {
         payload.image2_crop_x = componentCrop.x;
         payload.image2_crop_y = componentCrop.y;
@@ -660,8 +856,6 @@ Page({
       const image3Status = used.has_image3 === undefined ? "unknown" : (used.has_image3 ? "yes" : "no");
       const usedText = [
         `prompt: ${used.prompt || payload.prompt || ""}`,
-        `cfg: ${used.cfg ?? payload.cfg ?? ""}`,
-        `steps: ${used.num_inference_steps ?? payload.num_inference_steps ?? ""}`,
         `image2: ${image2Status}`,
         `image3: ${image3Status}`,
       ].join("\n");

@@ -218,6 +218,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     path_cfg = cfg.get("paths", {})
     search_cfg = cfg.get("search", {})
     ai_generation_cfg = cfg.get("ai_generation", {})
+    ai_generation_model = str(ai_generation_cfg.get("model", "doubao-seedream-5-0-260128")).strip() or "doubao-seedream-5-0-260128"
+    ai_generation_size = str(ai_generation_cfg.get("size", "2K")).strip() or "2K"
+    ai_generation_output_format = str(ai_generation_cfg.get("output_format", "png")).strip() or "png"
+    ai_generation_sequential = str(ai_generation_cfg.get("sequential_image_generation", "disabled")).strip() or "disabled"
+    ai_generation_watermark = bool(ai_generation_cfg.get("watermark", False))
     ai_generation_seed_raw = ai_generation_cfg.get("seed", None)
     ai_generation_seed: int | None = None
     if ai_generation_seed_raw is not None and str(ai_generation_seed_raw).strip() != "":
@@ -7656,8 +7661,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/recolor-ai")
     async def api_recolor_ai(
+        request: Request,
         file: UploadFile = File(...),
-        model: str = Form("Qwen/Qwen-Image-Edit-2509"),
+        model: str = Form(""),
         target_hex: str = Form("FF5500"),
         x_ratio: float = Form(0.2),
         y_ratio: float = Form(0.2),
@@ -7685,11 +7691,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not content:
             raise HTTPException(status_code=400, detail="空文件")
         try:
+            ark_public_base_url = _external_base_url(request)
+            if "127.0.0.1" in ark_public_base_url or "localhost" in ark_public_base_url:
+                ark_public_base_url = ""
             return recolor_region_ai(
                 file_bytes=content,
                 suffix=suffix,
-                api_key=os.getenv("SILICONFLOW_API_KEY", "").strip(),
-                model=model,
+                api_key=os.getenv("ARK_API_KEY", "").strip(),
+                model=ai_generation_model or model,
                 target_hex=target_hex,
                 x_ratio=x_ratio,
                 y_ratio=y_ratio,
@@ -7708,6 +7717,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 image2_crop_y=image2_crop_y,
                 image2_crop_w=image2_crop_w,
                 image2_crop_h=image2_crop_h,
+                size=ai_generation_size,
+                watermark=ai_generation_watermark,
+                output_format=ai_generation_output_format,
+                sequential_image_generation=ai_generation_sequential,
+                public_base_url=ark_public_base_url,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
