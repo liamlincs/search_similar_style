@@ -31,6 +31,7 @@ _RECOLOR_MAX_SIDE = int(os.getenv("RECOLOR_MAX_SIDE", "1600"))
 _ARK_INPUT_MAX_SIDE = int(os.getenv("ARK_INPUT_MAX_SIDE", "1024"))
 _ARK_INPUT_JPEG_QUALITY = int(os.getenv("ARK_INPUT_JPEG_QUALITY", "88"))
 _ARK_USE_DATA_URL_INPUTS = os.getenv("ARK_USE_DATA_URL_INPUTS", "1").strip().lower() not in {"0", "false", "no"}
+_ARK_ENABLE_SINGLE_IMAGE_POSTPROCESS = os.getenv("ARK_ENABLE_SINGLE_IMAGE_POSTPROCESS", "0").strip().lower() in {"1", "true", "yes"}
 
 
 def _truncate_for_log(value: str, limit: int = 2000) -> str:
@@ -599,7 +600,9 @@ def recolor_region_ai(
         logging.exception("ark image result download failed url=%s", _truncate_for_log(result_url, 1000))
         raise ValueError(f"下载预览结果失败: {exc}") from exc
 
-    if postprocess and not has_reference_images:
+    apply_ark_postprocess = bool(postprocess and not has_reference_images and _ARK_ENABLE_SINGLE_IMAGE_POSTPROCESS)
+
+    if apply_ark_postprocess:
         # AI 模型可能出现目标色漂移（例如粉色偏紫），增加一步数值后校色，确保更接近 target_hex。
         out_arr = np.array(out_img).astype(np.float32) / 255.0
         src_arr = np.array(img).astype(np.float32) / 255.0
@@ -645,9 +648,9 @@ def recolor_region_ai(
             "model": model,
             "prompt": final_prompt,
             "task_mode": "reference_generate" if has_reference_images else "recolor_edit",
-            "mask_mode": "none_multi_image" if has_reference_images else ("auto_subject" if (full_image_mode and postprocess) else ("full_or_manual" if full_image_mode else "manual_bbox")),
+            "mask_mode": "none_multi_image" if has_reference_images else ("auto_subject" if (full_image_mode and apply_ark_postprocess) else "none_single_image"),
             "mask_backend": "",
-            "postprocess": bool(postprocess and not has_reference_images),
+            "postprocess": apply_ark_postprocess,
             "negative_prompt": negative_prompt,
             "seed": seed,
             "size": size,
