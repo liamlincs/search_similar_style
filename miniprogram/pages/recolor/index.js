@@ -241,7 +241,6 @@ Page({
         this.setData({ meterStatus: "色差仪已连接", meterDeviceName: name });
       }
     };
-    ColorMeter.init();
     ColorMeter.subscribe(this._meterListener);
     if (ColorMeter.connected) {
       this.setData({
