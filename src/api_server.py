@@ -234,6 +234,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         wechat_content_security_enabled = False
     wechat_appid = str(os.getenv("WECHAT_APPID", "") or wechat_security_cfg.get("appid", "")).strip()
     wechat_appsecret = str(os.getenv("WECHAT_APPSECRET", "") or wechat_security_cfg.get("appsecret", "")).strip()
+    wechat_security_openid = str(os.getenv("WECHAT_SECURITY_OPENID", "") or wechat_security_cfg.get("openid", "")).strip()
+    wechat_security_scene = int(wechat_security_cfg.get("scene", 2))
     wechat_security_fail_open = bool(wechat_security_cfg.get("fail_open", False))
     wechat_security_timeout = float(wechat_security_cfg.get("timeout_sec", 10))
     ai_generation_cfg = cfg.get("ai_generation", {})
@@ -1079,8 +1081,48 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if errcode == 0:
             return
         if errcode in {87014, 87015}:
-            raise HTTPException(status_code=400, detail="图片内容可能违规，请更换图片后再试")
+            raise HTTPException(status_code=400, detail="内容含违规信息，请修改后再试")
         raise WechatContentSecurityError(f"微信图片内容安全接口返回异常: {data}")
+
+    def _wechat_msg_sec_check(text: str) -> None:
+        if not wechat_content_security_enabled:
+            return
+        content = str(text or "").strip()
+        if not content:
+            return
+        payload: Dict[str, Any] = {"content": content[:2500]}
+        if wechat_security_openid:
+            payload.update(
+                {
+                    "version": 2,
+                    "scene": wechat_security_scene,
+                    "openid": wechat_security_openid,
+                }
+            )
+        try:
+            token = _wechat_get_access_token()
+            url = f"https://api.weixin.qq.com/wxa/msg_sec_check?access_token={urllib.parse.quote(token)}"
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=wechat_security_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise WechatContentSecurityError(f"微信文本内容安全接口失败: HTTP {exc.code} {raw}") from exc
+        except Exception as exc:
+            raise WechatContentSecurityError(f"微信文本内容安全接口失败: {exc}") from exc
+        errcode = int(data.get("errcode", -1))
+        result = data.get("result") if isinstance(data.get("result"), dict) else {}
+        suggest = str(result.get("suggest", "")).lower()
+        if errcode == 0 and (not suggest or suggest == "pass"):
+            return
+        if errcode == 87014 or suggest in {"risky", "review"}:
+            raise HTTPException(status_code=400, detail="内容含违规信息，请修改后再试")
+        raise WechatContentSecurityError(f"微信文本内容安全接口返回异常: {data}")
 
     def _check_search_upload_content_security(image_bytes: bytes, filename: str) -> None:
         if not wechat_content_security_enabled:
@@ -1091,6 +1133,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise
         except WechatContentSecurityError as exc:
             logging.warning("wechat content security check failed filename=%s error=%s", filename, exc)
+            if not wechat_security_fail_open:
+                raise HTTPException(status_code=503, detail="内容安全校验暂不可用，请稍后再试") from exc
+
+    def _check_text_content_security(*values: Any) -> None:
+        if not wechat_content_security_enabled:
+            return
+        texts = [str(value or "").strip() for value in values if str(value or "").strip()]
+        if not texts:
+            return
+        try:
+            for text in texts:
+                _wechat_msg_sec_check(text)
+        except HTTPException:
+            raise
+        except WechatContentSecurityError as exc:
+            logging.warning("wechat text content security check failed error=%s", exc)
             if not wechat_security_fail_open:
                 raise HTTPException(status_code=503, detail="内容安全校验暂不可用，请稍后再试") from exc
 
@@ -4988,6 +5046,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         limit: int = 200,
         offset: int = 0,
     ) -> Dict[str, Any]:
+        _check_text_content_security(style_code, tags)
         base_url = _external_base_url(request)
         tag_list = [item.strip() for item in tags.split(",") if item.strip()]
         products = catalog_store.list_products(style_code=style_code, tags=tag_list, limit=limit, offset=offset)
@@ -5002,6 +5061,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.put("/api/v1/catalog/products/{style_code}/tags")
     def api_replace_catalog_product_tags(style_code: str, payload: CatalogTagUpdateRequest) -> Dict[str, Any]:
+        _check_text_content_security(style_code, *payload.tags)
         try:
             tags_local = catalog_store.replace_product_tags(style_code, payload.tags)
         except ValueError as exc:
@@ -5014,6 +5074,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/api/v1/catalog/tags")
     def api_create_catalog_tag(payload: CatalogTagCreateRequest) -> Dict[str, Any]:
+        _check_text_content_security(payload.name)
         try:
             tag = catalog_store.create_tag(payload.name)
         except ValueError as exc:
@@ -5074,6 +5135,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not raw:
                 skipped.append(str(item.filename or f"file-{index}"))
                 continue
+            try:
+                _check_search_upload_content_security(raw, item.filename or candidate)
+            except HTTPException:
+                shutil.rmtree(source_dir, ignore_errors=True)
+                raise
             (source_dir / candidate).write_bytes(raw)
             used_names.add(candidate.lower())
             saved += 1
@@ -7838,6 +7904,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="空文件")
+        _check_search_upload_content_security(content, file.filename)
 
         try:
             return process_upload(content, suffix=suffix)
@@ -7873,6 +7940,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="空文件")
+        _check_search_upload_content_security(content, file.filename)
         try:
             return recolor_region(
                 file_bytes=content,
@@ -7920,6 +7988,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="空文件")
+        _check_text_content_security(prompt, negative_prompt)
+        _check_search_upload_content_security(content, file.filename)
         try:
             ark_public_base_url = _external_base_url(request)
             if "127.0.0.1" in ark_public_base_url or "localhost" in ark_public_base_url:

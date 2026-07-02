@@ -508,12 +508,19 @@ sudo bash scripts/update_ufw_cloudflare.sh
 
 ### 内容安全校验
 
-`POST /search` 会在后端读取上传图片后、执行检索前调用微信图片内容安全接口。生产环境需要配置：
+后端会在用户图片/文本进入业务处理前调用微信内容安全接口：
+
+- 图片上传：调用图片内容安全检查。
+- 文本输入：调用 `msgSecCheck`，覆盖款库查询、标签、融合说明等用户输入。
+
+生产环境需要配置：
 
 ```bash
 export WECHAT_CONTENT_SECURITY_ENABLED=1
 export WECHAT_APPID="你的小程序 AppID"
 export WECHAT_APPSECRET="你的小程序 AppSecret"
+# 可选：使用 msgSecCheck v2 时提供用户 openid
+export WECHAT_SECURITY_OPENID="用户 openid"
 ```
 
 也可在 `config/search_config*.json` 的 `content_security.wechat` 中配置。不要把真实 `AppSecret` 提交到仓库。

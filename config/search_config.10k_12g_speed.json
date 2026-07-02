@@ -23,7 +23,9 @@
       "appid": "",
       "appsecret": "",
       "fail_open": false,
-      "timeout_sec": 10
+      "timeout_sec": 10,
+      "scene": 2,
+      "openid": ""
     }
   },
   "catalog": {
