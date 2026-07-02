@@ -3956,7 +3956,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <input id="styleCodeQuery" placeholder="按款号搜索，如 GZ25-1177 或 J0831" />
       <button id="searchBtn">查询</button>
       <button id="syncBtn" class="secondary">同步图片</button>
-      <button id="importBtn" class="secondary">目录批量导入</button>
+      <button id="importBtn" class="secondary">批量导入</button>
     </div>
     <div class="toolbar-secondary">
       <div class="input-pop-wrap">
@@ -3997,7 +3997,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="import-source-title">服务器目录</div>
         <div class="import-row">
           <input id="importSourceDir" value="__CATALOG_IMPORT_SOURCE_DIR__" placeholder="例如 /data/new_samples 或 D:\\samples\\new" />
-          <button id="startImportBtn">识别目录</button>
+          <button id="startImportBtn">目录识别</button>
         </div>
       </div>
       <div class="import-source-block">
