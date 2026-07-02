@@ -980,6 +980,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.state.ready_detail = "initializing"
     image_cache_dir = Path("outputs/image_cache")
     image_cache_dir.mkdir(parents=True, exist_ok=True)
+    catalog_upload_dir = Path("outputs/catalog_import_uploads")
+    catalog_upload_dir.mkdir(parents=True, exist_ok=True)
 
     def _list_import_source_images(source_dir: Path) -> List[Path]:
         return [
@@ -1000,6 +1002,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise ValueError("filename is empty")
         if suffix not in allowed_image_exts:
             raise ValueError(f"unsupported image suffix: {suffix}")
+        return f"{stem}{suffix}"
+
+    def _sanitize_upload_filename(filename: str, fallback_name: str) -> str:
+        raw = Path(str(filename or "").replace("\\", "/").split("/")[-1].strip() or fallback_name).name
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(raw).stem).strip("_") or Path(fallback_name).stem
+        suffix = Path(raw).suffix.lower()
+        if suffix not in allowed_image_exts:
+            raise ValueError(f"unsupported image suffix: {suffix or '(none)'}")
         return f"{stem}{suffix}"
 
     def _derive_year_tag_from_style_code(style_code: str) -> str:
@@ -1131,10 +1141,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     job["status"] = "failed"
                     job["message"] = str(exc)
 
+    def _create_catalog_import_job(source_dir: Path, source_type: str = "server_dir") -> Dict[str, Any]:
+        files = _list_import_source_images(source_dir)
+        if not files:
+            raise ValueError("source_dir has no supported images")
+        job_id = uuid.uuid4().hex
+        job = {
+            "job_id": job_id,
+            "source_dir": str(source_dir),
+            "source_type": source_type,
+            "status": "pending",
+            "message": "任务已创建",
+            "total": 0,
+            "processed": 0,
+            "items": [],
+            "committed": False,
+        }
+        with catalog_import_lock:
+            catalog_import_jobs[job_id] = job
+        thread = threading.Thread(target=_run_catalog_import_prepare, args=(job_id, source_dir), daemon=True)
+        thread.start()
+        return job
+
     def _serialize_catalog_import_job(job: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "job_id": str(job.get("job_id", "")),
             "source_dir": str(job.get("source_dir", "")),
+            "source_type": str(job.get("source_type", "")),
             "status": str(job.get("status", "pending")),
             "message": str(job.get("message", "")),
             "total": int(job.get("total", 0)),
@@ -3854,6 +3887,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .gallery-caption { margin-top: 8px; font-size: 12px; color: #4b5563; word-break: break-all; }
     .import-panel { width: min(1120px, 100%); }
     .import-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 12px; }
+    .import-source-block { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin-bottom: 12px; background: #fafbfc; }
+    .import-source-title { font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 8px; }
+    .import-upload-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+    .import-upload-row input[type="file"] { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
     .import-progress { height: 10px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-bottom: 10px; }
     .import-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #4f46e5, #6366f1); transition: width 0.2s ease; }
     .import-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -3951,14 +3988,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="modal-panel import-panel">
       <div class="modal-head">
         <div>
-          <div class="code" style="margin:0;">服务器目录批量导入</div>
-          <div class="muted">输入服务器本地目录，先 OCR 生成候选文件名，再手工修改后导入到产品库图片目录。</div>
+          <div class="code" style="margin:0;">批量导入</div>
+          <div class="muted">支持服务器目录或浏览器上传图片，先 OCR 生成候选文件名，再手工修改后导入到产品库图片目录。</div>
         </div>
         <button id="closeImportBtn" class="secondary">关闭</button>
       </div>
-      <div class="import-row">
-        <input id="importSourceDir" value="__CATALOG_IMPORT_SOURCE_DIR__" placeholder="例如 /data/new_samples 或 D:\\samples\\new" />
-        <button id="startImportBtn">开始识别</button>
+      <div class="import-source-block">
+        <div class="import-source-title">服务器目录</div>
+        <div class="import-row">
+          <input id="importSourceDir" value="__CATALOG_IMPORT_SOURCE_DIR__" placeholder="例如 /data/new_samples 或 D:\\samples\\new" />
+          <button id="startImportBtn">识别目录</button>
+        </div>
+      </div>
+      <div class="import-source-block">
+        <div class="import-source-title">浏览器上传</div>
+        <div class="import-upload-row">
+          <input id="importUploadFiles" type="file" accept="image/*" multiple />
+          <button id="startUploadImportBtn" type="button">上传识别</button>
+        </div>
       </div>
       <div class="import-batch-tag-box">
         <div class="import-batch-tag-title">批量标签：统一加到本次勾选导入的图片所属款号</div>
@@ -4044,6 +4091,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       closeImportBtn: document.getElementById('closeImportBtn'),
       importSourceDir: document.getElementById('importSourceDir'),
       startImportBtn: document.getElementById('startImportBtn'),
+      importUploadFiles: document.getElementById('importUploadFiles'),
+      startUploadImportBtn: document.getElementById('startUploadImportBtn'),
       importProgressBar: document.getElementById('importProgressBar'),
       importMeta: document.getElementById('importMeta'),
       importBatchTags: document.getElementById('importBatchTags'),
@@ -4719,7 +4768,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
         stopImportPolling();
         setNodeText(els.importCommitStatus, '');
-        if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="5" class="muted">任务创建中...</td></tr>';
+        if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="6" class="muted">任务创建中...</td></tr>';
         const resp = await fetch('/api/v1/catalog/imports/prepare', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4732,6 +4781,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         await pollImportJob();
       } catch (err) {
         setNodeText(els.importCommitStatus, err.message || '导入预处理失败');
+      }
+    });
+    els.startUploadImportBtn.addEventListener('click', async () => {
+      try {
+        const files = Array.from((els.importUploadFiles && els.importUploadFiles.files) || []);
+        if (!files.length) {
+          setNodeText(els.importCommitStatus, '请选择要上传的图片');
+          return;
+        }
+        stopImportPolling();
+        setNodeText(els.importCommitStatus, '');
+        if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="6" class="muted">图片上传中...</td></tr>';
+        const form = new FormData();
+        files.forEach((file) => form.append('files', file, file.name));
+        const resp = await fetch('/api/v1/catalog/imports/upload', {
+          method: 'POST',
+          body: form
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const job = await resp.json();
+        importJobId = job.job_id || '';
+        renderImportJob(job);
+        await pollImportJob();
+      } catch (err) {
+        setNodeText(els.importCommitStatus, err.message || '上传导入预处理失败');
       }
     });
     els.commitImportBtn.addEventListener('click', async () => {
@@ -4855,24 +4929,54 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         source_dir = _resolve_catalog_import_source_dir(source_dir_raw)
         if not source_dir.exists() or not source_dir.is_dir():
             raise HTTPException(status_code=400, detail="source_dir not found")
-        files = _list_import_source_images(source_dir)
-        if not files:
-            raise HTTPException(status_code=400, detail="source_dir has no supported images")
+        try:
+            job = _create_catalog_import_job(source_dir, "server_dir")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _serialize_catalog_import_job(job)
+
+    @app.post("/api/v1/catalog/imports/upload")
+    async def api_upload_catalog_import(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+        upload_files = [item for item in files if item and str(item.filename or "").strip()]
+        if not upload_files:
+            raise HTTPException(status_code=400, detail="no files uploaded")
         job_id = uuid.uuid4().hex
-        job = {
-            "job_id": job_id,
-            "source_dir": str(source_dir),
-            "status": "pending",
-            "message": "任务已创建",
-            "total": 0,
-            "processed": 0,
-            "items": [],
-            "committed": False,
-        }
-        with catalog_import_lock:
-            catalog_import_jobs[job_id] = job
-        thread = threading.Thread(target=_run_catalog_import_prepare, args=(job_id, source_dir), daemon=True)
-        thread.start()
+        source_dir = (catalog_upload_dir / job_id).resolve()
+        source_dir.mkdir(parents=True, exist_ok=True)
+        used_names: set[str] = set()
+        saved = 0
+        skipped: List[str] = []
+        for index, item in enumerate(upload_files, start=1):
+            try:
+                safe = _sanitize_upload_filename(item.filename or "", f"upload_{index}.jpg")
+            except ValueError:
+                skipped.append(str(item.filename or f"file-{index}"))
+                continue
+            stem = Path(safe).stem
+            suffix = Path(safe).suffix.lower()
+            candidate = safe
+            seq = 1
+            while candidate.lower() in used_names or (source_dir / candidate).exists():
+                candidate = f"{stem}_{seq}{suffix}"
+                seq += 1
+            raw = await item.read()
+            if not raw:
+                skipped.append(str(item.filename or f"file-{index}"))
+                continue
+            (source_dir / candidate).write_bytes(raw)
+            used_names.add(candidate.lower())
+            saved += 1
+        if saved <= 0:
+            shutil.rmtree(source_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="uploaded files have no supported images")
+        try:
+            job = _create_catalog_import_job(source_dir, "browser_upload")
+        except ValueError as exc:
+            shutil.rmtree(source_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if skipped:
+            job["message"] = f"任务已创建，已跳过 {len(skipped)} 个非图片文件"
+        logging.info("catalog import upload created job=%s saved=%d skipped=%d", job.get("job_id"), saved, len(skipped))
         return _serialize_catalog_import_job(job)
 
     @app.get("/api/v1/catalog/imports/{job_id}")
