@@ -490,7 +490,7 @@ Page({
     if (tried >= maxRetries) return;
 
     try {
-      const refreshed = await fetchSignedImageUrl(current.coverImage);
+      const refreshed = await fetchSignedImageUrl(current.coverImage, { kind: "catalog" });
       this.setData({
         [`catalogResults[${idx}].coverImageUrl`]: refreshed.image_url || current.coverImageUrl,
         [`catalogResults[${idx}].imageRetryCount`]: tried + 1

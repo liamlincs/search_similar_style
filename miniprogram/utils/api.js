@@ -79,13 +79,15 @@ function doUpload(filePath, options = {}) {
   });
 }
 
-function fetchSignedImageUrl(imageName) {
+function fetchSignedImageUrl(imageName, options = {}) {
   return new Promise((resolve, reject) => {
+    const data = { image_name: imageName };
+    if (options.kind) data.kind = String(options.kind);
     wx.request({
       url: `${config.baseUrl}${config.imageUrlPath}`,
       method: "GET",
       timeout: config.timeout,
-      data: { image_name: imageName },
+      data,
       header: {
         "X-API-Key": config.apiKey
       },

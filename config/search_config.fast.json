@@ -21,6 +21,8 @@
     "db_path": "data/product_catalog.db",
     "import_source_dir": "",
     "public_endpoints": true,
+    "image_max_edge": 420,
+    "image_quality": 68,
     "web_auth": {
       "enabled": true,
       "captcha_enabled": true,

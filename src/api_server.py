@@ -579,6 +579,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_db_path = Path(catalog_cfg.get("db_path", "data/product_catalog.db"))
     catalog_import_source_dir = str(catalog_cfg.get("import_source_dir", "")).strip()
     catalog_public = bool(catalog_cfg.get("public_endpoints", True))
+    catalog_image_max_edge = int(catalog_cfg.get("image_max_edge", 420))
+    catalog_image_quality = int(catalog_cfg.get("image_quality", 68))
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
@@ -1402,14 +1404,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         )
         return resp
 
-    def _build_image_url(base_url: str, image_name: str) -> str:
+    def _build_image_url_with_preview(base_url: str, image_name: str, max_edge: int, quality: int) -> str:
         safe = Path(image_name).name
         if not safe:
             return f"{base_url}/images/"
         query_parts: List[str] = []
-        if result_image_max_edge > 0:
-            query_parts.append(f"max_edge={result_image_max_edge}")
-            query_parts.append(f"q={max(40, min(95, result_image_quality))}")
+        if max_edge > 0:
+            query_parts.append(f"max_edge={max(128, min(2048, int(max_edge)))}")
+            query_parts.append(f"q={max(40, min(95, int(quality)))}")
         if api_key_enabled and image_url_secret:
             exp_ts = int(time.time()) + max(60, image_url_ttl_sec)
             msg = f"{safe}:{exp_ts}".encode("utf-8")
@@ -1417,6 +1419,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             query_parts.extend([f"exp={exp_ts}", f"sig={sig}"])
         qs = f"?{'&'.join(query_parts)}" if query_parts else ""
         return f"{base_url}/images/{safe}{qs}"
+
+    def _build_image_url(base_url: str, image_name: str) -> str:
+        return _build_image_url_with_preview(base_url, image_name, result_image_max_edge, result_image_quality)
+
+    def _build_catalog_image_url(base_url: str, image_name: str) -> str:
+        return _build_image_url_with_preview(base_url, image_name, catalog_image_max_edge, catalog_image_quality)
 
     def _build_image_url_with_exp(base_url: str, image_name: str) -> tuple[str, int]:
         safe = Path(image_name).name
@@ -1463,7 +1471,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             {
                 "image_name": str(item.get("image_name", "")),
                 "sort_order": int(item.get("sort_order", 0)),
-                "image_url": _build_image_url(base_url, str(item.get("image_name", ""))),
+                "image_url": _build_catalog_image_url(base_url, str(item.get("image_name", ""))),
             }
             for item in list(product.get("images", []))
         ]
@@ -1471,7 +1479,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {
             "style_code": str(product.get("style_code", "")),
             "cover_image": cover_image,
-            "cover_image_url": _build_image_url(base_url, cover_image) if cover_image else "",
+            "cover_image_url": _build_catalog_image_url(base_url, cover_image) if cover_image else "",
             "note": str(product.get("note", "")),
             "tags": list(product.get("tags", [])),
             "images": images,
@@ -1495,7 +1503,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 continue
             row["tags"] = list(product.get("tags", []))
             row["catalog_cover_image"] = str(product.get("cover_image", ""))
-            row["catalog_cover_image_url"] = _build_image_url(base_url, str(product.get("cover_image", "")))
+            row["catalog_cover_image_url"] = _build_catalog_image_url(base_url, str(product.get("cover_image", "")))
         return rows_in
 
     def _enrich_similar_images(base_url: str, rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -4999,13 +5007,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/image-url", response_model=ImageUrlResponse)
-    def refresh_image_url(request: Request, image_name: str) -> Dict[str, Any]:
+    def refresh_image_url(request: Request, image_name: str, kind: str = "") -> Dict[str, Any]:
         safe = Path(image_name).name
         fp = standard_dir / safe
         if not fp.exists() or not fp.is_file():
             raise HTTPException(status_code=404, detail="image not found")
         base_url = _external_base_url(request)
-        image_url, exp_ts = _build_image_url_with_exp(base_url, safe)
+        if str(kind).strip().lower() == "catalog":
+            image_url = _build_catalog_image_url(base_url, safe)
+            exp_ts = 0
+        else:
+            image_url, exp_ts = _build_image_url_with_exp(base_url, safe)
         return {"image_name": safe, "image_url": image_url, "expires_at": exp_ts}
 
     @app.post("/search", response_model=SearchResponse)
