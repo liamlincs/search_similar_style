@@ -61,7 +61,7 @@ from search_similar_return_code import (
 )
 from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
-from catalog_store import CatalogStore
+from catalog_store import CatalogStore, make_typed_tag
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
 
@@ -165,6 +165,7 @@ class CatalogTagUpdateRequest(BaseModel):
 
 class CatalogTagCreateRequest(BaseModel):
     name: str
+    type: str = ""
 
 
 class CatalogImportPrepareRequest(BaseModel):
@@ -1684,6 +1685,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "cover_image_url": _build_catalog_image_url(base_url, cover_image) if cover_image else "",
             "note": str(product.get("note", "")),
             "tags": list(product.get("tags", [])),
+            "raw_tags": list(product.get("raw_tags", [])),
+            "tag_groups": dict(product.get("tag_groups", {}) or {}),
             "images": images,
             "created_at": str(product.get("created_at", "")),
             "updated_at": str(product.get("updated_at", "")),
@@ -4017,10 +4020,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin: 0; background: #f5f7fa; color: #111827; }
     .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
     .toolbar { display: grid; grid-template-columns: minmax(260px, 1.6fr) repeat(3, 124px); gap: 10px; margin-bottom: 14px; }
-    .toolbar-secondary { display: grid; grid-template-columns: minmax(260px, 1fr) repeat(2, 124px); gap: 10px; margin-bottom: 14px; }
     input, button { font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #d1d5db; min-height: 42px; box-sizing: border-box; }
     button { cursor: pointer; background: #111827; color: #fff; border: none; }
     button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
+    button.weak { background: #f8fafc; color: #64748b; border: 1px solid #dbe2ea; }
     .muted { color: #6b7280; font-size: 13px; }
     .filter-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; min-height: 28px; }
     .filter-tag { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
@@ -4029,10 +4032,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .card { background: #fff; border-radius: 14px; padding: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); }
     .thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; border-radius: 10px; cursor: pointer; }
     .code { font-weight: 700; margin: 10px 0 8px; }
+    .card-meta { margin-bottom: 8px; }
+    .card-section-title { font-size: 12px; color: #64748b; font-weight: 700; margin: 10px 0 6px; }
     .tags { display: flex; flex-wrap: wrap; gap: 5px; min-height: 24px; margin-bottom: 10px; }
     .tag { background: #f8fafc; color: #334155; border: 1px solid #dbe2ea; border-radius: 4px; padding: 2px 6px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; line-height: 1.1; }
     .tag-remove { min-height: auto; height: auto; padding: 0; margin: 0; border: none; background: transparent; color: #475569; cursor: pointer; font-size: 12px; line-height: 1; border-radius: 0; box-shadow: none; }
     .row { display: flex; gap: 8px; position: relative; align-items: center; }
+    .tag-edit { display: grid; gap: 8px; margin-top: 10px; }
+    .tag-edit-grid { display: grid; grid-template-columns: 1fr; gap: 7px; }
+    .tag-edit-field { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 8px; }
+    .tag-edit-field label { font-size: 12px; color: #64748b; font-weight: 700; white-space: nowrap; }
+    .tag-edit-field input { width: 100%; min-width: 0; min-height: 34px; padding: 6px 9px; font-size: 13px; border-radius: 9px; }
+    .tag-edit .picker-add-btn { width: 100%; min-height: 34px; font-weight: 700; }
     .picker-trigger { flex: 1; font-size: 12px; padding: 6px 10px; border-radius: 9px; border: 1px dashed #c7d2fe; background: #f8faff; min-height: 30px; display: flex; align-items: center; color: #6366f1; cursor: pointer; }
     .picker-trigger.active { border-color: #818cf8; background: #eef2ff; box-shadow: none; }
     .picker-pop { position: absolute; left: 0; right: 64px; top: calc(100% + 8px); background: #fff; border: 1px solid #d1d5db; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,0.12); padding: 10px; display: none; z-index: 10; }
@@ -4072,6 +4083,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-tag-list { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; margin-bottom: 6px; }
     .import-tag-chip { display: inline-flex; align-items: center; gap: 4px; background: #f8fafc; color: #334155; border: 1px solid #dbe2ea; border-radius: 4px; padding: 2px 6px; font-size: 11px; line-height: 1.1; }
     .import-tag-remove { min-height: auto; height: auto; padding: 0; margin: 0; border: none; background: transparent; color: #64748b; cursor: pointer; font-size: 12px; line-height: 1; }
+    .import-batch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .import-batch-field label { display: block; font-size: 12px; color: #475569; font-weight: 600; margin-bottom: 6px; }
+    .import-batch-field input { width: 100%; box-sizing: border-box; min-height: 34px; padding: 6px 8px; font-size: 12px; }
     .import-tag-row { display: grid; grid-template-columns: 1fr 72px; gap: 6px; }
     .import-tag-row input[type="text"] { min-height: 34px; padding: 6px 8px; font-size: 12px; }
     .import-tag-add-btn { min-height: 34px; padding: 6px 8px; font-size: 12px; border-radius: 8px; }
@@ -4096,9 +4110,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .load-more { padding: 18px 0 8px; text-align: center; color: #6b7280; font-size: 13px; }
     @media (max-width: 720px) {
       .wrap { padding: 12px; }
-      .toolbar, .toolbar-secondary { grid-template-columns: 1fr 1fr; }
-      .toolbar input, .toolbar-secondary input { grid-column: 1 / -1; }
-      .toolbar button, .toolbar-secondary button { min-height: 40px; }
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .toolbar input { grid-column: 1 / -1; }
+      .toolbar button { min-height: 40px; }
       .cards { grid-template-columns: 1fr; gap: 12px; }
       .card { padding: 12px; }
       .modal { padding: 12px; }
@@ -4111,6 +4125,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       .tag-suggest-list { flex-direction: column; gap: 8px; }
       .tag-suggest-list .import-tag-chip { width: 100%; justify-content: space-between; box-sizing: border-box; }
       .tag-suggest-pop { left: 0; right: 0; width: auto; max-width: none; max-height: 320px; }
+      .import-panel { width: 100%; max-height: 94vh; border-radius: 14px; }
+      .import-row,
+      .import-upload-row,
+      .import-batch-grid { grid-template-columns: 1fr; }
+      .import-table-wrap { border: none; max-height: none; overflow: visible; }
+      .import-table,
+      .import-table thead,
+      .import-table tbody,
+      .import-table tr,
+      .import-table td { display: block; width: 100%; box-sizing: border-box; }
+      .import-table thead { display: none; }
+      .import-table tr { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin-bottom: 10px; background: #fff; }
+      .import-table th,
+      .import-table td { border-bottom: none; padding: 7px 0; }
+      .import-table td::before { content: attr(data-label); display: block; margin-bottom: 5px; font-size: 12px; color: #64748b; font-weight: 700; }
+      .import-table td[data-label="导入"] { display: flex; align-items: center; gap: 8px; }
+      .import-table td[data-label="导入"]::before { margin: 0; }
+      .import-table input[type="text"] { min-height: 40px; font-size: 14px; }
+      .import-source-link { font-size: 14px; line-height: 1.35; word-break: break-all; }
+      .import-actions { position: sticky; bottom: -14px; background: #fff; padding-top: 10px; }
     }
   </style>
 </head>
@@ -4124,16 +4158,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="toolbar">
       <input id="styleCodeQuery" placeholder="按款号搜索，如 GZ25-1177 或 J0831" />
       <button id="searchBtn">查询</button>
-      <button id="syncBtn" class="secondary">同步图片</button>
       <button id="importBtn" class="secondary">批量导入</button>
-    </div>
-    <div class="toolbar-secondary">
-      <div class="input-pop-wrap">
-        <input id="newTagName" placeholder="新增标签名称；输入时会提示已有标签" />
-        <div id="newTagSuggestPop" class="tag-suggest-pop"></div>
-      </div>
-      <button id="addTagBtn" class="secondary">新增标签</button>
-      <button id="reloadBtn" class="secondary">刷新</button>
+      <button id="syncBtn" class="weak" title="手动扫描标准图片目录，批量导入完成后通常不需要点击">同步目录</button>
     </div>
     <div id="activeFilterTags" class="filter-tags"></div>
     <div id="status" class="status muted"></div>
@@ -4141,6 +4167,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div id="loadMore" class="load-more"></div>
   </div>
   <datalist id="allTagsList"></datalist>
+  <datalist id="yearTagsList"></datalist>
+  <datalist id="categoryTagsList"></datalist>
+  <datalist id="subcategoryTagsList"></datalist>
   <div id="galleryModal" class="modal">
     <div class="modal-panel">
       <div class="modal-head">
@@ -4177,14 +4206,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>
       </div>
       <div class="import-batch-tag-box">
-        <div class="import-batch-tag-title">批量标签：统一加到本次勾选导入的图片所属款号</div>
-        <div id="importBatchTags" class="import-tag-list"><div class="muted">未添加标签</div></div>
-        <div class="import-tag-row">
-          <div class="input-pop-wrap">
-            <input id="importBatchTagInput" type="text" placeholder="添加标签，可选已有，也可直接新增" />
-            <div id="importBatchTagSuggestPop" class="tag-suggest-pop"></div>
+        <div class="import-batch-tag-title">批量标签：年份在下方每行修改或填写，类别和细类统一加到本次勾选导入的图片所属款号</div>
+        <div class="import-batch-grid">
+          <div class="import-batch-field">
+            <label for="importBatchCategoryInput">类别</label>
+            <input id="importBatchCategoryInput" type="text" list="categoryTagsList" placeholder="如 单品、罗纹、毛织配件、布匹" />
           </div>
-          <button id="importBatchTagAddBtn" type="button" class="secondary import-tag-add-btn">添加</button>
+          <div class="import-batch-field">
+            <label for="importBatchSubcategoryInput">细类</label>
+            <input id="importBatchSubcategoryInput" type="text" list="subcategoryTagsList" placeholder="如 暂无，或输入新增细类" />
+          </div>
         </div>
       </div>
       <div class="import-progress"><div id="importProgressBar" class="import-progress-bar"></div></div>
@@ -4226,6 +4257,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   </div>
   <script>
     let globalTags = [];
+    let globalTagGroups = { year: [], category: [], subcategory: [] };
     let currentProducts = [];
     let selectedFilterTags = [];
     let currentOffset = 0;
@@ -4236,21 +4268,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let importJobId = '';
     let importPollTimer = null;
     let importJobData = null;
-    let importBatchTags = [];
     const els = {
       styleCodeQuery: document.getElementById('styleCodeQuery'),
       searchBtn: document.getElementById('searchBtn'),
       syncBtn: document.getElementById('syncBtn'),
       importBtn: document.getElementById('importBtn'),
-      newTagName: document.getElementById('newTagName'),
-      newTagSuggestPop: document.getElementById('newTagSuggestPop'),
-      addTagBtn: document.getElementById('addTagBtn'),
-      reloadBtn: document.getElementById('reloadBtn'),
       status: document.getElementById('status'),
       cards: document.getElementById('cards'),
       loadMore: document.getElementById('loadMore'),
       activeFilterTags: document.getElementById('activeFilterTags'),
       allTagsList: document.getElementById('allTagsList'),
+      yearTagsList: document.getElementById('yearTagsList'),
+      categoryTagsList: document.getElementById('categoryTagsList'),
+      subcategoryTagsList: document.getElementById('subcategoryTagsList'),
       galleryModal: document.getElementById('galleryModal'),
       galleryTitle: document.getElementById('galleryTitle'),
       gallerySubTitle: document.getElementById('gallerySubTitle'),
@@ -4264,10 +4294,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       startUploadImportBtn: document.getElementById('startUploadImportBtn'),
       importProgressBar: document.getElementById('importProgressBar'),
       importMeta: document.getElementById('importMeta'),
-      importBatchTags: document.getElementById('importBatchTags'),
-      importBatchTagInput: document.getElementById('importBatchTagInput'),
-      importBatchTagSuggestPop: document.getElementById('importBatchTagSuggestPop'),
-      importBatchTagAddBtn: document.getElementById('importBatchTagAddBtn'),
+      importBatchCategoryInput: document.getElementById('importBatchCategoryInput'),
+      importBatchSubcategoryInput: document.getElementById('importBatchSubcategoryInput'),
       importTableBody: document.getElementById('importTableBody'),
       commitImportBtn: document.getElementById('commitImportBtn'),
       importCommitStatus: document.getElementById('importCommitStatus'),
@@ -4302,6 +4330,47 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return Array.from(new Set((tags || []).filter(Boolean)));
     }
 
+    function displayTag(tag) {
+      const raw = String(tag || '').trim();
+      const index = raw.indexOf(':');
+      return index > 0 ? raw.slice(index + 1) : raw;
+    }
+
+    function typedTag(type, value) {
+      const kind = String(type || '').trim();
+      const name = String(value || '').trim();
+      return kind && name ? `${kind}:${name}` : '';
+    }
+
+    function splitTagsByType(tags) {
+      const groups = { year: [], category: [], subcategory: [] };
+      (tags || []).forEach((tag) => {
+        const raw = String(tag || '').trim();
+        const index = raw.indexOf(':');
+        if (index > 0) {
+          const kind = raw.slice(0, index);
+          const name = raw.slice(index + 1).trim();
+          if (groups[kind] && name) groups[kind].push(name);
+          return;
+        }
+        if (/^20\\d{2}$/.test(raw)) groups.year.push(raw);
+      });
+      return {
+        year: uniqTags(groups.year),
+        category: uniqTags(groups.category),
+        subcategory: uniqTags(groups.subcategory),
+      };
+    }
+
+    function normalizeTagGroups(data) {
+      const groups = (data && data.tag_groups) || {};
+      return {
+        year: uniqTags(groups.year || []),
+        category: uniqTags(groups.category || ['单品', '罗纹', '毛织配件', '布匹']),
+        subcategory: uniqTags(groups.subcategory || ['暂无']),
+      };
+    }
+
     async function saveTags(styleCode, tags) {
       const resp = await fetch('/api/v1/catalog/products/' + encodeURIComponent(styleCode) + '/tags', {
         method: 'PUT',
@@ -4316,8 +4385,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
       globalTags = data.tags || [];
-      els.allTagsList.innerHTML = globalTags.map(tag => `<option value="${tag}"></option>`).join('');
-      renderGlobalTagAdminLists();
+      globalTagGroups = normalizeTagGroups(data);
+      els.allTagsList.innerHTML = globalTags.map(tag => `<option value="${displayTag(tag)}"></option>`).join('');
+      if (els.yearTagsList) {
+        els.yearTagsList.innerHTML = (globalTagGroups.year || []).map(tag => `<option value="${tag}"></option>`).join('');
+      }
+      if (els.categoryTagsList) {
+        els.categoryTagsList.innerHTML = (globalTagGroups.category || []).map(tag => `<option value="${tag}"></option>`).join('');
+      }
+      if (els.subcategoryTagsList) {
+        els.subcategoryTagsList.innerHTML = (globalTagGroups.subcategory || []).map(tag => `<option value="${tag}"></option>`).join('');
+      }
     }
 
     async function deleteGlobalTag(tag) {
@@ -4325,15 +4403,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!resp.ok) throw new Error(await resp.text());
     }
 
-    function renderGlobalTagAdminLists() {
-      renderTagSuggestPopover(els.newTagSuggestPop, els.newTagName, true);
-      renderTagSuggestPopover(els.importBatchTagSuggestPop, els.importBatchTagInput, true);
-    }
-
     function closeTagSuggestPops() {
-      [els.newTagSuggestPop, els.importBatchTagSuggestPop].forEach((pop) => {
-        if (pop) pop.classList.remove('open');
-      });
     }
 
     function renderTagSuggestPopover(pop, input, allowDelete) {
@@ -4371,8 +4441,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           if (!ok) return;
           try {
             await deleteGlobalTag(tag);
-            importBatchTags = normalizeImportTags(importBatchTags.filter(x => String(x) !== tag));
-            renderImportBatchTags();
             await loadGlobalTags();
             await loadProducts(true);
             setStatus('标签已删除', false);
@@ -4423,8 +4491,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function buildProductQueryParams() {
       const params = new URLSearchParams();
       if (els.styleCodeQuery.value.trim()) params.set('style_code', els.styleCodeQuery.value.trim());
-      const tags = selectedFilterTags;
-      if (tags.length) params.set('tags', tags.join(','));
+      const groups = splitTagsByType(selectedFilterTags);
+      if (groups.year.length) params.set('year_tags', groups.year.join(','));
+      if (groups.category.length) params.set('category_tags', groups.category.join(','));
+      if (groups.subcategory.length) params.set('subcategory_tags', groups.subcategory.join(','));
       return params;
     }
 
@@ -4462,11 +4532,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
 
     function renderActiveFilterTags() {
-      const all = uniqTags(globalTags);
-      els.activeFilterTags.innerHTML = all.map(tag => `
-        <button type="button" class="filter-tag ${selectedFilterTags.includes(tag) ? 'active' : ''}" data-role="filterTagBtn" data-tag="${tag}">
-          ${tag}
-        </button>
+      const sections = [
+        ['年份', 'year', globalTagGroups.year || []],
+        ['类别', 'category', globalTagGroups.category || []],
+        ['细类', 'subcategory', globalTagGroups.subcategory || []],
+      ];
+      els.activeFilterTags.innerHTML = sections.map(([title, type, list]) => `
+        <div class="filter-tag-section">
+          <span class="muted" style="margin-right:8px;">${title}</span>
+          ${list.map(name => {
+            const tag = typedTag(type, name);
+            return `<button type="button" class="filter-tag ${selectedFilterTags.includes(tag) ? 'active' : ''}" data-role="filterTagBtn" data-tag="${tag}">${name}</button>`;
+          }).join('')}
+        </div>
       `).join('');
       els.activeFilterTags.querySelectorAll('[data-role="filterTagBtn"]').forEach((button) => {
         button.addEventListener('click', async () => {
@@ -4541,9 +4619,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
 
     function openImportModal() {
-      importBatchTags = [];
-      renderImportBatchTags();
-      if (els.importBatchTagInput) els.importBatchTagInput.value = '';
+      if (els.importBatchCategoryInput) els.importBatchCategoryInput.value = '';
+      if (els.importBatchSubcategoryInput) els.importBatchSubcategoryInput.value = '暂无';
       els.importModal.classList.add('open');
     }
 
@@ -4597,29 +4674,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       });
     }
 
-    function buildImportTagListHtml(tags) {
-      const list = normalizeImportTags(tags);
-      if (!list.length) return '<div class="muted">未添加标签</div>';
-      return list.map(tag => `
-        <span class="import-tag-chip">
-          <span>${tag}</span>
-          <button type="button" class="import-tag-remove" data-role="importRemoveTagBtn" data-tag="${tag}" title="删除标签">×</button>
-        </span>
-      `).join('');
-    }
-
-    function renderImportBatchTags() {
-      if (!els.importBatchTags) return;
-      els.importBatchTags.innerHTML = buildImportTagListHtml(importBatchTags);
-      els.importBatchTags.querySelectorAll('[data-role="importRemoveTagBtn"]').forEach((button) => {
-        button.addEventListener('click', () => {
-          const tag = String(button.dataset.tag || '').trim();
-          importBatchTags = normalizeImportTags(importBatchTags.filter(x => String(x) !== tag));
-          renderImportBatchTags();
-        });
-      });
-    }
-
     function updateGlobalTagOptions(tag) {
       const value = String(tag || '').trim();
       if (!value) return;
@@ -4642,15 +4696,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       } else {
         if (els.importTableBody) els.importTableBody.innerHTML = items.map((item, index) => `
           <tr class="${item.status === 'ok' ? '' : 'row-error'}">
-            <td><input type="checkbox" data-role="importSelect" data-index="${index}" ${item.selected === false ? '' : 'checked'} /></td>
-            <td>
+            <td data-label="导入"><input type="checkbox" data-role="importSelect" data-index="${index}" ${item.selected === false ? '' : 'checked'} /><span>导入此图</span></td>
+            <td data-label="源文件">
               <button type="button" class="import-source-link" data-role="importPreviewBtn" data-index="${index}">${item.source_name || ''}</button>
               <div class="muted">${item.source_rel_path || ''}</div>
             </td>
-            <td>${item.proposed_style_code || '-'}</td>
-            <td><input type="text" data-role="importYearTag" data-index="${index}" value="${item.year_tag || item.proposed_year_tag || ''}" placeholder="如 2024" /></td>
-            <td><input type="text" data-role="importFilename" data-index="${index}" value="${item.target_filename || item.proposed_filename || ''}" /></td>
-            <td><span class="import-badge ${item.status === 'ok' ? 'ok' : 'warn'}">${item.status === 'ok' ? '已识别' : '需人工确认'}</span>${item.error ? `<div class="muted" style="margin-top:4px;color:#b91c1c;">${item.error}</div>` : ''}</td>
+            <td data-label="识别款号">${item.proposed_style_code || '-'}</td>
+            <td data-label="年份标签"><input type="text" data-role="importYearTag" data-index="${index}" value="${item.year_tag || item.proposed_year_tag || ''}" list="yearTagsList" placeholder="如 2024" /></td>
+            <td data-label="导入后文件名"><input type="text" data-role="importFilename" data-index="${index}" value="${item.target_filename || item.proposed_filename || ''}" /></td>
+            <td data-label="状态"><span class="import-badge ${item.status === 'ok' ? 'ok' : 'warn'}">${item.status === 'ok' ? '已识别' : '需人工确认'}</span>${item.error ? `<div class="muted" style="margin-top:4px;color:#b91c1c;">${item.error}</div>` : ''}</td>
           </tr>
         `).join('');
       }
@@ -4704,7 +4758,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {
           source_rel_path: item.source_rel_path,
           selected: !!(checkbox && checkbox.checked),
-          tags: normalizeImportTags(importBatchTags),
+          tags: normalizeImportTags([
+            typedTag('category', els.importBatchCategoryInput ? els.importBatchCategoryInput.value.trim() : ''),
+            typedTag('subcategory', els.importBatchSubcategoryInput ? els.importBatchSubcategoryInput.value.trim() : ''),
+          ]),
           year_tag: yearInput ? yearInput.value.trim() : (item.year_tag || item.proposed_year_tag || ''),
           target_filename: input ? input.value.trim() : (item.target_filename || item.proposed_filename || ''),
         };
@@ -4720,93 +4777,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       products.forEach((item) => {
         const card = document.createElement('div');
         card.className = 'card';
-        const tags = item.tags || [];
-        const tagsHtml = buildCardTagsHtml(tags);
+        const groups = item.tag_groups || splitTagsByType(item.raw_tags || item.tags || []);
+        const yearValue = (groups.year || []).join('、');
+        const categoryValue = (groups.category || []).join('、');
+        const subcategoryValue = (groups.subcategory || []).join('、');
         card.innerHTML = `
           <img class="thumb" src="${item.cover_image_url || ''}" loading="lazy" alt="${item.style_code}" title="点击查看该款全部图片" />
           <div class="code">${item.style_code}</div>
-          <div class="tags">${tagsHtml}</div>
-          <div class="muted" style="margin-bottom:10px;">图片数：${(item.images || []).length}</div>
-          <div class="row">
-            <div class="picker-trigger" data-role="pickerTrigger">点击选择已有标签</div>
-            <div class="picker-pop" data-role="pickerPop">
-              <div class="picker-options" data-role="pickerOptions">${buildPickerOptions([])}</div>
+          <div class="muted card-meta">图片数：${(item.images || []).length}</div>
+          <div class="card-section-title">当前标签（点击可过滤）</div>
+          <div class="tags">
+            ${(groups.year || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('year', tag)}">年份：${tag}</button></span>`).join('')}
+            ${(groups.category || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('category', tag)}">类别：${tag}</button></span>`).join('')}
+            ${(groups.subcategory || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('subcategory', tag)}">细类：${tag}</button></span>`).join('')}
+          </div>
+          <div class="tag-edit">
+            <div class="card-section-title" style="margin:0;">标签修改</div>
+            <div class="tag-edit-grid">
+              <div class="tag-edit-field">
+                <label>年份</label>
+                <input type="text" data-role="yearInput" value="${yearValue}" list="yearTagsList" placeholder="如 2026" />
+              </div>
+              <div class="tag-edit-field">
+                <label>类别</label>
+                <input type="text" data-role="categoryInput" value="${categoryValue}" list="categoryTagsList" placeholder="如 单品" />
+              </div>
+              <div class="tag-edit-field">
+                <label>细类</label>
+                <input type="text" data-role="subcategoryInput" value="${subcategoryValue}" list="subcategoryTagsList" placeholder="如 暂无" />
+              </div>
             </div>
-            <button type="button" class="picker-add-btn" data-role="saveBtn">添加</button>
+            <button type="button" class="picker-add-btn" data-role="saveBtn">保存标签修改</button>
           </div>
         `;
         card.querySelector('.thumb').addEventListener('click', () => openGallery(item));
-        let pendingTags = [];
-        const pickerTrigger = card.querySelector('[data-role="pickerTrigger"]');
-        const pickerPop = card.querySelector('[data-role="pickerPop"]');
-        const pickerOptions = card.querySelector('[data-role="pickerOptions"]');
-        updatePickerTrigger(pickerTrigger, pendingTags);
-        pickerTrigger.addEventListener('click', (event) => {
-          event.stopPropagation();
-          const isOpen = pickerPop.classList.contains('open');
-          closeAllPickers();
-          if (!isOpen) pickerPop.classList.add('open');
-        });
-        pickerOptions.querySelectorAll('[data-role="pickerOption"]').forEach((button) => {
-          button.addEventListener('click', (event) => {
-            event.stopPropagation();
-            const tag = button.dataset.tag || '';
-            if (!tag) return;
-            if (pendingTags.includes(tag)) {
-              pendingTags = pendingTags.filter(x => x !== tag);
-            } else {
-              pendingTags = uniqTags([...pendingTags, tag]);
-            }
-            const item = button.closest('.picker-option-item');
-            if (item) item.classList.toggle('active', pendingTags.includes(tag));
-            updatePickerTrigger(pickerTrigger, pendingTags);
-          });
-        });
-        pickerOptions.querySelectorAll('[data-role="pickerDeleteOption"]').forEach((button) => {
-          button.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const tag = String(button.dataset.tag || '').trim();
-            if (!tag) return;
-            const ok = window.confirm(`确认删除标签“${tag}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
-            if (!ok) return;
-            try {
-              await deleteGlobalTag(tag);
-              pendingTags = pendingTags.filter(x => x !== tag);
-              importBatchTags = normalizeImportTags(importBatchTags.filter(x => String(x) !== tag));
-              renderImportBatchTags();
-              await loadGlobalTags();
-              await loadProducts(true);
-              setStatus('标签已删除', false);
-            } catch (err) {
-              setStatus(err.message || '删除标签失败', true);
-            }
-          });
-        });
         card.querySelectorAll('[data-role="filterFromCardBtn"]').forEach((button) => {
           button.addEventListener('click', () => toggleFilterTag(button.dataset.tag || ''));
         });
-        card.querySelectorAll('[data-role="removeTagBtn"]').forEach((button) => {
-          button.addEventListener('click', async () => {
-            const tag = button.dataset.tag || '';
-            const nextTags = tags.filter(x => x !== tag);
-            try {
-              await saveTags(item.style_code, nextTags);
-              await loadProducts(true);
-              setStatus('标签已删除', false);
-            } catch (err) {
-              setStatus(err.message || '删除失败', true);
-            }
-          });
-        });
         card.querySelector('[data-role="saveBtn"]').addEventListener('click', async () => {
-          if (!pendingTags.length) {
-            setStatus('请先选择至少一个已有标签', true);
-            return;
-          }
-          const nextTags = uniqTags([...(item.tags || []), ...pendingTags]);
+          const splitInput = (role) => String((card.querySelector(`[data-role="${role}"]`) || {}).value || '')
+            .split(/[、,，\\s]+/)
+            .map(value => value.trim())
+            .filter(Boolean);
+          const nextTags = uniqTags([
+            ...splitInput('yearInput').map(value => typedTag('year', value)),
+            ...splitInput('categoryInput').map(value => typedTag('category', value)),
+            ...splitInput('subcategoryInput').map(value => typedTag('subcategory', value)),
+          ].filter(Boolean));
           try {
             await saveTags(item.style_code, nextTags);
-            pendingTags = [];
             await loadGlobalTags();
             await loadProducts(true);
             setStatus('标签已保存', false);
@@ -4826,74 +4845,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       event.preventDefault();
       loadProducts(true).catch(err => setStatus(err.message || '加载失败', true));
     });
-    [els.newTagName, els.importBatchTagInput].forEach((input) => {
-      if (!input) return;
-      input.addEventListener('focus', () => {
-        const pop = input === els.newTagName ? els.newTagSuggestPop : els.importBatchTagSuggestPop;
-        closeTagSuggestPops();
-        pop.dataset.activeIndex = '0';
-        renderTagSuggestPopover(pop, input, true);
-        if (pop) pop.classList.add('open');
-      });
-      input.addEventListener('input', () => {
-        const pop = input === els.newTagName ? els.newTagSuggestPop : els.importBatchTagSuggestPop;
-        pop.dataset.activeIndex = '0';
-        renderTagSuggestPopover(pop, input, true);
-        if (pop) pop.classList.add('open');
-      });
-      input.addEventListener('keydown', (event) => {
-        const pop = input === els.newTagName ? els.newTagSuggestPop : els.importBatchTagSuggestPop;
-        if (event.key === 'ArrowDown') {
-          event.preventDefault();
-          moveTagSuggestActive(pop, input, 1);
-          return;
-        }
-        if (event.key === 'ArrowUp') {
-          event.preventDefault();
-          moveTagSuggestActive(pop, input, -1);
-          return;
-        }
-        if (event.key === 'Escape') {
-          if (pop && pop.classList.contains('open')) {
-            event.preventDefault();
-            event.stopPropagation();
-            pop.classList.remove('open');
-            return;
-          }
-        }
-        if (event.key === 'Enter' && pop && pop.classList.contains('open')) {
-          const picked = pickActiveTagSuggest(pop, input);
-          if (picked) {
-            event.preventDefault();
-            return;
-          }
-        }
-      });
-      input.addEventListener('click', (event) => {
-        event.stopPropagation();
-      });
-    });
-    els.reloadBtn.addEventListener('click', () => Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true)));
-    els.addTagBtn.addEventListener('click', async () => {
-      try {
-        const value = els.newTagName.value.trim();
-        if (!value) {
-          setStatus('请输入标签名称', true);
-          return;
-        }
-        const resp = await fetch('/api/v1/catalog/tags', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: value })
-        });
-        if (!resp.ok) throw new Error(await resp.text());
-        els.newTagName.value = '';
-        await loadGlobalTags();
-        setStatus('标签已新增', false);
-      } catch (err) {
-        setStatus(err.message || '新增标签失败', true);
-      }
-    });
     els.syncBtn.addEventListener('click', async () => {
       try {
         const resp = await fetch('/api/v1/catalog/sync', { method: 'POST' });
@@ -4907,19 +4858,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
     });
     els.importBtn.addEventListener('click', openImportModal);
-    els.importBatchTagAddBtn.addEventListener('click', () => {
-      const value = els.importBatchTagInput ? String(els.importBatchTagInput.value || '').trim() : '';
-      if (!value) return;
-      importBatchTags = normalizeImportTags([...(importBatchTags || []), value]);
-      updateGlobalTagOptions(value);
-      if (els.importBatchTagInput) els.importBatchTagInput.value = '';
-      renderImportBatchTags();
-    });
-    els.importBatchTagInput.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter') return;
-      event.preventDefault();
-      els.importBatchTagAddBtn.click();
-    });
     els.closeImportBtn.addEventListener('click', closeImportModal);
     els.importModal.addEventListener('click', (event) => {
       if (event.target === els.importModal) closeImportModal();
@@ -5043,12 +4981,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         request: Request,
         style_code: str = "",
         tags: str = "",
+        year_tags: str = "",
+        category_tags: str = "",
+        subcategory_tags: str = "",
         limit: int = 200,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        _check_text_content_security(style_code, tags)
+        _check_text_content_security(style_code, tags, year_tags, category_tags, subcategory_tags)
         base_url = _external_base_url(request)
         tag_list = [item.strip() for item in tags.split(",") if item.strip()]
+        for kind, raw in (
+            ("year", year_tags),
+            ("category", category_tags),
+            ("subcategory", subcategory_tags),
+        ):
+            for item in [value.strip() for value in str(raw or "").split(",") if value.strip()]:
+                typed = make_typed_tag(kind, item)
+                if typed:
+                    tag_list.append(typed)
         products = catalog_store.list_products(style_code=style_code, tags=tag_list, limit=limit, offset=offset)
         return {"products": [_serialize_catalog_product(base_url, item) for item in products]}
 
@@ -5070,13 +5020,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/v1/catalog/tags")
     def api_list_catalog_tags() -> Dict[str, Any]:
-        return {"tags": catalog_store.list_tags()}
+        return {
+            "tags": catalog_store.list_tags(),
+            "tag_groups": catalog_store.list_tag_groups(),
+        }
 
     @app.post("/api/v1/catalog/tags")
     def api_create_catalog_tag(payload: CatalogTagCreateRequest) -> Dict[str, Any]:
         _check_text_content_security(payload.name)
+        name = payload.name
+        if str(payload.type or "").strip():
+            name = make_typed_tag(str(payload.type).strip(), payload.name) or payload.name
         try:
-            tag = catalog_store.create_tag(payload.name)
+            tag = catalog_store.create_tag(name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"tag": tag}
@@ -5241,7 +5197,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
             style_code = filename_to_style_code(target_name).strip()
             if year_tag and style_code:
-                style_year_tags.setdefault(style_code, set()).add(year_tag)
+                typed_year_tag = make_typed_tag("year", year_tag)
+                if typed_year_tag:
+                    style_year_tags.setdefault(style_code, set()).add(typed_year_tag)
             import_tags = _normalize_import_tags(item.tags)
             if import_tags and style_code:
                 style_extra_tags.setdefault(style_code, set()).update(import_tags)

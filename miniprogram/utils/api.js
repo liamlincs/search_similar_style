@@ -156,6 +156,12 @@ function fetchCatalogProducts(options = {}) {
   if (options.style_code) payload.style_code = String(options.style_code).trim();
   const tags = Array.isArray(options.tags) ? options.tags.filter(Boolean) : [];
   if (tags.length) payload.tags = tags.join(",");
+  const yearTags = Array.isArray(options.year_tags) ? options.year_tags.filter(Boolean) : [];
+  const categoryTags = Array.isArray(options.category_tags) ? options.category_tags.filter(Boolean) : [];
+  const subcategoryTags = Array.isArray(options.subcategory_tags) ? options.subcategory_tags.filter(Boolean) : [];
+  if (yearTags.length) payload.year_tags = yearTags.join(",");
+  if (categoryTags.length) payload.category_tags = categoryTags.join(",");
+  if (subcategoryTags.length) payload.subcategory_tags = subcategoryTags.join(",");
   payload.limit = Number(options.limit || 20);
   if (options.offset !== undefined && options.offset !== null) {
     payload.offset = Number(options.offset || 0);

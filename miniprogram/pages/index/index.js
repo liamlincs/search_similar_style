@@ -13,6 +13,20 @@ function buildCatalogTagItems(allTags, selectedTags) {
   }));
 }
 
+function buildCatalogTagSections(tagGroups, selectedGroups) {
+  const groups = tagGroups || {};
+  const selected = selectedGroups || {};
+  return [
+    { key: "year", title: "年份", tags: groups.year || [], selected: selected.year || [] },
+    { key: "category", title: "类别", tags: groups.category || [], selected: selected.category || [] },
+    { key: "subcategory", title: "细类", tags: groups.subcategory || [], selected: selected.subcategory || [] }
+  ].map((section) => ({
+    key: section.key,
+    title: section.title,
+    items: buildCatalogTagItems(section.tags, section.selected)
+  })).filter((section) => section.items.length);
+}
+
 function buildPreviewUrls(product) {
   const imageUrls = (product.images || [])
     .map((item) => item.image_url || item.imageUrl || "")
@@ -22,10 +36,14 @@ function buildPreviewUrls(product) {
   return cover ? [cover] : [];
 }
 
-function buildCatalogFilterKey(query, tags) {
+function buildCatalogFilterKey(query, tags, tagGroups) {
   const q = String(query || "").trim();
   const tagKey = (tags || []).map((tag) => String(tag || "").trim()).filter(Boolean).sort().join("|");
-  return `${q}::${tagKey}`;
+  const groups = tagGroups || {};
+  const groupKey = ["year", "category", "subcategory"]
+    .map((key) => (groups[key] || []).map((tag) => String(tag || "").trim()).filter(Boolean).sort().join("|"))
+    .join("::");
+  return `${q}::${tagKey}::${groupKey}`;
 }
 
 Page({
@@ -46,6 +64,9 @@ Page({
     catalogQuery: "",
     catalogTags: [],
     catalogTagItems: [],
+    catalogTagGroups: { year: [], category: [], subcategory: [] },
+    catalogTagSections: [],
+    selectedCatalogTagGroups: { year: [], category: [], subcategory: [] },
     selectedCatalogTags: [],
     catalogLoading: false,
     catalogLoadingMore: false,
@@ -250,7 +271,21 @@ Page({
 
   toggleCatalogTag(e) {
     const tag = e.currentTarget.dataset.tag || "";
+    const group = e.currentTarget.dataset.group || "";
     if (!tag) return;
+    if (group) {
+      const selectedGroups = Object.assign({ year: [], category: [], subcategory: [] }, this.data.selectedCatalogTagGroups || {});
+      const current = selectedGroups[group] || [];
+      selectedGroups[group] = current.includes(tag)
+        ? current.filter((item) => item !== tag)
+        : uniqTags(current.concat(tag));
+      this.setData({
+        selectedCatalogTagGroups: selectedGroups,
+        catalogTagSections: buildCatalogTagSections(this.data.catalogTagGroups, selectedGroups)
+      });
+      this.searchCatalog(true);
+      return;
+    }
     const selected = this.data.selectedCatalogTags || [];
     const next = selected.includes(tag)
       ? selected.filter((item) => item !== tag)
@@ -263,9 +298,12 @@ Page({
   },
 
   clearCatalogFilters() {
+    const emptyGroups = { year: [], category: [], subcategory: [] };
     this.setData({
       catalogQuery: "",
+      selectedCatalogTagGroups: emptyGroups,
       selectedCatalogTags: [],
+      catalogTagSections: buildCatalogTagSections(this.data.catalogTagGroups, emptyGroups),
       catalogTagItems: buildCatalogTagItems(this.data.catalogTags, []),
       catalogErrorMessage: ""
     });
@@ -273,8 +311,11 @@ Page({
   },
 
   clearCatalogTags() {
+    const emptyGroups = { year: [], category: [], subcategory: [] };
     this.setData({
+      selectedCatalogTagGroups: emptyGroups,
       selectedCatalogTags: [],
+      catalogTagSections: buildCatalogTagSections(this.data.catalogTagGroups, emptyGroups),
       catalogTagItems: buildCatalogTagItems(this.data.catalogTags, []),
       catalogErrorMessage: ""
     });
@@ -285,8 +326,11 @@ Page({
     try {
       const resp = await fetchCatalogTags();
       const tags = resp.tags || [];
+      const tagGroups = resp.tag_groups || { year: [], category: [], subcategory: [] };
       this.setData({
         catalogTags: tags,
+        catalogTagGroups: tagGroups,
+        catalogTagSections: buildCatalogTagSections(tagGroups, this.data.selectedCatalogTagGroups || {}),
         catalogTagItems: buildCatalogTagItems(tags, this.data.selectedCatalogTags || [])
       });
     } catch (_err) {}
@@ -298,7 +342,8 @@ Page({
     const limit = Number(this.data.catalogLimit || 20);
     const query = this.data.catalogQuery;
     const tags = [...(this.data.selectedCatalogTags || [])];
-    const filterKey = buildCatalogFilterKey(query, tags);
+    const selectedGroups = Object.assign({ year: [], category: [], subcategory: [] }, this.data.selectedCatalogTagGroups || {});
+    const filterKey = buildCatalogFilterKey(query, tags, selectedGroups);
     const requestSeq = Number(this.data.catalogRequestSeq || 0) + 1;
     this.setData({
       catalogLoading: reset,
@@ -314,12 +359,15 @@ Page({
       const resp = await fetchCatalogProducts({
         style_code: query,
         tags,
+        year_tags: selectedGroups.year,
+        category_tags: selectedGroups.category,
+        subcategory_tags: selectedGroups.subcategory,
         limit,
         offset
       });
       if (
         requestSeq !== Number(this.data.catalogRequestSeq || 0) ||
-        filterKey !== buildCatalogFilterKey(this.data.catalogQuery, this.data.selectedCatalogTags || [])
+        filterKey !== buildCatalogFilterKey(this.data.catalogQuery, this.data.selectedCatalogTags || [], this.data.selectedCatalogTagGroups || {})
       ) {
         return;
       }
@@ -329,6 +377,7 @@ Page({
         coverImageUrl: item.cover_image_url || "",
         imageRetryCount: 0,
         tags: item.tags || [],
+        tagGroups: item.tag_groups || {},
         images: item.images || [],
         imageCount: (item.images || []).length,
         previewUrls: buildPreviewUrls(item)
@@ -342,7 +391,7 @@ Page({
     } catch (err) {
       if (
         requestSeq !== Number(this.data.catalogRequestSeq || 0) ||
-        filterKey !== buildCatalogFilterKey(this.data.catalogQuery, this.data.selectedCatalogTags || [])
+        filterKey !== buildCatalogFilterKey(this.data.catalogQuery, this.data.selectedCatalogTags || [], this.data.selectedCatalogTagGroups || {})
       ) {
         return;
       }

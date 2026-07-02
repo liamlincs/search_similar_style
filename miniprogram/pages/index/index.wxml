@@ -25,21 +25,28 @@
       <view class="catalog-filter-title">标签过滤</view>
       <view class="catalog-filter-clear" bindtap="clearCatalogTags">全部</view>
     </view>
-    <view wx:if="{{!catalogTagItems.length}}" class="catalog-tag-empty">暂无标签</view>
-    <view wx:else class="tag-filter-list">
-      <view
-        wx:for="{{catalogTagItems}}"
-        wx:key="name"
-        class="tag-filter-item {{item.active ? 'active' : ''}}"
-        bindtap="toggleCatalogTag"
-        data-tag="{{item.name}}"
-      >
-        {{item.name}}
+    <view wx:if="{{!catalogTagSections.length}}" class="catalog-tag-empty">暂无标签</view>
+    <view wx:else class="catalog-tag-sections">
+      <view wx:for="{{catalogTagSections}}" wx:key="key" class="catalog-tag-section">
+        <view class="catalog-tag-section-title">{{item.title}}</view>
+        <view class="tag-filter-list">
+          <view
+            wx:for="{{item.items}}"
+            wx:for-item="tagItem"
+            wx:key="name"
+            class="tag-filter-item {{tagItem.active ? 'active' : ''}}"
+            bindtap="toggleCatalogTag"
+            data-group="{{item.key}}"
+            data-tag="{{tagItem.name}}"
+          >
+            {{tagItem.name}}
+          </view>
+        </view>
       </view>
     </view>
     <view class="catalog-actions">
       <button class="btn btn-main catalog-btn" bindtap="searchCatalog" loading="{{catalogLoading}}">查询款库</button>
-      <button class="btn btn-sub catalog-btn" bindtap="clearCatalogFilters" disabled="{{!catalogQuery && !selectedCatalogTags.length}}">清空筛选</button>
+      <button class="btn btn-sub catalog-btn" bindtap="clearCatalogFilters" disabled="{{!catalogQuery && !selectedCatalogTags.length && !selectedCatalogTagGroups.year.length && !selectedCatalogTagGroups.category.length && !selectedCatalogTagGroups.subcategory.length}}">清空筛选</button>
     </view>
     <view wx:if="{{catalogLoading}}" class="loading-card">款库检索中...</view>
     <view wx:if="{{catalogErrorMessage}}" class="error-card">{{catalogErrorMessage}}</view>

@@ -120,6 +120,16 @@
   color: #94a3b8;
 }
 
+.catalog-tag-section {
+  margin-top: 14rpx;
+}
+
+.catalog-tag-section-title {
+  font-size: 22rpx;
+  color: #64748b;
+  font-weight: 600;
+}
+
 .tag-filter-item {
   padding: 10rpx 20rpx;
   border-radius: 999rpx;

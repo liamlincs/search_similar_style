@@ -1,6 +1,15 @@
 import sqlite3
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+TAG_TYPE_PREFIXES = {
+    "year": "year:",
+    "category": "category:",
+    "subcategory": "subcategory:",
+}
+DEFAULT_CATEGORY_TAGS = ["单品", "罗纹", "毛织配件", "布匹"]
+DEFAULT_SUBCATEGORY_TAGS = ["暂无"]
 
 
 def filename_to_style_code(img_name: str) -> str:
@@ -8,6 +17,24 @@ def filename_to_style_code(img_name: str) -> str:
     if "_" in stem:
         return stem.rsplit("_", 1)[0]
     return stem
+
+
+def make_typed_tag(kind: str, name: str) -> str:
+    prefix = TAG_TYPE_PREFIXES.get(str(kind or "").strip())
+    value = str(name or "").strip()
+    if not prefix or not value:
+        return ""
+    return f"{prefix}{value}"
+
+
+def parse_catalog_tag(tag: str) -> Dict[str, str]:
+    raw = str(tag or "").strip()
+    for kind, prefix in TAG_TYPE_PREFIXES.items():
+        if raw.startswith(prefix):
+            return {"type": kind, "name": raw[len(prefix):].strip(), "raw": raw}
+    if re.fullmatch(r"20\d{2}", raw):
+        return {"type": "year", "name": raw, "raw": raw}
+    return {"type": "other", "name": raw, "raw": raw}
 
 
 class CatalogStore:
@@ -139,6 +166,23 @@ class CatalogStore:
         with self._connect() as conn:
             rows = conn.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE ASC").fetchall()
         return [str(row["name"]) for row in rows]
+
+    def list_tag_groups(self) -> Dict[str, List[str]]:
+        groups: Dict[str, List[str]] = {
+            "year": [],
+            "category": list(DEFAULT_CATEGORY_TAGS),
+            "subcategory": list(DEFAULT_SUBCATEGORY_TAGS),
+        }
+        for raw in self.list_tags():
+            parsed = parse_catalog_tag(raw)
+            kind = parsed["type"]
+            name = parsed["name"]
+            if kind not in groups or not name:
+                continue
+            if name not in groups[kind]:
+                groups[kind].append(name)
+        groups["year"] = sorted(groups["year"], key=lambda item: str(item).lower())
+        return groups
 
     def create_tag(self, name: str) -> str:
         tag = self._clean_tag(name)
@@ -280,20 +324,27 @@ class CatalogStore:
             filter_params.extend([f"%{query_code}%", f"%{query_code}%"])
 
         from_clause = "FROM products p"
-        if normalized_tags:
-            placeholders = ",".join(["?"] * len(normalized_tags))
+        tag_match_groups = self._tag_match_groups(normalized_tags)
+        if tag_match_groups:
+            where_parts = []
+            having_parts = []
+            for index, alternatives in enumerate(tag_match_groups):
+                placeholders = ",".join(["?"] * len(alternatives))
+                where_parts.append(f"t.name IN ({placeholders})")
+                join_params.extend(alternatives)
+                having_parts.append(f"SUM(CASE WHEN t.name IN ({placeholders}) THEN 1 ELSE 0 END) > 0")
+            for alternatives in tag_match_groups:
+                join_params.extend(alternatives)
             from_clause += """
                 JOIN (
                     SELECT pt.style_code
                     FROM product_tags pt
                     JOIN tags t ON t.id = pt.tag_id
-                    WHERE t.name IN ({})
+                    WHERE {}
                     GROUP BY pt.style_code
-                    HAVING COUNT(DISTINCT t.name) = ?
+                    HAVING {}
                 ) matched ON matched.style_code = p.style_code
-            """.format(placeholders)
-            join_params.extend(normalized_tags)
-            join_params.append(len(normalized_tags))
+            """.format(" OR ".join(where_parts), " AND ".join(having_parts))
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
         params = [
@@ -358,6 +409,12 @@ class CatalogStore:
                 "updated_at": str(row["updated_at"] or ""),
                 "images": [],
                 "tags": [],
+                "raw_tags": [],
+                "tag_groups": {
+                    "year": [],
+                    "category": [],
+                    "subcategory": [],
+                },
             }
         for row in image_rows:
             style_code = str(row["style_code"])
@@ -375,8 +432,36 @@ class CatalogStore:
             product = products.get(style_code)
             if product is None:
                 continue
-            product["tags"].append(str(row["name"]))
+            raw = str(row["name"])
+            parsed = parse_catalog_tag(raw)
+            kind = parsed["type"]
+            name = parsed["name"]
+            if not name:
+                continue
+            product["raw_tags"].append(raw)
+            if kind in product["tag_groups"]:
+                if name not in product["tag_groups"][kind]:
+                    product["tag_groups"][kind].append(name)
+                if name not in product["tags"]:
+                    product["tags"].append(name)
         return [products[code] for code in ordered_codes if code in products]
+
+    def _tag_match_groups(self, tags: Iterable[str]) -> List[List[str]]:
+        groups: List[List[str]] = []
+        for tag in tags:
+            clean = self._clean_tag(tag)
+            if not clean:
+                continue
+            parsed = parse_catalog_tag(clean)
+            alternatives = [clean]
+            if parsed["type"] == "year":
+                typed = make_typed_tag("year", parsed["name"])
+                if typed and typed not in alternatives:
+                    alternatives.append(typed)
+                if parsed["name"] and parsed["name"] not in alternatives:
+                    alternatives.append(parsed["name"])
+            groups.append(alternatives)
+        return groups
 
     def _normalize_tags(self, tags: Iterable[str]) -> List[str]:
         seen = set()
