@@ -4028,6 +4028,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .filter-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; min-height: 28px; }
     .filter-tag { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
     .filter-tag.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .filter-tag-wrap { display: inline-flex; align-items: center; border: 1px solid #c7d2fe; background: #eef2ff; border-radius: 999px; overflow: hidden; }
+    .filter-tag-wrap.active { background: #3730a3; border-color: #3730a3; }
+    .filter-tag-wrap .filter-tag { border: none; background: transparent; border-radius: 0; }
+    .filter-tag-wrap.active .filter-tag { color: #fff; }
+    .filter-tag-delete { min-height: auto; height: 100%; padding: 5px 8px 5px 3px; border: none; border-radius: 0; background: transparent; color: #64748b; font-size: 13px; line-height: 1; }
+    .filter-tag-wrap.active .filter-tag-delete { color: #e0e7ff; }
+    .filter-tag-delete:hover { color: #b91c1c; background: rgba(255,255,255,0.5); }
     .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
     .card { background: #fff; border-radius: 14px; padding: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); }
     .thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; border-radius: 10px; cursor: pointer; }
@@ -4336,6 +4343,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return index > 0 ? raw.slice(index + 1) : raw;
     }
 
+    function displayTagType(tag) {
+      const raw = String(tag || '').trim();
+      const index = raw.indexOf(':');
+      const kind = index > 0 ? raw.slice(0, index) : '';
+      return { year: '年份', category: '类别', subcategory: '细类' }[kind] || '标签';
+    }
+
     function typedTag(type, value) {
       const kind = String(type || '').trim();
       const name = String(value || '').trim();
@@ -4542,7 +4556,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <span class="muted" style="margin-right:8px;">${title}</span>
           ${list.map(name => {
             const tag = typedTag(type, name);
-            return `<button type="button" class="filter-tag ${selectedFilterTags.includes(tag) ? 'active' : ''}" data-role="filterTagBtn" data-tag="${tag}">${name}</button>`;
+            const active = selectedFilterTags.includes(tag);
+            return `<span class="filter-tag-wrap ${active ? 'active' : ''}">
+              <button type="button" class="filter-tag" data-role="filterTagBtn" data-tag="${tag}">${name}</button>
+              <button type="button" class="filter-tag-delete" data-role="deleteFilterTagBtn" data-tag="${tag}" title="删除该标签">×</button>
+            </span>`;
           }).join('')}
         </div>
       `).join('');
@@ -4556,6 +4574,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             selectedFilterTags = uniqTags([...selectedFilterTags, tag]);
           }
           await loadProducts(true);
+        });
+      });
+      els.activeFilterTags.querySelectorAll('[data-role="deleteFilterTagBtn"]').forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          const tag = button.dataset.tag || '';
+          if (!tag) return;
+          const ok = window.confirm(`确认删除${displayTagType(tag)}标签“${displayTag(tag)}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
+          if (!ok) return;
+          try {
+            await deleteGlobalTag(tag);
+            selectedFilterTags = selectedFilterTags.filter(x => x !== tag);
+            await loadGlobalTags();
+            await loadProducts(true);
+            setStatus('标签已删除', false);
+          } catch (err) {
+            setStatus(err.message || '删除标签失败', true);
+          }
         });
       });
     }
