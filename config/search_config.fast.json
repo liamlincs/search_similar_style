@@ -17,6 +17,15 @@
       }
     ]
   },
+  "content_security": {
+    "wechat": {
+      "enabled": false,
+      "appid": "",
+      "appsecret": "",
+      "fail_open": false,
+      "timeout_sec": 10
+    }
+  },
   "catalog": {
     "db_path": "data/product_catalog.db",
     "import_source_dir": "",

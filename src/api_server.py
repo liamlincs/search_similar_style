@@ -15,6 +15,9 @@ import re
 import shutil
 import threading
 import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Dict, List
@@ -168,6 +171,10 @@ class CatalogImportPrepareRequest(BaseModel):
     source_dir: str
 
 
+class WechatContentSecurityError(RuntimeError):
+    pass
+
+
 class CatalogImportCommitItem(BaseModel):
     source_rel_path: str
     target_filename: str = ""
@@ -217,6 +224,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     cfg = _load_cfg(config_path)
     path_cfg = cfg.get("paths", {})
     search_cfg = cfg.get("search", {})
+    content_security_cfg = cfg.get("content_security", {})
+    wechat_security_cfg = content_security_cfg.get("wechat", {})
+    wechat_security_env_enabled = os.getenv("WECHAT_CONTENT_SECURITY_ENABLED", "").strip().lower()
+    wechat_content_security_enabled = bool(wechat_security_cfg.get("enabled", False))
+    if wechat_security_env_enabled in {"1", "true", "yes"}:
+        wechat_content_security_enabled = True
+    elif wechat_security_env_enabled in {"0", "false", "no"}:
+        wechat_content_security_enabled = False
+    wechat_appid = str(os.getenv("WECHAT_APPID", "") or wechat_security_cfg.get("appid", "")).strip()
+    wechat_appsecret = str(os.getenv("WECHAT_APPSECRET", "") or wechat_security_cfg.get("appsecret", "")).strip()
+    wechat_security_fail_open = bool(wechat_security_cfg.get("fail_open", False))
+    wechat_security_timeout = float(wechat_security_cfg.get("timeout_sec", 10))
     ai_generation_cfg = cfg.get("ai_generation", {})
     ai_generation_model = str(ai_generation_cfg.get("model", "doubao-seedream-5-0-260128")).strip() or "doubao-seedream-5-0-260128"
     ai_generation_size = str(ai_generation_cfg.get("size", "2K")).strip() or "2K"
@@ -982,6 +1001,98 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     image_cache_dir.mkdir(parents=True, exist_ok=True)
     catalog_upload_dir = Path("outputs/catalog_import_uploads")
     catalog_upload_dir.mkdir(parents=True, exist_ok=True)
+    wechat_access_token_cache: Dict[str, Any] = {"token": "", "expires_at": 0.0}
+
+    def _wechat_get_access_token() -> str:
+        now = time.time()
+        cached_token = str(wechat_access_token_cache.get("token", ""))
+        cached_expires = float(wechat_access_token_cache.get("expires_at", 0.0))
+        if cached_token and cached_expires - 120 > now:
+            return cached_token
+        if not wechat_appid or not wechat_appsecret:
+            raise WechatContentSecurityError("微信内容安全未配置 AppID/AppSecret")
+        params = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credential",
+                "appid": wechat_appid,
+                "secret": wechat_appsecret,
+            }
+        )
+        url = f"https://api.weixin.qq.com/cgi-bin/token?{params}"
+        try:
+            with urllib.request.urlopen(url, timeout=wechat_security_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            raise WechatContentSecurityError(f"获取微信内容安全 token 失败: {exc}") from exc
+        token = str(data.get("access_token", ""))
+        if not token:
+            raise WechatContentSecurityError(f"获取微信内容安全 token 失败: {data}")
+        expires_in = int(data.get("expires_in", 7200))
+        wechat_access_token_cache["token"] = token
+        wechat_access_token_cache["expires_at"] = now + max(300, expires_in)
+        return token
+
+    def _prepare_wechat_sec_image_bytes(image_bytes: bytes) -> bytes:
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as im0:
+                im = ImageOps.exif_transpose(im0).convert("RGB")
+                im.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=85, optimize=True)
+                return buf.getvalue()
+        except Exception:
+            return image_bytes
+
+    def _wechat_img_sec_check(image_bytes: bytes, filename: str) -> None:
+        if not wechat_content_security_enabled:
+            return
+        check_bytes = _prepare_wechat_sec_image_bytes(image_bytes)
+        boundary = f"----searchstyle{uuid.uuid4().hex}"
+        safe_name = f"{Path(filename or 'upload.jpg').stem or 'upload'}.jpg"
+        head = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="media"; filename="{safe_name}"\r\n'
+            "Content-Type: image/jpeg\r\n\r\n"
+        ).encode("utf-8")
+        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        body = head + check_bytes + tail
+        try:
+            token = _wechat_get_access_token()
+            url = f"https://api.weixin.qq.com/wxa/img_sec_check?access_token={urllib.parse.quote(token)}"
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method="POST",
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "Content-Length": str(len(body)),
+                },
+            )
+            with urllib.request.urlopen(req, timeout=wechat_security_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise WechatContentSecurityError(f"微信图片内容安全接口失败: HTTP {exc.code} {raw}") from exc
+        except Exception as exc:
+            raise WechatContentSecurityError(f"微信图片内容安全接口失败: {exc}") from exc
+        errcode = int(data.get("errcode", -1))
+        if errcode == 0:
+            return
+        if errcode in {87014, 87015}:
+            raise HTTPException(status_code=400, detail="图片内容可能违规，请更换图片后再试")
+        raise WechatContentSecurityError(f"微信图片内容安全接口返回异常: {data}")
+
+    def _check_search_upload_content_security(image_bytes: bytes, filename: str) -> None:
+        if not wechat_content_security_enabled:
+            return
+        try:
+            _wechat_img_sec_check(image_bytes, filename)
+        except HTTPException:
+            raise
+        except WechatContentSecurityError as exc:
+            logging.warning("wechat content security check failed filename=%s error=%s", filename, exc)
+            if not wechat_security_fail_open:
+                raise HTTPException(status_code=503, detail="内容安全校验暂不可用，请稍后再试") from exc
 
     def _list_import_source_images(source_dir: Path) -> List[Path]:
         return [
@@ -5145,6 +5256,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf:
             upload_bytes = await file.read()
+            if not upload_bytes:
+                raise HTTPException(status_code=400, detail="empty file")
+            _check_search_upload_content_security(upload_bytes, file.filename)
             tf.write(upload_bytes)
             tf.flush()
             query_path = Path(tf.name)

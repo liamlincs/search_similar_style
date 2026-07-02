@@ -506,6 +506,18 @@ sudo bash scripts/update_ufw_cloudflare.sh
 - 若后端启用 HTTPS 域名，建议将 `baseUrl` 切到 HTTPS
 - 拼图打印页面不再在界面配置地址，统一读取 `miniprogram/utils/config.js`
 
+### 内容安全校验
+
+`POST /search` 会在后端读取上传图片后、执行检索前调用微信图片内容安全接口。生产环境需要配置：
+
+```bash
+export WECHAT_CONTENT_SECURITY_ENABLED=1
+export WECHAT_APPID="你的小程序 AppID"
+export WECHAT_APPSECRET="你的小程序 AppSecret"
+```
+
+也可在 `config/search_config*.json` 的 `content_security.wechat` 中配置。不要把真实 `AppSecret` 提交到仓库。
+
 ### 局部改色（MVP）
 
 新增接口：`POST /recolor`（`multipart/form-data`）
