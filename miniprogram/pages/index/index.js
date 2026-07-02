@@ -22,6 +22,12 @@ function buildPreviewUrls(product) {
   return cover ? [cover] : [];
 }
 
+function buildCatalogFilterKey(query, tags) {
+  const q = String(query || "").trim();
+  const tagKey = (tags || []).map((tag) => String(tag || "").trim()).filter(Boolean).sort().join("|");
+  return `${q}::${tagKey}`;
+}
+
 Page({
   data: {
     pageMode: "image",
@@ -44,8 +50,10 @@ Page({
     catalogLoading: false,
     catalogLoadingMore: false,
     catalogHasMore: true,
-    catalogLimit: 20,
+    catalogLimit: 9,
     catalogOffset: 0,
+    catalogRequestSeq: 0,
+    catalogActiveFilterKey: "",
     catalogErrorMessage: "",
     catalogResults: []
   },
@@ -65,6 +73,9 @@ Page({
     const mode = e.currentTarget.dataset.mode || "image";
     if (mode === this.data.pageMode) return;
     this.setData({ pageMode: mode });
+    if (mode === "catalog" && !this.data.catalogResults.length && !this.data.catalogLoading) {
+      this.searchCatalog(true);
+    }
   },
 
   chooseFromAlbum() {
@@ -261,6 +272,15 @@ Page({
     this.searchCatalog(true);
   },
 
+  clearCatalogTags() {
+    this.setData({
+      selectedCatalogTags: [],
+      catalogTagItems: buildCatalogTagItems(this.data.catalogTags, []),
+      catalogErrorMessage: ""
+    });
+    this.searchCatalog(true);
+  },
+
   async loadCatalogFilters() {
     try {
       const resp = await fetchCatalogTags();
@@ -273,21 +293,36 @@ Page({
   },
 
   async searchCatalog(reset = true) {
-    if (this.data.catalogLoading || this.data.catalogLoadingMore) return;
+    if (!reset && (this.data.catalogLoading || this.data.catalogLoadingMore)) return;
     const offset = reset ? 0 : Number(this.data.catalogOffset || 0);
     const limit = Number(this.data.catalogLimit || 20);
+    const query = this.data.catalogQuery;
+    const tags = [...(this.data.selectedCatalogTags || [])];
+    const filterKey = buildCatalogFilterKey(query, tags);
+    const requestSeq = Number(this.data.catalogRequestSeq || 0) + 1;
     this.setData({
       catalogLoading: reset,
       catalogLoadingMore: !reset,
+      catalogRequestSeq: requestSeq,
+      catalogActiveFilterKey: filterKey,
+      catalogResults: reset ? [] : this.data.catalogResults,
+      catalogOffset: reset ? 0 : this.data.catalogOffset,
+      catalogHasMore: reset ? true : this.data.catalogHasMore,
       catalogErrorMessage: reset ? "" : this.data.catalogErrorMessage
     });
     try {
       const resp = await fetchCatalogProducts({
-        style_code: this.data.catalogQuery,
-        tags: this.data.selectedCatalogTags,
+        style_code: query,
+        tags,
         limit,
         offset
       });
+      if (
+        requestSeq !== Number(this.data.catalogRequestSeq || 0) ||
+        filterKey !== buildCatalogFilterKey(this.data.catalogQuery, this.data.selectedCatalogTags || [])
+      ) {
+        return;
+      }
       const list = (resp.products || []).map((item) => ({
         styleCode: item.style_code || "",
         coverImage: item.cover_image || "",
@@ -305,15 +340,23 @@ Page({
         catalogHasMore: list.length >= limit
       });
     } catch (err) {
+      if (
+        requestSeq !== Number(this.data.catalogRequestSeq || 0) ||
+        filterKey !== buildCatalogFilterKey(this.data.catalogQuery, this.data.selectedCatalogTags || [])
+      ) {
+        return;
+      }
       this.setData({
         catalogResults: reset ? [] : this.data.catalogResults,
         catalogErrorMessage: err.message || "款库检索失败"
       });
     } finally {
-      this.setData({
-        catalogLoading: false,
-        catalogLoadingMore: false
-      });
+      if (requestSeq === Number(this.data.catalogRequestSeq || 0)) {
+        this.setData({
+          catalogLoading: false,
+          catalogLoadingMore: false
+        });
+      }
     }
   },
 

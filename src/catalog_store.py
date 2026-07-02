@@ -261,7 +261,8 @@ class CatalogStore:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         filters: List[str] = []
-        params: List[Any] = []
+        filter_params: List[Any] = []
+        join_params: List[Any] = []
         query_code = style_code.strip()
         normalized_tags = self._normalize_tags(tags or [])
         if query_code:
@@ -276,7 +277,7 @@ class CatalogStore:
                 )
                 """
             )
-            params.extend([f"%{query_code}%", f"%{query_code}%"])
+            filter_params.extend([f"%{query_code}%", f"%{query_code}%"])
 
         from_clause = "FROM products p"
         if normalized_tags:
@@ -291,11 +292,16 @@ class CatalogStore:
                     HAVING COUNT(DISTINCT t.name) = ?
                 ) matched ON matched.style_code = p.style_code
             """.format(placeholders)
-            params.extend(normalized_tags)
-            params.append(len(normalized_tags))
+            join_params.extend(normalized_tags)
+            join_params.append(len(normalized_tags))
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+        params = [
+            *join_params,
+            *filter_params,
+            max(1, min(int(limit), 500)),
+            max(0, int(offset)),
+        ]
 
         with self._connect() as conn:
             product_rows = conn.execute(
