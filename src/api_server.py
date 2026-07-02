@@ -4852,7 +4852,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const data = await resp.json();
         await loadGlobalTags();
         await loadProducts(true);
-        setStatus(`同步完成：新增款 ${data.products_added}，新增/更新图 ${data.images_added_or_updated}`, false);
+        setStatus(`同步完成：新增款 ${data.products_added}，新增/更新图 ${data.images_added_or_updated}，补年份标签 ${data.year_tags_added || 0}`, false);
       } catch (err) {
         setStatus(err.message || '同步失败', true);
       }

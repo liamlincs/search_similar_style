@@ -156,10 +156,27 @@ class CatalogStore:
                     )
             conn.commit()
 
+        year_tags_added = 0
+        for style_code in sorted(touched_products):
+            year = self._derive_year_from_style_code(style_code)
+            typed_year = make_typed_tag("year", year)
+            if not typed_year:
+                continue
+            product_before = self.get_product(style_code)
+            before = set(product_before.get("raw_tags", []) if product_before else [])
+            if typed_year in before:
+                continue
+            self.add_product_tags(style_code, [typed_year])
+            product_after = self.get_product(style_code)
+            after = set(product_after.get("raw_tags", []) if product_after else [])
+            if typed_year not in before and typed_year in after:
+                year_tags_added += 1
+
         return {
             "products_total": len(touched_products),
             "products_added": added_products,
             "images_added_or_updated": added_images,
+            "year_tags_added": year_tags_added,
         }
 
     def list_tags(self) -> List[str]:
@@ -485,3 +502,11 @@ class CatalogStore:
             return 0
         suffix = stem.rsplit("_", 1)[-1]
         return int(suffix) if suffix.isdigit() else 0
+
+    def _derive_year_from_style_code(self, style_code: str) -> str:
+        code = str(style_code or "").strip()
+        if not code:
+            return ""
+        prefix = code.split("-", 1)[0].strip()
+        match = re.search(r"(\d{2})$", prefix)
+        return f"20{match.group(1)}" if match else ""
