@@ -1,5 +1,6 @@
 import sqlite3
 import re
+import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -10,6 +11,8 @@ TAG_TYPE_PREFIXES = {
 }
 DEFAULT_CATEGORY_TAGS = ["单品", "罗纹", "毛织配件", "布匹"]
 DEFAULT_SUBCATEGORY_TAGS = ["暂无"]
+MIN_AUTO_YEAR_TAG = 2000
+MAX_AUTO_YEAR_AHEAD = 3
 
 
 def filename_to_style_code(img_name: str) -> str:
@@ -35,6 +38,21 @@ def parse_catalog_tag(tag: str) -> Dict[str, str]:
     if re.fullmatch(r"20\d{2}", raw):
         return {"type": "year", "name": raw, "raw": raw}
     return {"type": "other", "name": raw, "raw": raw}
+
+
+def derive_year_from_style_code(style_code: str) -> str:
+    code = str(style_code or "").strip()
+    if not code:
+        return ""
+    prefix = code.split("-", 1)[0].strip()
+    match = re.search(r"(\d{2})$", prefix)
+    if not match:
+        return ""
+    year = int(f"20{match.group(1)}")
+    max_year = dt.date.today().year + MAX_AUTO_YEAR_AHEAD
+    if year < MIN_AUTO_YEAR_TAG or year > max_year:
+        return ""
+    return str(year)
 
 
 class CatalogStore:
@@ -161,7 +179,7 @@ class CatalogStore:
 
         year_tags_added = 0
         for style_code in sorted(touched_products):
-            year = self._derive_year_from_style_code(style_code)
+            year = derive_year_from_style_code(style_code)
             typed_year = make_typed_tag("year", year)
             if not typed_year:
                 continue
@@ -505,11 +523,3 @@ class CatalogStore:
             return 0
         suffix = stem.rsplit("_", 1)[-1]
         return int(suffix) if suffix.isdigit() else 0
-
-    def _derive_year_from_style_code(self, style_code: str) -> str:
-        code = str(style_code or "").strip()
-        if not code:
-            return ""
-        prefix = code.split("-", 1)[0].strip()
-        match = re.search(r"(\d{2})$", prefix)
-        return f"20{match.group(1)}" if match else ""

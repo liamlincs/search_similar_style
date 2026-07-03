@@ -3,10 +3,10 @@ import json
 import re
 from pathlib import Path
 
-from catalog_store import CatalogStore
+from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag
 
 DEFAULT_CONFIG = Path("config/search_config.json")
-YEAR_TAG_RE = re.compile(r"^20\d{2}$")
+YEAR_TAG_RE = re.compile(r"^(?:year:)?20\d{2}$")
 
 
 def load_config(config_path: Path) -> dict:
@@ -16,14 +16,7 @@ def load_config(config_path: Path) -> dict:
 
 
 def derive_year_tag(style_code: str) -> str:
-    code = str(style_code or "").strip()
-    if not code:
-        return ""
-    prefix = code.split("-", 1)[0].strip()
-    match = re.search(r"(\d{2})$", prefix)
-    if not match:
-        return ""
-    return f"20{match.group(1)}"
+    return derive_year_from_style_code(style_code)
 
 
 def main() -> None:
@@ -47,13 +40,14 @@ def main() -> None:
         if not style_code:
             skipped += 1
             continue
-        year_tag = derive_year_tag(style_code)
+        year = derive_year_tag(style_code)
+        year_tag = make_typed_tag("year", year)
         if not year_tag:
             print(f"SKIP {style_code}: cannot derive year")
             skipped += 1
             continue
 
-        current_tags = [str(tag).strip() for tag in product.get("tags", []) if str(tag).strip()]
+        current_tags = [str(tag).strip() for tag in product.get("raw_tags", product.get("tags", [])) if str(tag).strip()]
         non_year_tags = [tag for tag in current_tags if not YEAR_TAG_RE.fullmatch(tag)]
         current_year_tags = [tag for tag in current_tags if YEAR_TAG_RE.fullmatch(tag)]
 

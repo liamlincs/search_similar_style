@@ -61,7 +61,7 @@ from search_similar_return_code import (
 )
 from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
-from catalog_store import CatalogStore, make_typed_tag
+from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
 
@@ -1185,14 +1185,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return f"{stem}{suffix}"
 
     def _derive_year_tag_from_style_code(style_code: str) -> str:
-        code = str(style_code or "").strip()
-        if not code:
-            return ""
-        prefix = code.split("-", 1)[0].strip()
-        match = re.search(r"(\d{2})$", prefix)
-        if not match:
-            return ""
-        return f"20{match.group(1)}"
+        return derive_year_from_style_code(style_code)
 
     def _sanitize_year_tag(value: str) -> str:
         raw = str(value or "").strip()
