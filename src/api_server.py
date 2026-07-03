@@ -981,8 +981,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     _reload_search_assets("startup")
     catalog_store = CatalogStore(catalog_db_path)
-    sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
-    logging.info("catalog sync done: %s", sync_stats)
+    catalog_write_lock = threading.Lock()
+    with catalog_write_lock:
+        sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+        logging.info("catalog sync done: %s", sync_stats)
     catalog_import_jobs: Dict[str, Dict[str, Any]] = {}
     catalog_import_lock = threading.Lock()
     allowed_image_exts = {f".{str(ext).lower().lstrip('.')}" for ext in image_exts}
@@ -5083,7 +5085,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/api/v1/catalog/sync")
     def api_sync_catalog() -> Dict[str, Any]:
-        return catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+        with catalog_write_lock:
+            return catalog_store.sync_from_standard_dir(standard_dir, image_exts)
 
     @app.post("/api/v1/catalog/imports/prepare")
     def api_prepare_catalog_import(payload: CatalogImportPrepareRequest) -> Dict[str, Any]:
@@ -5205,60 +5208,66 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not selected_items:
             raise HTTPException(status_code=400, detail="no selected items")
 
-        planned: List[tuple[Path, str]] = []
-        seen_targets: set[str] = set()
-        style_year_tags: Dict[str, set[str]] = {}
-        style_extra_tags: Dict[str, set[str]] = {}
-        for item in selected_items:
-            prepared = prepared_items.get(item.source_rel_path)
-            if prepared is None:
-                raise HTTPException(status_code=400, detail=f"unknown source_rel_path: {item.source_rel_path}")
-            src = source_dir / item.source_rel_path
-            if not src.exists() or not src.is_file():
-                raise HTTPException(status_code=400, detail=f"source file not found: {item.source_rel_path}")
-            fallback_name = str(prepared.get("proposed_filename", "")).strip() or src.name
-            raw_target = item.target_filename.strip() or fallback_name
-            try:
-                target_name = _sanitize_import_filename(raw_target, src.suffix.lower())
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
-            if target_name.lower() in seen_targets:
-                raise HTTPException(status_code=400, detail=f"duplicate target filename: {target_name}")
-            if (standard_dir / target_name).exists():
-                raise HTTPException(status_code=400, detail=f"target filename already exists: {target_name}")
-            seen_targets.add(target_name.lower())
-            try:
-                year_tag = _sanitize_year_tag(item.year_tag.strip() or str(prepared.get("proposed_year_tag", "")).strip())
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
-            style_code = filename_to_style_code(target_name).strip()
-            if year_tag and style_code:
-                typed_year_tag = make_typed_tag("year", year_tag)
-                if typed_year_tag:
-                    style_year_tags.setdefault(style_code, set()).add(typed_year_tag)
-            import_tags = _normalize_import_tags(item.tags)
-            if import_tags and style_code:
-                style_extra_tags.setdefault(style_code, set()).update(import_tags)
-            planned.append((src, target_name))
+        with catalog_write_lock:
+            with catalog_import_lock:
+                latest_job = catalog_import_jobs.get(payload.job_id)
+                if latest_job is not None and bool(latest_job.get("committed")):
+                    raise HTTPException(status_code=400, detail="import job already committed")
 
-        imported = 0
-        for src, target_name in planned:
-            shutil.copy2(src, standard_dir / target_name)
-            imported += 1
+            planned: List[tuple[Path, str]] = []
+            seen_targets: set[str] = set()
+            style_year_tags: Dict[str, set[str]] = {}
+            style_extra_tags: Dict[str, set[str]] = {}
+            for item in selected_items:
+                prepared = prepared_items.get(item.source_rel_path)
+                if prepared is None:
+                    raise HTTPException(status_code=400, detail=f"unknown source_rel_path: {item.source_rel_path}")
+                src = source_dir / item.source_rel_path
+                if not src.exists() or not src.is_file():
+                    raise HTTPException(status_code=400, detail=f"source file not found: {item.source_rel_path}")
+                fallback_name = str(prepared.get("proposed_filename", "")).strip() or src.name
+                raw_target = item.target_filename.strip() or fallback_name
+                try:
+                    target_name = _sanitize_import_filename(raw_target, src.suffix.lower())
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
+                if target_name.lower() in seen_targets:
+                    raise HTTPException(status_code=400, detail=f"duplicate target filename: {target_name}")
+                if (standard_dir / target_name).exists():
+                    raise HTTPException(status_code=400, detail=f"target filename already exists: {target_name}")
+                seen_targets.add(target_name.lower())
+                try:
+                    year_tag = _sanitize_year_tag(item.year_tag.strip() or str(prepared.get("proposed_year_tag", "")).strip())
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
+                style_code = filename_to_style_code(target_name).strip()
+                if year_tag and style_code:
+                    typed_year_tag = make_typed_tag("year", year_tag)
+                    if typed_year_tag:
+                        style_year_tags.setdefault(style_code, set()).add(typed_year_tag)
+                import_tags = _normalize_import_tags(item.tags)
+                if import_tags and style_code:
+                    style_extra_tags.setdefault(style_code, set()).update(import_tags)
+                planned.append((src, target_name))
 
-        sync_result = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
-        for style_code, year_tags in style_year_tags.items():
-            if year_tags:
-                catalog_store.add_product_tags(style_code, sorted(year_tags))
-        for style_code, import_tags in style_extra_tags.items():
-            if import_tags:
-                catalog_store.add_product_tags(style_code, sorted(import_tags))
-        _reload_search_assets("catalog_import_commit")
-        with catalog_import_lock:
-            job = catalog_import_jobs.get(payload.job_id)
-            if job is not None:
-                job["committed"] = True
-                job["message"] = f"已导入 {imported} 张图片"
+            imported = 0
+            for src, target_name in planned:
+                shutil.copy2(src, standard_dir / target_name)
+                imported += 1
+
+            sync_result = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+            for style_code, year_tags in style_year_tags.items():
+                if year_tags:
+                    catalog_store.add_product_tags(style_code, sorted(year_tags))
+            for style_code, import_tags in style_extra_tags.items():
+                if import_tags:
+                    catalog_store.add_product_tags(style_code, sorted(import_tags))
+            _reload_search_assets("catalog_import_commit")
+            with catalog_import_lock:
+                job = catalog_import_jobs.get(payload.job_id)
+                if job is not None:
+                    job["committed"] = True
+                    job["message"] = f"已导入 {imported} 张图片"
         return {
             "job_id": payload.job_id,
             "imported": imported,
