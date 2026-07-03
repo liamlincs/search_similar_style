@@ -1455,17 +1455,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         path = request.url.path
         is_catalog_ui = path == "/catalog"
-        is_color_card_ui = path == "/color-card-admin"
         is_catalog_login = path == "/catalog/login"
         is_catalog_logout = path == "/catalog/logout"
         is_catalog_api = path.startswith("/api/v1/catalog/")
         is_color_card_api = path.startswith("/api/v1/color-card/")
-        is_catalog_route = is_catalog_ui or is_color_card_ui or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
+        is_catalog_route = is_catalog_ui or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
         allow_public = (
             path in {"/health", "/ready"}
             or is_catalog_login
             or is_catalog_logout
-            or ((not catalog_web_auth_enabled) and (is_catalog_ui or is_color_card_ui))
+            or ((not catalog_web_auth_enabled) and is_catalog_ui)
             or ((not catalog_web_auth_enabled) and catalog_public and (is_catalog_api or is_color_card_api))
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
@@ -1527,7 +1526,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ua[:200],
                 )
                 return resp
-            if is_catalog_ui or is_color_card_ui or is_catalog_logout:
+            if is_catalog_ui or is_catalog_logout:
                 resp = RedirectResponse(url="/catalog/login", status_code=303)
             else:
                 resp = JSONResponse(status_code=401, content={"detail": "catalog login required"})
@@ -4046,7 +4045,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   <style>
     body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; margin: 0; background: #f5f7fa; color: #111827; }
     .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; }
-    .toolbar { display: grid; grid-template-columns: minmax(260px, 1.6fr) repeat(3, 124px); gap: 10px; margin-bottom: 14px; }
+    .toolbar { display: grid; grid-template-columns: minmax(260px, 1.6fr) repeat(4, 124px); gap: 10px; margin-bottom: 14px; }
     input, button { font-size: 14px; padding: 8px 12px; border-radius: 10px; border: 1px solid #d1d5db; min-height: 42px; box-sizing: border-box; }
     button { cursor: pointer; background: #111827; color: #fff; border: none; }
     button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
@@ -4137,6 +4136,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
     .import-table-wrap { max-height: 52vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 12px; }
     .import-preview-img { width: 100%; max-height: 72vh; object-fit: contain; background: #f9fafb; border-radius: 12px; }
+    .color-meter-panel { width: min(1040px, 100%); }
+    .color-meter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .color-meter-card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; background: #fafbfc; }
+    .color-meter-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; margin: 10px 0; }
+    .color-meter-row label { color: #475569; font-size: 13px; font-weight: 700; }
+    .color-meter-row input, .color-meter-row select, .color-meter-row textarea { width: 100%; min-height: 38px; box-sizing: border-box; }
+    .color-meter-row textarea { min-height: 72px; resize: vertical; }
+    .color-name-builder { display: grid; grid-template-columns: 1fr 96px 1fr; gap: 8px; }
+    .color-meter-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .color-meter-actions.end { justify-content: flex-end; }
+    .color-meter-lab { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+    .color-meter-metric { border: 1px solid #dbe2ea; border-radius: 10px; padding: 10px; background: #fff; }
+    .color-meter-metric .k { color: #64748b; font-size: 12px; }
+    .color-meter-metric .v { margin-top: 4px; font-size: 20px; font-weight: 700; }
+    .color-meter-swatch { height: 88px; border-radius: 12px; border: 1px solid rgba(15,23,42,.16); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; margin-top: 12px; }
+    .color-meter-status { padding: 9px 10px; border-radius: 10px; background: #eef6ff; color: #1e3a8a; font-size: 13px; line-height: 1.45; }
+    .color-meter-status.err { background: #fee2e2; color: #b91c1c; }
+    .color-match-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+    .color-match-item { min-height: 78px; border-radius: 12px; padding: 12px; display: flex; justify-content: space-between; gap: 12px; box-shadow: inset 0 0 0 1px rgba(15,23,42,.14); }
+    .color-match-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 620px; }
+    .color-match-meta { margin-top: 4px; font-size: 12px; opacity: .9; }
     .input-pop-wrap { position: relative; width: 100%; }
     .input-pop-wrap > input { width: 100%; }
     .tag-suggest-pop { position: absolute; left: 0; top: calc(100% + 6px); width: max(100%, 420px); max-width: min(560px, calc(100vw - 32px)); background: #fff; border: 1px solid #d1d5db; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,0.12); padding: 10px; display: none; z-index: 20; max-height: 240px; overflow: auto; scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
@@ -4193,6 +4213,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       .import-table input[type="text"] { min-height: 40px; font-size: 14px; }
       .import-source-link { font-size: 14px; line-height: 1.35; word-break: break-all; }
       .import-actions { position: sticky; bottom: -14px; background: #fff; padding-top: 10px; }
+      .color-meter-grid { grid-template-columns: 1fr; }
+      .color-meter-row { grid-template-columns: 1fr; gap: 6px; }
+      .color-name-builder { grid-template-columns: 1fr; }
+      .color-meter-lab { grid-template-columns: 1fr; }
+      .color-match-item { flex-direction: column; }
+      .color-match-name { max-width: 100%; }
     }
   </style>
 </head>
@@ -4206,8 +4232,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="toolbar">
       <input id="styleCodeQuery" placeholder="按款号搜索，如 GZ25-1177 或 J0831" />
       <button id="searchBtn">查询</button>
-      <button id="importBtn" class="secondary">批量导入</button>
-      <button id="syncBtn" class="weak" title="手动扫描标准图片目录，批量导入完成后通常不需要点击">同步目录</button>
+      <button id="importBtn" class="secondary">款图录入</button>
+      <button id="syncBtn" class="weak" title="手动扫描标准图片目录，款图录入完成后通常不需要点击">同步款图</button>
+      <button id="colorCardBtn" class="secondary">色卡录入</button>
     </div>
     <div id="activeFilterTags" class="filter-tags"></div>
     <div id="status" class="status muted"></div>
@@ -4234,7 +4261,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="modal-panel import-panel">
       <div class="modal-head">
         <div>
-          <div class="code" style="margin:0;">批量导入</div>
+          <div class="code" style="margin:0;">款图录入</div>
           <div class="muted">支持服务器目录或浏览器上传图片，先 OCR 生成候选文件名，再手工修改后导入到产品库图片目录。</div>
         </div>
         <button id="closeImportBtn" class="secondary">关闭</button>
@@ -4305,6 +4332,57 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <img id="importPreviewImg" class="import-preview-img" alt="source preview" />
     </div>
   </div>
+  <div id="colorCardModal" class="modal">
+    <div class="modal-panel color-meter-panel">
+      <div class="modal-head">
+        <div>
+          <div class="code" style="margin:0;">色卡蓝牙录入</div>
+        </div>
+        <button id="closeColorCardBtn" class="secondary">关闭</button>
+      </div>
+      <div class="color-meter-grid">
+        <section class="color-meter-card">
+          <div class="code" style="margin:0 0 10px;">连接色差仪</div>
+          <div id="colorMeterStatus" class="color-meter-status">正在检查浏览器蓝牙能力...</div>
+          <div class="color-meter-actions">
+            <button id="colorMeterConnectBtn">连接色差仪</button>
+            <button id="colorMeterDisconnectBtn" class="weak" disabled>断开</button>
+          </div>
+          <div class="color-meter-lab">
+            <div class="color-meter-metric"><div class="k">L</div><div id="colorMeterL" class="v">--</div></div>
+            <div class="color-meter-metric"><div class="k">a</div><div id="colorMeterA" class="v">--</div></div>
+            <div class="color-meter-metric"><div class="k">b</div><div id="colorMeterB" class="v">--</div></div>
+          </div>
+          <div id="colorMeterSwatch" class="color-meter-swatch" style="background:#f1f5f9;color:#334155;">未测量</div>
+        </section>
+        <section class="color-meter-card">
+          <div class="code" style="margin:0 0 10px;">录入色号</div>
+          <div class="color-meter-row"><label>色卡库</label><select id="colorLibrarySelect"></select></div>
+          <div class="color-meter-row"><label>新色卡库</label><input id="colorNewLibrary" placeholder="可选：输入后新建/切换到该库" /></div>
+          <div class="color-meter-row">
+            <label>名称模板</label>
+            <div class="color-name-builder">
+              <input id="colorNamePrefix" placeholder="前缀，如彩龙" />
+              <input id="colorNameNumber" inputmode="numeric" placeholder="编号" />
+              <input id="colorNameSuffix" placeholder="色名，如浅灰" />
+            </div>
+          </div>
+          <div class="color-meter-row"><label>色号名称</label><input id="colorNameInput" placeholder="例如 彩龙3351浅灰" /></div>
+          <div class="color-meter-row"><label>备注</label><textarea id="colorNoteInput" placeholder="可选"></textarea></div>
+          <div class="color-meter-actions end">
+            <button id="colorMeterMeasureBtn" class="secondary" disabled>测量</button>
+            <button id="colorSaveBtn" disabled>保存到色卡库</button>
+          </div>
+          <div class="muted" style="margin-top:10px;">同一色卡库内色号名称重复时，会更新原记录。</div>
+        </section>
+      </div>
+      <div class="color-meter-card" style="margin-top:14px;">
+        <div class="code" style="margin:0 0 8px;">相似色号列表</div>
+        <div id="colorMatchStatus" class="muted">测量后会按 dE*00 从小到大返回相似色号。</div>
+        <div id="colorMatchList" class="color-match-list"></div>
+      </div>
+    </div>
+  </div>
   <script>
     let globalTags = [];
     let globalTagGroups = { year: [], category: [], subcategory: [] };
@@ -4322,6 +4400,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       styleCodeQuery: document.getElementById('styleCodeQuery'),
       searchBtn: document.getElementById('searchBtn'),
       syncBtn: document.getElementById('syncBtn'),
+      colorCardBtn: document.getElementById('colorCardBtn'),
       importBtn: document.getElementById('importBtn'),
       status: document.getElementById('status'),
       cards: document.getElementById('cards'),
@@ -4356,6 +4435,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       closeImportPreviewBtn: document.getElementById('closeImportPreviewBtn'),
       importBatchCategoryPicks: document.getElementById('importBatchCategoryPicks'),
       importBatchSubcategoryPicks: document.getElementById('importBatchSubcategoryPicks'),
+      colorCardModal: document.getElementById('colorCardModal'),
+      closeColorCardBtn: document.getElementById('closeColorCardBtn'),
+      colorMeterStatus: document.getElementById('colorMeterStatus'),
+      colorMeterConnectBtn: document.getElementById('colorMeterConnectBtn'),
+      colorMeterMeasureBtn: document.getElementById('colorMeterMeasureBtn'),
+      colorMeterDisconnectBtn: document.getElementById('colorMeterDisconnectBtn'),
+      colorMeterL: document.getElementById('colorMeterL'),
+      colorMeterA: document.getElementById('colorMeterA'),
+      colorMeterB: document.getElementById('colorMeterB'),
+      colorMeterSwatch: document.getElementById('colorMeterSwatch'),
+      colorLibrarySelect: document.getElementById('colorLibrarySelect'),
+      colorNewLibrary: document.getElementById('colorNewLibrary'),
+      colorNamePrefix: document.getElementById('colorNamePrefix'),
+      colorNameNumber: document.getElementById('colorNameNumber'),
+      colorNameSuffix: document.getElementById('colorNameSuffix'),
+      colorNameInput: document.getElementById('colorNameInput'),
+      colorNoteInput: document.getElementById('colorNoteInput'),
+      colorSaveBtn: document.getElementById('colorSaveBtn'),
+      colorMatchStatus: document.getElementById('colorMatchStatus'),
+      colorMatchList: document.getElementById('colorMatchList'),
     };
 
     function setStatus(msg, isError) {
@@ -4367,6 +4466,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function setNodeText(node, value) {
       if (!node) return;
       node.textContent = value || '';
+    }
+
+    function escapeHtml(value) {
+      return String(value || '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     }
 
     const nativeFetch = window.fetch.bind(window);
@@ -4737,6 +4840,282 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       els.importModal.classList.remove('open');
     }
 
+    const COLOR_SERVICE_UUID = 0xFFE0;
+    const COLOR_CHARACTERISTIC_UUID = 0xFFE1;
+    let colorDevice = null;
+    let colorCharacteristic = null;
+    let colorPending = null;
+    let colorResponseBytes = [];
+    let colorMeasureId = 1;
+    let colorLastLab = null;
+
+    function setColorMeterStatus(message, isError) {
+      if (!els.colorMeterStatus) return;
+      els.colorMeterStatus.textContent = message || '';
+      els.colorMeterStatus.className = isError ? 'color-meter-status err' : 'color-meter-status';
+    }
+
+    function colorChecksum(bytes) {
+      let sum = 0;
+      for (let i = 0; i < bytes.length - 1; i += 1) sum += bytes[i];
+      return sum & 255;
+    }
+
+    function colorU32le(n) {
+      const bytes = new Uint8Array(4);
+      new DataView(bytes.buffer).setUint32(0, n, true);
+      return Array.from(bytes);
+    }
+
+    function colorCommand(content, responseSize, timeout, needSign) {
+      const data = Uint8Array.from(content);
+      if (needSign !== false) data[data.length - 1] = colorChecksum(data);
+      return { data, responseSize, timeout: timeout || 3000 };
+    }
+
+    function colorWakeCommand() {
+      return colorCommand([0xf0], 0, 0, false);
+    }
+
+    function colorMeasureCommand() {
+      colorMeasureId += 1;
+      return colorCommand([0xbb, 1, 0, ...colorU32le(colorMeasureId), 0, 0xff, 0], 10, 5000, true);
+    }
+
+    function colorGetLabCommand() {
+      return colorCommand([0xbb, 3, 0, 0, 0, 0, 0, 0, 0xff, 0], 20, 3000, true);
+    }
+
+    function onColorNotify(event) {
+      if (!colorPending) return;
+      colorResponseBytes.push(...new Uint8Array(event.target.value.buffer));
+      if (colorResponseBytes.length < colorPending.responseSize) return;
+      const response = Uint8Array.from(colorResponseBytes);
+      const ok = colorChecksum(response) === response[response.length - 1];
+      const pending = colorPending;
+      colorPending = null;
+      colorResponseBytes = [];
+      clearTimeout(pending.timer);
+      ok ? pending.resolve(response) : pending.reject(new Error('色差仪返回校验失败'));
+    }
+
+    async function colorWrite(buffer) {
+      if (colorCharacteristic.writeValueWithResponse) return colorCharacteristic.writeValueWithResponse(buffer);
+      return colorCharacteristic.writeValue(buffer);
+    }
+
+    async function colorExec(command) {
+      if (!colorCharacteristic) throw new Error('未连接色差仪');
+      if (colorPending) throw new Error('已有蓝牙命令执行中');
+      for (let i = 0; i < command.data.length; i += 20) {
+        await colorWrite(command.data.slice(i, i + 20));
+      }
+      if (!command.responseSize) return null;
+      return new Promise((resolve, reject) => {
+        colorPending = {
+          responseSize: command.responseSize,
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            colorPending = null;
+            colorResponseBytes = [];
+            reject(new Error('色差仪响应超时'));
+          }, command.timeout),
+        };
+      });
+    }
+
+    function waitColor(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function measureColorLab() {
+      await colorExec(colorWakeCommand());
+      await waitColor(50);
+      await colorExec(colorMeasureCommand());
+      await waitColor(50);
+      await colorExec(colorWakeCommand());
+      await waitColor(50);
+      const data = await colorExec(colorGetLabCommand());
+      const view = new DataView(data.buffer);
+      return {
+        L: view.getFloat32(5, true),
+        a: view.getFloat32(9, true),
+        b: view.getFloat32(13, true),
+      };
+    }
+
+    function colorLabToHex(lab) {
+      let y = (lab.L + 16) / 116;
+      let x = lab.a / 500 + y;
+      let z = y - lab.b / 200;
+      const pivot = (v) => v > 6 / 29 ? Math.pow(v, 3) : (v - 16 / 116) / 7.787;
+      x = pivot(x) * 0.95047;
+      y = pivot(y);
+      z = pivot(z) * 1.08883;
+      let r = 3.2406 * x - 1.5372 * y - 0.4986 * z;
+      let g = -0.9689 * x + 1.8758 * y + 0.0415 * z;
+      let b = 0.0557 * x - 0.2040 * y + 1.0570 * z;
+      const gamma = (v) => Math.max(0, Math.min(255, Math.round((v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v) * 255)));
+      return [gamma(r), gamma(g), gamma(b)].map((n) => n.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+
+    function setColorLab(lab) {
+      colorLastLab = lab;
+      els.colorMeterL.textContent = lab.L.toFixed(2);
+      els.colorMeterA.textContent = lab.a.toFixed(2);
+      els.colorMeterB.textContent = lab.b.toFixed(2);
+      const hex = colorLabToHex(lab);
+      els.colorMeterSwatch.textContent = '#' + hex;
+      els.colorMeterSwatch.style.background = '#' + hex;
+      els.colorMeterSwatch.style.color = lab.L < 55 ? '#fff' : '#0f172a';
+      els.colorSaveBtn.disabled = false;
+    }
+
+    function buildColorNameFromParts() {
+      const prefix = (els.colorNamePrefix && els.colorNamePrefix.value || '').trim();
+      const number = (els.colorNameNumber && els.colorNameNumber.value || '').trim();
+      const suffix = (els.colorNameSuffix && els.colorNameSuffix.value || '').trim();
+      return `${prefix}${number}${suffix}`.trim();
+    }
+
+    function refreshColorNameFromParts() {
+      const built = buildColorNameFromParts();
+      if (built && els.colorNameInput) els.colorNameInput.value = built;
+    }
+
+    function inferColorNamePrefixFromText(raw) {
+      const text = String(raw || '');
+      if (text.includes('彩龙')) return '彩龙';
+      if (text.includes('国彩')) return '国彩';
+      if (text.includes('恩盛')) return '恩盛';
+      return '';
+    }
+
+    function maybeFillColorNamePrefix(raw) {
+      if (!els.colorNamePrefix || els.colorNamePrefix.value.trim()) return;
+      const prefix = inferColorNamePrefixFromText(raw);
+      if (!prefix) return;
+      els.colorNamePrefix.value = prefix;
+      refreshColorNameFromParts();
+    }
+
+    function incrementColorNameNumber() {
+      const raw = (els.colorNameNumber && els.colorNameNumber.value || '').trim();
+      if (!raw || !/^\\d+$/.test(raw)) return;
+      const width = raw.length;
+      const next = String(Number(raw) + 1).padStart(width, '0');
+      els.colorNameNumber.value = next;
+      if (els.colorNameSuffix) els.colorNameSuffix.value = '';
+      refreshColorNameFromParts();
+    }
+
+    async function loadColorLibraries(selectedId) {
+      const resp = await fetch('/api/v1/color-card/libraries');
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      els.colorLibrarySelect.innerHTML = '';
+      (data.libraries || []).forEach((library) => {
+        const option = document.createElement('option');
+        option.value = library.id;
+        option.textContent = `${library.name} (${library.color_count || 0})`;
+        if (selectedId && selectedId === library.id) option.selected = true;
+        els.colorLibrarySelect.appendChild(option);
+      });
+    }
+
+    async function matchColorCards() {
+      if (!colorLastLab) return;
+      setNodeText(els.colorMatchStatus, '正在匹配...');
+      els.colorMatchList.innerHTML = '';
+      const resp = await fetch('/api/v1/color-card/match', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          L: colorLastLab.L,
+          a: colorLastLab.a,
+          b: colorLastLab.b,
+          library_id: els.colorLibrarySelect.value,
+          limit: 12,
+        }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      setNodeText(els.colorMatchStatus, `找到 ${(data.matches || []).length} 条相似色号`);
+      els.colorMatchList.innerHTML = (data.matches || []).map((item) => {
+        const textColor = Number(item.l) < 55 ? '#fff' : '#0f172a';
+        return `<div class="color-match-item" style="background:#${item.hex || 'CCCCCC'};color:${textColor};">
+          <div><div class="color-match-name">名称：${escapeHtml(item.name || '')}</div>
+          <div class="color-match-meta">色彩库：${escapeHtml(item.library_name || '')}</div>
+          <div class="color-match-meta">dE*00：${Number(item.delta_e_00 || 0).toFixed(2)} · L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div></div>
+          <div class="tag">#${escapeHtml(item.hex || '')}</div>
+        </div>`;
+      }).join('');
+    }
+
+    async function saveColorCard() {
+      if (!colorLastLab) throw new Error('请先测量');
+      const colorName = els.colorNameInput.value.trim();
+      if (!colorName) throw new Error('请填写色号名称');
+      let libraryId = els.colorLibrarySelect.value;
+      let libraryName = (els.colorLibrarySelect.options[els.colorLibrarySelect.selectedIndex]?.textContent || libraryId).replace(/\\s*\\(\\d+\\)\\s*$/, '');
+      if (els.colorNewLibrary.value.trim()) {
+        libraryId = els.colorNewLibrary.value.trim();
+        libraryName = libraryId;
+      }
+      const resp = await fetch('/api/v1/color-card/cards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          library_id: libraryId,
+          library_name: libraryName,
+          name: colorName,
+          note: els.colorNoteInput.value,
+          L: colorLastLab.L,
+          a: colorLastLab.a,
+          b: colorLastLab.b,
+        }),
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = await resp.json();
+      els.colorNewLibrary.value = '';
+      await loadColorLibraries(data.card.library_id);
+      await matchColorCards();
+      incrementColorNameNumber();
+      setColorMeterStatus('已保存：' + data.card.name, false);
+    }
+
+    async function connectColorMeter() {
+      if (!navigator.bluetooth) throw new Error('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge');
+      colorDevice = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [COLOR_SERVICE_UUID] });
+      colorDevice.addEventListener('gattserverdisconnected', () => {
+        colorCharacteristic = null;
+        els.colorMeterMeasureBtn.disabled = true;
+        els.colorMeterDisconnectBtn.disabled = true;
+        setColorMeterStatus('色差仪已断开', false);
+      });
+      const server = await colorDevice.gatt.connect();
+      const service = await server.getPrimaryService(COLOR_SERVICE_UUID);
+      colorCharacteristic = await service.getCharacteristic(COLOR_CHARACTERISTIC_UUID);
+      await colorCharacteristic.startNotifications();
+      colorCharacteristic.addEventListener('characteristicvaluechanged', onColorNotify);
+      els.colorMeterMeasureBtn.disabled = false;
+      els.colorMeterDisconnectBtn.disabled = false;
+      setColorMeterStatus('已连接：' + (colorDevice.name || 'BLE 色差仪'), false);
+    }
+
+    async function openColorCardModal() {
+      els.colorCardModal.classList.add('open');
+      if (!navigator.bluetooth) setColorMeterStatus('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge', true);
+      else if (!window.isSecureContext) setColorMeterStatus('Web Bluetooth 需要 HTTPS 或 localhost', true);
+      else setColorMeterStatus('浏览器支持 Web Bluetooth，可以连接色差仪', false);
+      await loadColorLibraries().catch((err) => setColorMeterStatus(err.message || '加载色卡库失败', true));
+    }
+
+    function closeColorCardModal() {
+      els.colorCardModal.classList.remove('open');
+    }
+
     function openImportPreview(item) {
       if (!item || !importJobId) return;
       setNodeText(els.importPreviewTitle, item.source_name || '');
@@ -4765,10 +5144,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function deriveYearTagFromFilename(filename) {
       const raw = String(filename || '').trim();
       if (!raw) return '';
-      const stem = raw.replace(/\.[^.]+$/, '');
+      const stem = raw.replace(/\\.[^.]+$/, '');
       const styleCode = stem.includes('_') ? stem.slice(0, stem.lastIndexOf('_')) : stem;
       const prefix = styleCode.split('-', 1)[0] || '';
-      const match = prefix.match(/(\d{2})$/);
+      const match = prefix.match(/(\\d{2})$/);
       return match ? `20${match[1]}` : '';
     }
 
@@ -4970,6 +5349,49 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         setStatus(err.message || '同步失败', true);
       }
     });
+    els.colorCardBtn.addEventListener('click', () => {
+      openColorCardModal().catch(err => setColorMeterStatus(err.message || '打开色卡录入失败', true));
+    });
+    els.closeColorCardBtn.addEventListener('click', closeColorCardModal);
+    els.colorCardModal.addEventListener('click', (event) => {
+      if (event.target === els.colorCardModal) closeColorCardModal();
+    });
+    els.colorMeterConnectBtn.addEventListener('click', () => {
+      connectColorMeter().catch(err => setColorMeterStatus(err.message || '连接失败', true));
+    });
+    els.colorMeterMeasureBtn.addEventListener('click', async () => {
+      try {
+        els.colorMeterMeasureBtn.disabled = true;
+        setColorMeterStatus('正在测量...', false);
+        const lab = await measureColorLab();
+        setColorLab(lab);
+        setColorMeterStatus('测量完成', false);
+        await matchColorCards();
+      } catch (err) {
+        setColorMeterStatus(err.message || '测量失败', true);
+      } finally {
+        els.colorMeterMeasureBtn.disabled = !colorCharacteristic;
+      }
+    });
+    els.colorMeterDisconnectBtn.addEventListener('click', () => {
+      if (colorDevice && colorDevice.gatt && colorDevice.gatt.connected) colorDevice.gatt.disconnect();
+      colorCharacteristic = null;
+      els.colorMeterMeasureBtn.disabled = true;
+      els.colorMeterDisconnectBtn.disabled = true;
+    });
+    [els.colorNamePrefix, els.colorNameNumber, els.colorNameSuffix].forEach((node) => {
+      if (node) node.addEventListener('input', refreshColorNameFromParts);
+    });
+    els.colorNewLibrary.addEventListener('input', () => {
+      maybeFillColorNamePrefix(els.colorNewLibrary.value);
+    });
+    els.colorLibrarySelect.addEventListener('change', () => {
+      const label = els.colorLibrarySelect.options[els.colorLibrarySelect.selectedIndex]?.textContent || '';
+      maybeFillColorNamePrefix(label);
+    });
+    els.colorSaveBtn.addEventListener('click', () => {
+      saveColorCard().catch(err => setColorMeterStatus(err.message || '保存失败', true));
+    });
     els.importBtn.addEventListener('click', openImportModal);
     els.closeImportBtn.addEventListener('click', closeImportModal);
     els.importModal.addEventListener('click', (event) => {
@@ -5067,6 +5489,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (els.importModal && els.importModal.classList.contains('open')) {
         event.preventDefault();
         closeImportModal();
+        return;
+      }
+      if (els.colorCardModal && els.colorCardModal.classList.contains('open')) {
+        event.preventDefault();
+        closeColorCardModal();
       }
     });
     document.addEventListener('click', () => {
@@ -5088,34 +5515,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   </script>
 </body>
 </html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True))
-
-    @app.get("/color-card-admin", response_class=HTMLResponse)
-    def color_card_admin_page() -> str:
-        return r"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>色卡蓝牙录入</title>
-<style>
-body{margin:0;background:#f4f7fb;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,"Microsoft YaHei",sans-serif}.wrap{max-width:980px;margin:0 auto;padding:22px 18px 42px}.top{display:flex;justify-content:space-between;gap:16px;margin-bottom:16px}h1{margin:0;font-size:26px}.sub,.hint{color:#64748b;font-size:14px;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#fff;border:1px solid #e7edf5;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.06);padding:16px}.full{grid-column:1/-1}.row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:center;margin:10px 0}input,select,textarea{width:100%;min-height:40px;border:1px solid #dbe3ee;border-radius:10px;padding:8px 10px;font:inherit}textarea{min-height:74px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}button{border:0;border-radius:10px;min-height:42px;padding:0 16px;font:inherit;font-weight:650;cursor:pointer}.primary{background:#1d4ed8;color:#fff}.teal{background:#0f766e;color:#fff}.ghost{background:#e2e8f0;color:#334155}button:disabled{opacity:.55}.status{padding:10px 12px;border-radius:10px;background:#eef6ff;color:#1e3a8a;font-size:14px;line-height:1.45}.err{background:#fee2e2;color:#b91c1c}.swatch{height:92px;border-radius:12px;border:1px solid rgba(15,23,42,.16);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700}.lab{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}.metric{border:1px solid #dbe3ee;border-radius:10px;padding:10px;background:#f8fafc}.k{color:#64748b;font-size:12px}.v{margin-top:4px;font-size:20px;font-weight:700}.list{display:flex;flex-direction:column;gap:10px;margin-top:10px}.match{min-height:82px;border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:14px;box-shadow:inset 0 0 0 1px rgba(15,23,42,.14)}.name{font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px}.meta{margin-top:4px;font-size:13px;opacity:.9}.pill{display:inline-flex;align-items:center;min-height:28px;padding:0 10px;border-radius:999px;background:#eef2f7;color:#334155;font-size:13px;text-decoration:none}@media(max-width:760px){.wrap{padding:16px 12px 30px}.grid{grid-template-columns:1fr}.top{flex-direction:column}.row{grid-template-columns:1fr;gap:6px}.lab{grid-template-columns:1fr}.match{align-items:flex-start;flex-direction:column}.name{max-width:100%}}
-</style></head><body><main class="wrap">
-<div class="top"><div><h1>色卡蓝牙录入</h1><div class="sub">支持 Android Chrome、电脑 Chrome/Edge。线上使用需要 HTTPS，本机调试可用 localhost。</div></div><a class="pill" href="/catalog">返回款号库</a></div>
-<div class="grid">
-<section class="card"><h2>1. 连接与测量</h2><div id="btSupport" class="status">正在检查浏览器蓝牙能力...</div><div class="actions"><button id="connectBtn" class="teal">连接色差仪</button><button id="measureBtn" class="primary" disabled>测量</button><button id="disconnectBtn" class="ghost" disabled>断开</button></div><div class="lab"><div class="metric"><div class="k">L</div><div id="lVal" class="v">--</div></div><div class="metric"><div class="k">a</div><div id="aVal" class="v">--</div></div><div class="metric"><div class="k">b</div><div id="bVal" class="v">--</div></div></div><div id="swatch" class="swatch" style="margin-top:12px;background:#f1f5f9;color:#334155">未测量</div></section>
-<section class="card"><h2>2. 录入色卡</h2><div class="row"><label>色卡库</label><select id="librarySelect"></select></div><div class="row"><label>新色卡库</label><input id="newLibrary" placeholder="可选：输入后会新建/切换到该库"/></div><div class="row"><label>色号名称</label><input id="colorName" placeholder="例如 彩龙3351浅灰"/></div><div class="row"><label>备注</label><textarea id="note" placeholder="可选"></textarea></div><div class="actions"><button id="saveBtn" class="primary" disabled>保存到色卡库</button><button id="matchBtn" class="ghost" disabled>只匹配相似色</button></div><p class="hint">同一色卡库内色号名称重复时，会更新原记录的 Lab/Hex。</p></section>
-<section class="card full"><h2>相似色号列表</h2><div id="matchStatus" class="hint">测量后会按 dE*00 从小到大返回相似色号。</div><div id="matches" class="list"></div></section>
-</div></main>
-<script>
-const $=id=>document.getElementById(id),els={bt:$('btSupport'),connect:$('connectBtn'),measure:$('measureBtn'),disconnect:$('disconnectBtn'),save:$('saveBtn'),match:$('matchBtn'),lib:$('librarySelect'),newLib:$('newLibrary'),name:$('colorName'),note:$('note'),l:$('lVal'),a:$('aVal'),b:$('bVal'),swatch:$('swatch'),matchStatus:$('matchStatus'),matches:$('matches')};const SERVICE=0xFFE0,CHAR=0xFFE1;let dev=null,ch=null,pending=null,resp=[],mid=1,lastLab=null;
-function status(t,e=false){els.bt.textContent=t;els.bt.className=e?'status err':'status'}function clamp(n,min,max){return Math.max(min,Math.min(max,n))}function checksum(bytes){let s=0;for(let i=0;i<bytes.length-1;i++)s+=bytes[i];return s&255}function u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);return Array.from(b)}function cmd(a,size,timeout=3000,sign=true){const data=Uint8Array.from(a);if(sign)data[data.length-1]=checksum(data);return{data,size,timeout}}function wake(){return cmd([0xf0],0,0,false)}function measureCmd(){mid+=1;return cmd([0xbb,1,0,...u32(mid),0,0xff,0],10,5000)}function labCmd(){return cmd([0xbb,3,0,0,0,0,0,0,0xff,0],20,3000)}
-function notify(ev){if(!pending)return;resp.push(...new Uint8Array(ev.target.value.buffer));if(resp.length<pending.size)return;const out=Uint8Array.from(resp),ok=checksum(out)===out[out.length-1],p=pending;pending=null;resp=[];clearTimeout(p.timer);ok?p.resolve(out):p.reject(new Error('色差仪返回校验失败'))}
-async function write(buf){return ch.writeValueWithResponse?ch.writeValueWithResponse(buf):ch.writeValue(buf)}async function exec(c){if(!ch)throw new Error('未连接色差仪');if(pending)throw new Error('已有蓝牙命令执行中');for(let i=0;i<c.data.length;i+=20)await write(c.data.slice(i,i+20));if(!c.size)return null;return new Promise((resolve,reject)=>{pending={size:c.size,resolve,reject,timer:setTimeout(()=>{pending=null;resp=[];reject(new Error('色差仪响应超时'))},c.timeout)}})}async function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
-async function measureLab(){await exec(wake());await sleep(50);await exec(measureCmd());await sleep(50);await exec(wake());await sleep(50);const data=await exec(labCmd()),v=new DataView(data.buffer);return{L:v.getFloat32(5,true),a:v.getFloat32(9,true),b:v.getFloat32(13,true)}}
-function labRgb(lab){let y=(lab.L+16)/116,x=lab.a/500+y,z=y-lab.b/200;const p=v=>v>6/29?Math.pow(v,3):(v-16/116)/7.787;x=p(x)*.95047;y=p(y);z=p(z)*1.08883;let r=3.2406*x-1.5372*y-.4986*z,g=-.9689*x+1.8758*y+.0415*z,b=.0557*x-.2040*y+1.0570*z;const gm=v=>clamp(Math.round((v>.0031308?1.055*Math.pow(v,1/2.4)-.055:12.92*v)*255),0,255);return{r:gm(r),g:gm(g),b:gm(b)}}function labHex(lab){const r=labRgb(lab);return[r.r,r.g,r.b].map(n=>n.toString(16).padStart(2,'0')).join('').toUpperCase()}function setLab(lab){lastLab=lab;els.l.textContent=lab.L.toFixed(2);els.a.textContent=lab.a.toFixed(2);els.b.textContent=lab.b.toFixed(2);const hx=labHex(lab);els.swatch.textContent='#'+hx;els.swatch.style.background='#'+hx;els.swatch.style.color=lab.L<55?'#fff':'#0f172a';els.save.disabled=false;els.match.disabled=false}
-async function loadLibs(sel=''){const r=await fetch('/api/v1/color-card/libraries');if(!r.ok)throw new Error(await r.text());const d=await r.json();els.lib.innerHTML='';(d.libraries||[]).forEach(lib=>{const o=document.createElement('option');o.value=lib.id;o.textContent=`${lib.name} (${lib.color_count||0})`;if(sel===lib.id)o.selected=true;els.lib.appendChild(o)})}
-function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function doMatch(){if(!lastLab)return;els.matchStatus.textContent='正在匹配...';els.matches.innerHTML='';const r=await fetch('/api/v1/color-card/match',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({L:lastLab.L,a:lastLab.a,b:lastLab.b,library_id:els.lib.value,limit:12})});if(!r.ok)throw new Error(await r.text());const d=await r.json();els.matchStatus.textContent=`找到 ${(d.matches||[]).length} 条相似色号`;for(const it of d.matches||[]){const div=document.createElement('div');div.className='match';div.style.background='#'+(it.hex||'CCCCCC');div.style.color=Number(it.l)<55?'#fff':'#0f172a';div.innerHTML=`<div><div class="name">名称：${esc(it.name||'')}</div><div class="meta">色彩库：${esc(it.library_name||'')}</div><div class="meta">dE*00：${Number(it.delta_e_00||0).toFixed(2)} · L ${Number(it.l).toFixed(1)} / a ${Number(it.a).toFixed(1)} / b ${Number(it.b).toFixed(1)}</div></div><div class="pill">#${esc(it.hex||'')}</div>`;els.matches.appendChild(div)}}
-async function save(){if(!lastLab)throw new Error('请先测量');if(!els.name.value.trim())throw new Error('请填写色号名称');let lid=els.lib.value,lname=(els.lib.options[els.lib.selectedIndex]?.textContent||lid).replace(/\s*\(\d+\)\s*$/,'');if(els.newLib.value.trim()){lid=els.newLib.value.trim();lname=lid}const r=await fetch('/api/v1/color-card/cards',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({library_id:lid,library_name:lname,name:els.name.value.trim(),note:els.note.value,L:lastLab.L,a:lastLab.a,b:lastLab.b})});if(!r.ok)throw new Error(await r.text());const d=await r.json();await loadLibs(d.card.library_id);els.newLib.value='';await doMatch();status('已保存：'+d.card.name)}
-async function connect(){if(!navigator.bluetooth)throw new Error('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge');dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});dev.addEventListener('gattserverdisconnected',()=>{ch=null;els.measure.disabled=true;els.disconnect.disabled=true;status('色差仪已断开')});const server=await dev.gatt.connect(),svc=await server.getPrimaryService(SERVICE);ch=await svc.getCharacteristic(CHAR);await ch.startNotifications();ch.addEventListener('characteristicvaluechanged',notify);els.measure.disabled=false;els.disconnect.disabled=false;status('已连接：'+(dev.name||'BLE 色差仪'))}
-els.connect.onclick=()=>connect().catch(e=>status(e.message||'连接失败',true));els.measure.onclick=async()=>{try{els.measure.disabled=true;status('正在测量...');const lab=await measureLab();setLab(lab);status('测量完成');await doMatch()}catch(e){status(e.message||'测量失败',true)}finally{els.measure.disabled=!ch}};els.disconnect.onclick=()=>{if(dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();ch=null;els.measure.disabled=true;els.disconnect.disabled=true};els.save.onclick=()=>save().catch(e=>status(e.message||'保存失败',true));els.match.onclick=()=>doMatch().catch(e=>status(e.message||'匹配失败',true));if(!navigator.bluetooth)status('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge',true);else if(!window.isSecureContext)status('Web Bluetooth 需要 HTTPS 或 localhost',true);else status('浏览器支持 Web Bluetooth，可以连接色差仪');loadLibs().catch(e=>status(e.message||'加载色卡库失败',true));
-</script></body></html>"""
 
     @app.get("/api/v1/catalog/products")
     def api_list_catalog_products(
