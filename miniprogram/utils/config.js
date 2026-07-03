@@ -6,7 +6,7 @@ const config = {
   apiKey: "replace-with-real-key-a",
   searchPath: "/search",
   wechatSessionPath: "/api/v1/wechat/session",
-  imageUrlPath: "/image-url",
+  imageUrlPath: "/api/v1/image-url",
   catalogPaths: {
     products: "/api/v1/catalog/products",
     tags: "/api/v1/catalog/tags"

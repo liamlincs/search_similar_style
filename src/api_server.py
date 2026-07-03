@@ -1583,7 +1583,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             or path.startswith("/recolor-static/")
         )
         allow_api = (
-            path in {"/search", "/image-url", "/api/v1/wechat/session", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
+            path in {"/search", "/image-url", "/api/v1/image-url", "/api/v1/wechat/session", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
             or is_catalog_route
             or path.startswith("/images/")
             or path.startswith("/print-static/")
@@ -6809,8 +6809,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
         return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
 
-    @app.get("/image-url", response_model=ImageUrlResponse)
-    def refresh_image_url(request: Request, image_name: str, kind: str = "") -> Dict[str, Any]:
+    def _refresh_image_url_response(request: Request, image_name: str, kind: str = "") -> Dict[str, Any]:
         safe = Path(image_name).name
         fp = standard_dir / safe
         if not fp.exists() or not fp.is_file():
@@ -6822,6 +6821,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         else:
             image_url, exp_ts = _build_image_url_with_exp(base_url, safe)
         return {"image_name": safe, "image_url": image_url, "expires_at": exp_ts}
+
+    @app.get("/image-url", response_model=ImageUrlResponse)
+    def refresh_image_url(request: Request, image_name: str, kind: str = "") -> Dict[str, Any]:
+        return _refresh_image_url_response(request, image_name, kind)
+
+    @app.get("/api/v1/image-url", response_model=ImageUrlResponse)
+    def api_refresh_image_url(request: Request, image_name: str, kind: str = "") -> Dict[str, Any]:
+        return _refresh_image_url_response(request, image_name, kind)
 
     @app.post("/search", response_model=SearchResponse)
     async def search(
