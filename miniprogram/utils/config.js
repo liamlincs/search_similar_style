@@ -5,6 +5,7 @@ const config = {
   printBaseUrl: "https://api.openfire.cloud",
   apiKey: "replace-with-real-key-a",
   searchPath: "/search",
+  wechatSessionPath: "/api/v1/wechat/session",
   imageUrlPath: "/image-url",
   catalogPaths: {
     products: "/api/v1/catalog/products",

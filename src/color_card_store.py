@@ -202,6 +202,35 @@ class ColorCardStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_cards(self, library_id: str = "", keyword: str = "", limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        filters: list[str] = []
+        params: list[Any] = []
+        clean_lib_id = clean_library_id(library_id)
+        clean_keyword = str(keyword or "").strip()
+        if clean_lib_id:
+            filters.append("c.library_id=?")
+            params.append(clean_lib_id)
+        if clean_keyword:
+            filters.append("(c.name LIKE ? OR c.note LIKE ? OR l.name LIKE ?)")
+            like = f"%{clean_keyword}%"
+            params.extend([like, like, like])
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        params.extend([max(1, min(int(limit), 300)), max(0, int(offset))])
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.library_id, l.name AS library_name, c.name, c.note,
+                       c.illuminant, c.angle, c.l, c.a, c.b, c.hex
+                FROM color_cards c
+                JOIN color_libraries l ON l.id=c.library_id
+                {where}
+                ORDER BY l.sort_order ASC, l.name COLLATE NOCASE ASC, c.name COLLATE NOCASE ASC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_library(self, library_id: str, name: str) -> Dict[str, Any]:
         clean_id = clean_library_id(library_id) or clean_library_id(name)
         clean_name = str(name or "").strip()

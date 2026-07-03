@@ -1,5 +1,65 @@
 const config = require("./config");
 
+let wechatOpenid = "";
+let wechatOpenidPromise = null;
+
+function wxLoginCode() {
+  return new Promise((resolve, reject) => {
+    wx.login({
+      success: (res) => {
+        if (res && res.code) {
+          resolve(res.code);
+          return;
+        }
+        reject(new Error("微信登录失败"));
+      },
+      fail: (err) => reject(new Error((err && err.errMsg) || "微信登录失败"))
+    });
+  });
+}
+
+function fetchWechatOpenid() {
+  if (wechatOpenid) return Promise.resolve(wechatOpenid);
+  if (wechatOpenidPromise) return wechatOpenidPromise;
+  wechatOpenidPromise = wxLoginCode()
+    .then((code) => new Promise((resolve, reject) => {
+      wx.request({
+        url: `${config.baseUrl}${config.wechatSessionPath || "/api/v1/wechat/session"}`,
+        method: "POST",
+        timeout: config.timeout,
+        data: { code },
+        header: {
+          "content-type": "application/json",
+          "X-API-Key": config.apiKey
+        },
+        success: (res) => {
+          if (res.statusCode >= 200 && res.statusCode < 300 && res.data && res.data.openid) {
+            wechatOpenid = String(res.data.openid || "");
+            resolve(wechatOpenid);
+            return;
+          }
+          reject(new Error(parseErrorMessage(res)));
+        },
+        fail: (err) => reject(new Error((err && err.errMsg) || "微信登录失败"))
+      });
+    }))
+    .catch((err) => {
+      console.warn("[wechatOpenid:error]", err && err.message ? err.message : err);
+      return "";
+    })
+    .finally(() => {
+      wechatOpenidPromise = null;
+    });
+  return wechatOpenidPromise;
+}
+
+async function buildApiHeader(extra = {}) {
+  const header = Object.assign({}, extra, { "X-API-Key": config.apiKey });
+  const openid = await fetchWechatOpenid();
+  if (openid) header["X-WeChat-Openid"] = openid;
+  return header;
+}
+
 function buildSearchUrl() {
   const query = config.includeImageBase64 ? "?include_image_base64=true" : "";
   return `${config.baseUrl}${config.searchPath}${query}`;
@@ -42,15 +102,13 @@ function doUpload(filePath, options = {}) {
     formData.crop_h = String(crop.h || 0);
   }
   return new Promise((resolve, reject) => {
-    wx.uploadFile({
+    buildApiHeader().then((header) => wx.uploadFile({
       url: buildSearchUrl(),
       filePath,
       name: "file",
       timeout: config.timeout,
       formData,
-      header: {
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         let parsed = {};
         try {
@@ -75,7 +133,7 @@ function doUpload(filePath, options = {}) {
         e.isNetworkError = true;
         reject(e);
       }
-    });
+    })).catch(reject);
   });
 }
 
@@ -83,14 +141,12 @@ function fetchSignedImageUrl(imageName, options = {}) {
   return new Promise((resolve, reject) => {
     const data = { image_name: imageName };
     if (options.kind) data.kind = String(options.kind);
-    wx.request({
+    buildApiHeader().then((header) => wx.request({
       url: `${config.baseUrl}${config.imageUrlPath}`,
       method: "GET",
       timeout: config.timeout,
       data,
-      header: {
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         const body = res.data || {};
         if (res.statusCode !== 200 || !body.image_url) {
@@ -103,7 +159,7 @@ function fetchSignedImageUrl(imageName, options = {}) {
       fail: (err) => {
         reject(new Error(err.errMsg || "刷新图片地址失败"));
       }
-    });
+    })).catch(reject);
   });
 }
 
@@ -122,15 +178,12 @@ function parseErrorMessage(res) {
 
 function requestJson(url, method, data) {
   return new Promise((resolve, reject) => {
-    wx.request({
+    buildApiHeader({ "content-type": "application/json" }).then((header) => wx.request({
       url,
       method: method || "GET",
       data: data || null,
       timeout: config.timeout,
-      header: {
-        "content-type": "application/json",
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data || {});
@@ -139,7 +192,7 @@ function requestJson(url, method, data) {
         reject(new Error(parseErrorMessage(res)));
       },
       fail: (err) => reject(new Error((err && err.errMsg) || "网络错误"))
-    });
+    })).catch(reject);
   });
 }
 
@@ -201,15 +254,12 @@ function matchColorCards(options = {}) {
 function printRequest(path, method, data) {
   const finalUrl = buildPrintUrl(path);
   return new Promise((resolve, reject) => {
-    wx.request({
+    buildApiHeader({ "content-type": "application/json" }).then((header) => wx.request({
       url: finalUrl,
       method: method || "GET",
       data: data || null,
       timeout: config.timeout,
-      header: {
-        "content-type": "application/json",
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data);
@@ -221,7 +271,7 @@ function printRequest(path, method, data) {
         console.error("[printRequest:fail]", method || "GET", finalUrl, err);
         reject(new Error((err && err.errMsg) || "网络错误"));
       }
-    });
+    })).catch(reject);
   });
 }
 
@@ -230,14 +280,12 @@ function printUpload(filePath) {
   const uploadPath = paths.upload || "/api/v1/images/upload";
   const finalUrl = buildPrintUrl(uploadPath);
   return new Promise((resolve, reject) => {
-    wx.uploadFile({
+    buildApiHeader().then((header) => wx.uploadFile({
       url: finalUrl,
       filePath,
       name: "file",
       timeout: config.timeout,
-      header: {
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
@@ -253,7 +301,7 @@ function printUpload(filePath) {
         console.error("[printUpload:fail]", finalUrl, err);
         reject(new Error((err && err.errMsg) || "上传失败"));
       }
-    });
+    })).catch(reject);
   });
 }
 
@@ -289,15 +337,13 @@ function recolorUpload(filePath, options = {}) {
   };
   if (options.auto_mask !== undefined && options.auto_mask !== null) formData.auto_mask = String(options.auto_mask ? 1 : 0);
   return new Promise((resolve, reject) => {
-    wx.uploadFile({
+    buildApiHeader().then((header) => wx.uploadFile({
       url: finalUrl,
       filePath,
       name: "file",
       timeout: config.timeout,
       formData,
-      header: {
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         const raw = typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
         const blockedByCf = /Attention Required!|Sorry, you have been blocked|Cloudflare|Please enable cookies/i.test(raw);
@@ -320,7 +366,7 @@ function recolorUpload(filePath, options = {}) {
         reject(new Error(raw || "换色失败"));
       },
       fail: (err) => reject(new Error((err && err.errMsg) || "换色失败"))
-    });
+    })).catch(reject);
   });
 }
 
@@ -335,15 +381,13 @@ function recolorAiUpload(filePath, options = {}) {
   if (options.image2) formData.image2 = String(options.image2);
   if (options.image3) formData.image3 = String(options.image3);
   return new Promise((resolve, reject) => {
-    wx.uploadFile({
+    buildApiHeader().then((header) => wx.uploadFile({
       url: finalUrl,
       filePath,
       name: "file",
       timeout: config.timeout,
       formData,
-      header: {
-        "X-API-Key": config.apiKey
-      },
+      header,
       success: (res) => {
         const raw = typeof res.data === "string" ? res.data : JSON.stringify(res.data || {});
         const blockedByCf = /Attention Required!|Sorry, you have been blocked|Cloudflare|Please enable cookies/i.test(raw);
@@ -366,7 +410,7 @@ function recolorAiUpload(filePath, options = {}) {
         reject(new Error(raw || "预览失败"));
       },
       fail: (err) => reject(new Error((err && err.errMsg) || "预览失败"))
-    });
+    })).catch(reject);
   });
 }
 

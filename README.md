@@ -245,6 +245,19 @@ http://127.0.0.1:8000/catalog/login
 http://127.0.0.1:8000/catalog/logout
 ```
 
+小程序 WebView H5 入口：
+
+```text
+https://api.openfire.cloud/catalog?type=product&token=第三方用户token
+https://api.openfire.cloud/catalog?type=color&token=第三方用户token
+```
+
+- `type=product` 打开产品库，`type=color` 打开色卡库。
+- 页面首次打开会把 `token` 缓存在浏览器本地，并在接口请求中通过 `X-Catalog-Token` 传回后端。
+- 如果 token 是 JWT，后端和前端会读取 payload 中的 `permissions`、`perms` 或 `scope` 字段。
+- 支持权限值：`product:view`、`product:create`、`color:view`、`color:create`，也支持 `*`。
+- 在接入第三方验 token 接口前，`catalog.external_token_auth.default_permissions` 是默认权限占位配置。
+
 目录接口：
 
 ```bash

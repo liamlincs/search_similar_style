@@ -71,7 +71,7 @@
           wx:for="{{colorMatches}}"
           wx:key="id"
           class="color-match-item"
-          style="background-color: #{{item.hex}}; color: {{item.textColor}};"
+          style="{{item.itemStyle}}"
         >
           <view class="color-match-main">
             <view class="color-match-name">名称：{{item.name}}</view>

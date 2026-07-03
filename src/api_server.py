@@ -173,6 +173,10 @@ class CatalogImportPrepareRequest(BaseModel):
     source_dir: str
 
 
+class WechatSessionRequest(BaseModel):
+    code: str
+
+
 class WechatContentSecurityError(RuntimeError):
     pass
 
@@ -654,6 +658,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_web_session_secret = str(catalog_web_auth_cfg.get("session_secret", "replace-with-catalog-session-secret")).strip()
     catalog_web_session_ttl_sec = int(catalog_web_auth_cfg.get("session_ttl_sec", 43200))
     catalog_web_cookie_name = str(catalog_web_auth_cfg.get("cookie_name", "catalog_session")).strip() or "catalog_session"
+    catalog_external_auth_cfg = catalog_cfg.get("external_token_auth", {})
+    catalog_external_token_enabled = bool(catalog_external_auth_cfg.get("enabled", True))
+    catalog_external_default_permissions = [
+        str(item).strip()
+        for item in catalog_external_auth_cfg.get(
+            "default_permissions",
+            ["product:view", "product:create", "color:view", "color:create"],
+        )
+        if str(item).strip()
+    ]
 
     def _region_feature_cache_path(backend: str) -> Path:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
@@ -1067,6 +1081,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         wechat_access_token_cache["expires_at"] = now + max(300, expires_in)
         return token
 
+    def _wechat_jscode2session(code: str) -> Dict[str, Any]:
+        raw_code = str(code or "").strip()
+        if not raw_code:
+            raise HTTPException(status_code=400, detail="missing code")
+        if not wechat_appid or not wechat_appsecret:
+            raise HTTPException(status_code=503, detail="微信登录未配置")
+        params = urllib.parse.urlencode(
+            {
+                "appid": wechat_appid,
+                "secret": wechat_appsecret,
+                "js_code": raw_code,
+                "grant_type": "authorization_code",
+            }
+        )
+        url = f"https://api.weixin.qq.com/sns/jscode2session?{params}"
+        try:
+            with urllib.request.urlopen(url, timeout=wechat_security_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="微信登录暂不可用") from exc
+        openid = str(data.get("openid", "")).strip()
+        if not openid:
+            raise HTTPException(status_code=400, detail="微信登录失败")
+        return {"openid": openid}
+
+    def _wechat_openid_from_request(request: Request | None) -> str:
+        if request is None:
+            return ""
+        return str(request.headers.get("X-WeChat-Openid", "") or request.headers.get("X-WECHAT-OPENID", "")).strip()
+
     def _prepare_wechat_sec_image_bytes(image_bytes: bytes) -> bytes:
         try:
             with Image.open(io.BytesIO(image_bytes)) as im0:
@@ -1117,19 +1161,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail="内容含违规信息，请修改后再试")
         raise WechatContentSecurityError(f"微信图片内容安全接口返回异常: {data}")
 
-    def _wechat_msg_sec_check(text: str) -> None:
+    def _wechat_msg_sec_check(text: str, openid: str = "") -> None:
         if not wechat_content_security_enabled:
             return
         content = str(text or "").strip()
         if not content:
             return
         payload: Dict[str, Any] = {"content": content[:2500]}
-        if wechat_security_openid:
+        security_openid = str(openid or wechat_security_openid or "").strip()
+        if security_openid:
             payload.update(
                 {
                     "version": 2,
                     "scene": wechat_security_scene,
-                    "openid": wechat_security_openid,
+                    "openid": security_openid,
                 }
             )
         try:
@@ -1169,7 +1214,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not wechat_security_fail_open:
                 raise HTTPException(status_code=503, detail="内容安全校验暂不可用，请稍后再试") from exc
 
-    def _check_text_content_security(*values: Any) -> None:
+    def _check_text_content_security(*values: Any, openid: str = "") -> None:
         if not wechat_content_security_enabled:
             return
         texts = [str(value or "").strip() for value in values if str(value or "").strip()]
@@ -1177,7 +1222,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return
         try:
             for text in texts:
-                _wechat_msg_sec_check(text)
+                _wechat_msg_sec_check(text, openid=openid)
         except HTTPException:
             raise
         except WechatContentSecurityError as exc:
@@ -1389,6 +1434,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         sig = _catalog_session_sign(username, exp_ts)
         return f"{username}:{exp_ts}:{sig}", exp_ts
 
+    def _catalog_token_user(token: str) -> str:
+        clean = str(token or "").strip()
+        if not catalog_external_token_enabled or len(clean) < 8:
+            return ""
+        digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
+        return f"external_{digest}"
+
+    def _catalog_token_permissions(token: str) -> List[str]:
+        clean = str(token or "").strip()
+        permissions: List[str] = []
+        parts = clean.split(".")
+        if len(parts) >= 2:
+            payload_raw = parts[1]
+            payload_raw += "=" * (-len(payload_raw) % 4)
+            try:
+                payload = json.loads(base64.urlsafe_b64decode(payload_raw.encode("utf-8")).decode("utf-8"))
+                raw_permissions = payload.get("permissions") or payload.get("perms") or payload.get("scope") or []
+                if isinstance(raw_permissions, str):
+                    raw_permissions = re.split(r"[\s,]+", raw_permissions)
+                if isinstance(raw_permissions, list):
+                    permissions = [str(item).strip() for item in raw_permissions if str(item).strip()]
+            except Exception:
+                permissions = []
+        return permissions or list(catalog_external_default_permissions)
+
     def _catalog_read_session_user(request: Request) -> str:
         if not catalog_web_auth_enabled:
             return ""
@@ -1408,6 +1478,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not hmac.compare_digest(expected, sig):
             return ""
         return username
+
+    def _catalog_request_token(request: Request) -> str:
+        token = str(request.query_params.get("token", "")).strip()
+        if token:
+            return token
+        token = str(request.headers.get("X-Catalog-Token", "")).strip()
+        if token:
+            return token
+        auth = str(request.headers.get("Authorization", "")).strip()
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return ""
+
+    def _catalog_has_permission(request: Request, permission: str) -> bool:
+        permissions = getattr(request.state, "catalog_permissions", None)
+        if permissions is None:
+            return True
+        return "*" in permissions or permission in permissions
+
+    def _catalog_require_permission(request: Request, permission: str) -> None:
+        if not _catalog_has_permission(request, permission):
+            raise HTTPException(status_code=403, detail=f"missing permission: {permission}")
 
     def _catalog_is_login_ok(username: str, password: str) -> bool:
         user = username.strip()
@@ -1471,7 +1563,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             or path.startswith("/recolor-static/")
         )
         allow_api = (
-            path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
+            path in {"/search", "/image-url", "/api/v1/wechat/session", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
             or is_catalog_route
             or path.startswith("/images/")
             or path.startswith("/print-static/")
@@ -1495,9 +1587,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if is_catalog_route and catalog_web_auth_enabled and not is_catalog_login:
             key = request.headers.get("X-API-Key", "").strip() if api_key_enabled else ""
             api_user = api_key_map.get(key, "") if key else ""
+            catalog_token = _catalog_request_token(request)
+            token_user = _catalog_token_user(catalog_token)
             web_user = _catalog_read_session_user(request)
             if api_user:
                 request.state.api_user = api_user
+                request.state.catalog_permissions = None
+                resp = await call_next(request)
+                logging.info(
+                    'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                    client_ip,
+                    getattr(request.state, "api_user", "unknown"),
+                    request.method,
+                    request.url.path,
+                    resp.status_code,
+                    (time.perf_counter() - t0) * 1000.0,
+                    req_len,
+                    ua[:200],
+                )
+                return resp
+            if token_user:
+                request.state.api_user = f"catalog-token:{token_user}"
+                request.state.catalog_permissions = set(_catalog_token_permissions(catalog_token))
                 resp = await call_next(request)
                 logging.info(
                     'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
@@ -1513,6 +1624,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return resp
             if web_user:
                 request.state.api_user = f"catalog-web:{web_user}"
+                request.state.catalog_permissions = None
                 resp = await call_next(request)
                 logging.info(
                     'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
@@ -3967,6 +4079,812 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             content={"status": "not_ready", "detail": str(getattr(app.state, "ready_detail", "initializing"))},
         )
 
+    def _catalog_mobile_page(initial_type: str) -> str:
+        safe_type = "color" if str(initial_type or "").strip().lower() == "color" else "product"
+        return """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>资料库</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f6f8; color: #111827; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .app { max-width: 720px; margin: 0 auto; min-height: 100vh; background: #f4f6f8; }
+    .top { position: sticky; top: 0; z-index: 20; background: rgba(244,246,248,.96); backdrop-filter: blur(12px); padding: 12px 14px 10px; border-bottom: 1px solid #e5e7eb; }
+    .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    h1 { margin: 0; font-size: 20px; line-height: 1.2; }
+    .status { color: #64748b; font-size: 12px; min-height: 18px; text-align: right; }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .tab { min-height: 40px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #334155; font-size: 15px; font-weight: 700; }
+    .tab.active { background: #0f172a; color: #fff; border-color: #0f172a; }
+    .search { display: grid; grid-template-columns: 1fr 82px; gap: 8px; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #111827; padding: 10px 11px; min-height: 40px; }
+    textarea { resize: vertical; min-height: 72px; }
+    button { border: 0; border-radius: 8px; min-height: 40px; padding: 0 12px; background: #0f172a; color: #fff; font-weight: 700; }
+    button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
+    button.danger { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
+    button:disabled { opacity: .45; }
+    .body { padding: 12px 14px 28px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .list { display: grid; gap: 10px; }
+    .filter-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+    .filter-section { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; width: 100%; }
+    .filter-label { min-width: 38px; color: #64748b; font-size: 12px; font-weight: 700; }
+    .filter-chip { min-height: 28px; padding: 0 9px; border-radius: 999px; border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; font-size: 12px; }
+    .filter-chip.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; box-shadow: 0 2px 10px rgba(15,23,42,.04); }
+    .product { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 10px; }
+    .thumb { width: 92px; height: 92px; border-radius: 8px; object-fit: cover; background: #e5e7eb; }
+    .title { font-weight: 800; font-size: 16px; margin-bottom: 4px; word-break: break-all; }
+    .muted { color: #64748b; font-size: 12px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0; }
+    .tag { border-radius: 4px; background: #eef2ff; color: #3730a3; padding: 2px 6px; font-size: 11px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .actions button { min-height: 34px; font-size: 13px; padding: 0 10px; }
+    .form { display: grid; gap: 9px; margin-bottom: 12px; }
+    .form-title { font-weight: 800; margin: 4px 0 0; }
+    .review { display: grid; gap: 10px; margin: 12px 0; }
+    .review-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .review-title { font-weight: 800; font-size: 15px; }
+    .review-list { display: grid; gap: 10px; }
+    .review-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; }
+    .review-img { width: 92px; height: 92px; border-radius: 8px; object-fit: cover; background: #e5e7eb; }
+    .review-img-btn { border: 0; background: transparent; padding: 0; min-height: auto; border-radius: 8px; }
+    .review-fields { display: grid; gap: 7px; }
+    .review-fields input { min-height: 36px; padding: 7px 9px; font-size: 14px; }
+    .review-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #334155; }
+    .review-check input { width: 18px; min-height: 18px; }
+    .review-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .tag-edit { display: grid; gap: 7px; margin-top: 8px; }
+    .tag-edit-row { display: grid; grid-template-columns: 44px minmax(0,1fr); align-items: center; gap: 7px; }
+    .tag-edit-row label { color: #64748b; font-size: 12px; font-weight: 700; }
+    .tag-edit-row input { min-height: 34px; padding: 6px 9px; font-size: 13px; }
+    .modal { position: fixed; inset: 0; background: rgba(15,23,42,.68); display: none; align-items: center; justify-content: center; padding: 14px; z-index: 99; }
+    .modal.open { display: flex; }
+    .modal-panel { width: min(680px, 100%); max-height: 90vh; overflow: auto; background: #fff; border-radius: 8px; padding: 12px; }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
+    .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 8px; background: #e5e7eb; }
+    .gallery-caption { margin-top: 4px; color: #64748b; font-size: 11px; word-break: break-all; }
+    .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+    .swatch { width: 58px; min-width: 58px; height: 58px; border-radius: 8px; border: 1px solid rgba(15,23,42,.14); }
+    .color-row { display: flex; gap: 10px; align-items: center; }
+    .color-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .color-name-builder { display: grid; grid-template-columns: 1fr 86px 1fr; gap: 8px; }
+    .color-status { padding: 8px 10px; border-radius: 8px; background: #eef6ff; color: #1e3a8a; font-size: 12px; }
+    .color-status.err { background: #fee2e2; color: #b91c1c; }
+    .color-match-list { display: grid; gap: 8px; }
+    .color-match-item { border-radius: 8px; padding: 10px; border: 1px solid rgba(15,23,42,.12); }
+    .empty { padding: 28px 0; color: #64748b; text-align: center; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top">
+      <div class="head">
+        <h1>资料库</h1>
+        <div class="status" id="status"></div>
+      </div>
+      <div class="tabs">
+        <button class="tab" id="productTab" type="button">产品库</button>
+        <button class="tab" id="colorTab" type="button">色卡库</button>
+      </div>
+      <div class="search">
+        <input id="keyword" placeholder="输入款号、色号或名称" />
+        <button id="searchBtn" type="button">查询</button>
+      </div>
+      <div class="filter-tags" id="productFilters"></div>
+    </div>
+    <div class="body">
+      <section class="panel" id="productPanel">
+        <datalist id="yearOptions"></datalist>
+        <datalist id="categoryOptions"></datalist>
+        <datalist id="subcategoryOptions"></datalist>
+        <div class="form hidden" id="productCreateBox">
+          <div class="form-title">产品图片录入</div>
+          <input id="productFiles" type="file" accept="image/*" multiple />
+          <div class="muted">上传后先识别预览，确认年份、类别、细类后再入库。</div>
+          <button id="uploadProductsBtn" type="button">上传识别</button>
+        </div>
+        <div class="review hidden" id="importReviewBox">
+          <div class="review-head">
+            <div>
+              <div class="review-title">确认导入信息</div>
+              <div class="muted" id="importReviewMeta"></div>
+            </div>
+            <button class="secondary" id="cancelImportBtn" type="button">取消</button>
+          </div>
+          <div class="review-list" id="importReviewList"></div>
+          <div class="review-actions">
+            <button class="secondary" id="selectAllImportBtn" type="button">全选/全不选</button>
+            <button id="commitImportBtn" type="button">确认入库</button>
+          </div>
+        </div>
+        <div class="list" id="productList"></div>
+      </section>
+      <section class="panel" id="colorPanel">
+        <div class="form hidden" id="colorCreateBox">
+          <div class="form-title">色卡录入</div>
+          <div class="color-status" id="colorMeterStatus">正在检查浏览器蓝牙能力...</div>
+          <div class="color-actions">
+            <button id="colorMeterConnectBtn" type="button">连接色差仪</button>
+            <button id="colorMeterMeasureBtn" class="secondary" type="button" disabled>测量</button>
+          </div>
+          <select id="colorLibrarySelect"></select>
+          <input id="colorLibrary" placeholder="新色卡库名称，可选" />
+          <div class="color-name-builder">
+            <input id="colorNamePrefix" placeholder="前缀，如彩龙" />
+            <input id="colorNameNumber" inputmode="numeric" placeholder="编号" />
+            <input id="colorNameSuffix" placeholder="色名，如浅灰" />
+          </div>
+          <input id="colorName" placeholder="色号名称，如 彩龙3351浅灰" />
+          <textarea id="colorNote" placeholder="备注，可选"></textarea>
+          <div class="grid3">
+            <input id="colorL" type="number" step="0.01" placeholder="L" />
+            <input id="colorA" type="number" step="0.01" placeholder="a" />
+            <input id="colorB" type="number" step="0.01" placeholder="b" />
+          </div>
+          <div class="swatch" id="colorSwatch" style="width:100%;height:64px;background:#f1f5f9;"></div>
+          <button id="matchColorBtn" class="secondary" type="button">匹配近似色号</button>
+          <button id="saveColorBtn" type="button">保存色卡</button>
+          <div class="muted" id="colorMatchStatus">测量或输入 Lab 后可匹配近似色号。</div>
+          <div class="color-match-list" id="colorMatchList"></div>
+        </div>
+        <div class="list" id="colorList"></div>
+      </section>
+    </div>
+    <div class="modal" id="galleryModal">
+      <div class="modal-panel">
+        <div class="modal-head">
+          <div>
+            <div class="title" id="galleryTitle"></div>
+            <div class="muted" id="gallerySubTitle"></div>
+          </div>
+          <button class="secondary" id="closeGalleryBtn" type="button">关闭</button>
+        </div>
+        <div class="gallery-grid" id="galleryGrid"></div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const INITIAL_TYPE = "__INITIAL_TYPE__";
+    const tokenKey = "openfire_catalog_token";
+    const params = new URLSearchParams(location.search);
+    const urlToken = params.get("token") || "";
+    if (urlToken) {
+      localStorage.setItem(tokenKey, urlToken);
+      params.delete("token");
+      const next = location.pathname + (params.toString() ? "?" + params.toString() : "");
+      history.replaceState(null, "", next);
+    }
+    const token = localStorage.getItem(tokenKey) || "";
+    const state = {
+      type: params.get("type") || INITIAL_TYPE,
+      products: [],
+      colors: [],
+      importJob: null,
+      tagGroups: { year: [], category: [], subcategory: [] },
+      selectedTags: [],
+    };
+    const permissions = readPermissions(token);
+    const canProductView = hasPerm("product:view");
+    const canProductCreate = hasPerm("product:create");
+    const canColorView = hasPerm("color:view");
+    const canColorCreate = hasPerm("color:create");
+    const $ = (id) => document.getElementById(id);
+    const COLOR_SERVICE_UUID = 0xFFE0;
+    const COLOR_CHARACTERISTIC_UUID = 0xFFE1;
+    let colorDevice = null;
+    let colorCharacteristic = null;
+    let colorPending = null;
+    let colorResponseBytes = [];
+    let colorMeasureId = 1;
+
+    function readPermissions(raw) {
+      const defaults = ["product:view", "product:create", "color:view", "color:create"];
+      const parts = String(raw || "").split(".");
+      if (parts.length < 2) return defaults;
+      try {
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+        const value = payload.permissions || payload.perms || payload.scope || defaults;
+        return Array.isArray(value) ? value : String(value).split(/[\\s,]+/);
+      } catch (_) {
+        return defaults;
+      }
+    }
+    function hasPerm(name) {
+      return permissions.includes("*") || permissions.includes(name);
+    }
+    function setStatus(text, isError) {
+      $("status").textContent = text || "";
+      $("status").style.color = isError ? "#b91c1c" : "#64748b";
+    }
+    function escapeHtml(value) {
+      return String(value || "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    async function api(path, options = {}) {
+      const headers = Object.assign({}, options.headers || {});
+      if (token) headers["X-Catalog-Token"] = token;
+      const resp = await fetch(path, Object.assign({}, options, { headers }));
+      if (resp.status === 401) throw new Error("登录已失效，请从小程序入口重新打开");
+      if (resp.status === 403) throw new Error("当前用户没有此操作权限");
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    }
+    function splitTag(raw) {
+      const text = String(raw || "").trim();
+      const index = text.indexOf(":");
+      return index > 0 ? { type: text.slice(0, index), name: text.slice(index + 1) } : { type: "", name: text };
+    }
+    function tagLabel(type) {
+      return { year: "年份", category: "类别", subcategory: "细类" }[type] || "标签";
+    }
+    async function loadTags() {
+      if (!canProductView) return;
+      const data = await api("/api/v1/catalog/tags");
+      const groups = data.tag_groups || {};
+      state.tagGroups = {
+        year: groups.year || [],
+        category: groups.category || ["单品", "罗纹", "毛织配件", "布匹"],
+        subcategory: groups.subcategory || ["暂无"],
+      };
+      $("yearOptions").innerHTML = state.tagGroups.year.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
+      $("categoryOptions").innerHTML = state.tagGroups.category.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
+      $("subcategoryOptions").innerHTML = state.tagGroups.subcategory.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
+      renderProductFilters();
+    }
+    function renderProductFilters() {
+      const box = $("productFilters");
+      if (!box || state.type !== "product") {
+        if (box) box.innerHTML = "";
+        return;
+      }
+      const rows = [
+        ["年份", "year", state.tagGroups.year],
+        ["类别", "category", state.tagGroups.category],
+        ["细类", "subcategory", state.tagGroups.subcategory],
+      ];
+      box.innerHTML = rows.map(([label, type, list]) => `
+        <div class="filter-section">
+          <span class="filter-label">${label}</span>
+          ${(list || []).map((name) => {
+            const tag = typedTag(type, name);
+            return `<button class="filter-chip ${state.selectedTags.includes(tag) ? "active" : ""}" type="button" data-tag="${escapeHtml(tag)}">${escapeHtml(name)}</button>`;
+          }).join("")}
+        </div>
+      `).join("");
+      box.querySelectorAll("[data-tag]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const tag = btn.dataset.tag || "";
+          state.selectedTags = state.selectedTags.includes(tag) ? state.selectedTags.filter((x) => x !== tag) : state.selectedTags.concat([tag]);
+          loadProducts().catch((err) => setStatus(err.message || "加载失败", true));
+        });
+      });
+    }
+    function switchType(type) {
+      state.type = type === "color" ? "color" : "product";
+      $("productTab").classList.toggle("active", state.type === "product");
+      $("colorTab").classList.toggle("active", state.type === "color");
+      $("productPanel").classList.toggle("active", state.type === "product");
+      $("colorPanel").classList.toggle("active", state.type === "color");
+      renderProductFilters();
+      $("keyword").placeholder = state.type === "product" ? "输入产品款号" : "输入色号、名称或备注";
+      const nextParams = new URLSearchParams(location.search);
+      nextParams.set("type", state.type);
+      history.replaceState(null, "", location.pathname + "?" + nextParams.toString());
+      loadCurrent();
+    }
+    function productTags(item) {
+      const groups = item.tag_groups || {};
+      return [].concat(groups.year || [], groups.category || [], groups.subcategory || []);
+    }
+    function renderProducts() {
+      const box = $("productList");
+      if (!canProductView) {
+        box.innerHTML = '<div class="empty">当前用户没有产品库查询权限</div>';
+        return;
+      }
+      if (!state.products.length) {
+        box.innerHTML = '<div class="empty">暂无产品数据</div>';
+        return;
+      }
+      box.innerHTML = state.products.map((item) => `
+        <div class="card product">
+          <img class="thumb" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
+          <div>
+            <div class="title">${item.style_code || ""}</div>
+            <div class="muted">图片数：${(item.images || []).length}</div>
+            <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
+            <div class="actions">
+              <button class="secondary" type="button" data-role="viewProduct" data-code="${item.style_code || ""}">查看图片</button>
+            </div>
+            <div class="tag-edit">
+              <div class="tag-edit-row"><label>年份</label><input data-role="yearInput" value="${((item.tag_groups || {}).year || []).join("、")}" list="yearOptions" /></div>
+              <div class="tag-edit-row"><label>类别</label><input data-role="categoryInput" value="${((item.tag_groups || {}).category || []).join("、")}" list="categoryOptions" /></div>
+              <div class="tag-edit-row"><label>细类</label><input data-role="subcategoryInput" value="${((item.tag_groups || {}).subcategory || []).join("、")}" list="subcategoryOptions" /></div>
+              <button type="button" data-role="saveProductTags" data-code="${item.style_code || ""}">保存标签</button>
+            </div>
+          </div>
+        </div>
+      `).join("");
+      box.querySelectorAll("[data-role=viewProduct]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const item = state.products.find((row) => row.style_code === btn.dataset.code);
+          openGallery(item);
+        });
+      });
+      box.querySelectorAll("[data-role=saveProductTags]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const card = btn.closest(".card");
+          const code = btn.dataset.code || "";
+          const split = (role) => String((card.querySelector(`[data-role="${role}"]`) || {}).value || "")
+            .split(/[、,，\\s]+/).map((x) => x.trim()).filter(Boolean);
+          const tags = normalizeTags([
+            ...split("yearInput").map((x) => typedTag("year", x)),
+            ...split("categoryInput").map((x) => typedTag("category", x)),
+            ...split("subcategoryInput").map((x) => typedTag("subcategory", x)),
+          ]);
+          try {
+            await api("/api/v1/catalog/products/" + encodeURIComponent(code) + "/tags", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tags }),
+            });
+            await loadTags();
+            await loadProducts();
+            setStatus("标签已保存", false);
+          } catch (err) {
+            setStatus(err.message || "保存标签失败", true);
+          }
+        });
+      });
+    }
+    function openGallery(product) {
+      if (!product) return;
+      $("galleryTitle").textContent = product.style_code || "";
+      $("gallerySubTitle").textContent = `共 ${(product.images || []).length} 张图片`;
+      $("galleryGrid").innerHTML = (product.images || []).map((img) => `
+        <div class="gallery-item">
+          <img src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" />
+          <div class="gallery-caption">${escapeHtml(img.image_name || "")}</div>
+        </div>
+      `).join("");
+      $("galleryModal").classList.add("open");
+    }
+    function openImagePreview(title, imageUrl) {
+      $("galleryTitle").textContent = title || "图片预览";
+      $("gallerySubTitle").textContent = "";
+      $("galleryGrid").innerHTML = `
+        <div class="gallery-item">
+          <img src="${imageUrl || ""}" alt="${escapeHtml(title || "")}" />
+          <div class="gallery-caption">${escapeHtml(title || "")}</div>
+        </div>
+      `;
+      $("galleryModal").classList.add("open");
+    }
+    function closeGallery() {
+      $("galleryModal").classList.remove("open");
+    }
+    function renderColors() {
+      const box = $("colorList");
+      if (!canColorView) {
+        box.innerHTML = '<div class="empty">当前用户没有色卡库查询权限</div>';
+        return;
+      }
+      if (!state.colors.length) {
+        box.innerHTML = '<div class="empty">暂无色卡数据</div>';
+        return;
+      }
+      box.innerHTML = state.colors.map((item) => `
+        <div class="card color-row">
+          <div class="swatch" style="background:#${item.hex || "ffffff"}"></div>
+          <div>
+            <div class="title">${item.name || ""}</div>
+            <div class="muted">${item.library_name || item.library_id || ""}</div>
+            <div class="muted">L ${Number(item.l).toFixed(2)} / a ${Number(item.a).toFixed(2)} / b ${Number(item.b).toFixed(2)}</div>
+            ${item.note ? `<div class="muted">${item.note}</div>` : ""}
+          </div>
+        </div>
+      `).join("");
+    }
+    function labToHex(lab) {
+      let y = (lab.L + 16) / 116;
+      let x = lab.a / 500 + y;
+      let z = y - lab.b / 200;
+      const pivot = (v) => v > 6 / 29 ? Math.pow(v, 3) : (v - 16 / 116) / 7.787;
+      x = pivot(x) * 0.95047;
+      y = pivot(y);
+      z = pivot(z) * 1.08883;
+      const gamma = (v) => Math.max(0, Math.min(255, Math.round((v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v) * 255)));
+      return [
+        gamma(3.2406 * x - 1.5372 * y - 0.4986 * z),
+        gamma(-0.9689 * x + 1.8758 * y + 0.0415 * z),
+        gamma(0.0557 * x - 0.2040 * y + 1.0570 * z),
+      ].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+    }
+    function currentLab() {
+      const L = Number($("colorL").value);
+      const a = Number($("colorA").value);
+      const b = Number($("colorB").value);
+      if (!Number.isFinite(L) || !Number.isFinite(a) || !Number.isFinite(b)) return null;
+      return { L, a, b };
+    }
+    function refreshColorSwatch() {
+      const lab = currentLab();
+      if (!lab) return;
+      const hex = labToHex(lab);
+      $("colorSwatch").style.background = "#" + hex;
+      $("colorSwatch").textContent = "#" + hex;
+      $("colorSwatch").style.color = lab.L < 55 ? "#fff" : "#0f172a";
+    }
+    async function loadColorLibraries(selectedId = "") {
+      const data = await api("/api/v1/color-card/libraries");
+      const select = $("colorLibrarySelect");
+      select.innerHTML = (data.libraries || []).map((lib) => `<option value="${escapeHtml(lib.id)}" ${selectedId === lib.id ? "selected" : ""}>${escapeHtml(lib.name)} (${lib.color_count || 0})</option>`).join("");
+      maybeFillColorNamePrefix(select.options[select.selectedIndex]?.textContent || "");
+    }
+    function inferColorNamePrefix(raw) {
+      const text = String(raw || "");
+      if (text.includes("彩龙")) return "彩龙";
+      if (text.includes("国彩")) return "国彩";
+      if (text.includes("恩盛")) return "恩盛";
+      return "";
+    }
+    function maybeFillColorNamePrefix(raw) {
+      const input = $("colorNamePrefix");
+      if (!input || input.value.trim()) return;
+      const prefix = inferColorNamePrefix(raw);
+      if (!prefix) return;
+      input.value = prefix;
+      refreshColorName();
+    }
+    function buildColorName() {
+      return `${$("colorNamePrefix").value.trim()}${$("colorNameNumber").value.trim()}${$("colorNameSuffix").value.trim()}`.trim();
+    }
+    function refreshColorName() {
+      const built = buildColorName();
+      if (built) $("colorName").value = built;
+    }
+    function incrementColorNameNumber() {
+      const raw = $("colorNameNumber").value.trim();
+      if (!/^\\d+$/.test(raw)) return;
+      $("colorNameNumber").value = String(Number(raw) + 1).padStart(raw.length, "0");
+      $("colorNameSuffix").value = "";
+      refreshColorName();
+    }
+    async function matchColorCards() {
+      const lab = currentLab();
+      if (!lab) return setStatus("请先测量或输入 Lab 数值", true);
+      refreshColorSwatch();
+      $("colorMatchStatus").textContent = "正在匹配近似色号...";
+      const data = await api("/api/v1/color-card/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ L: lab.L, a: lab.a, b: lab.b, library_id: $("colorLibrarySelect").value, limit: 12 }),
+      });
+      $("colorMatchStatus").textContent = `找到 ${(data.matches || []).length} 条近似色号`;
+      $("colorMatchList").innerHTML = (data.matches || []).map((item) => {
+        const textColor = Number(item.l) < 55 ? "#fff" : "#0f172a";
+        return `<div class="color-match-item" style="background:#${item.hex || "CCCCCC"};color:${textColor};">
+          <div class="title">${escapeHtml(item.name || "")}</div>
+          <div>色卡库：${escapeHtml(item.library_name || "")}</div>
+          <div>dE*00：${Number(item.delta_e_00 || 0).toFixed(2)} · L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div>
+        </div>`;
+      }).join("");
+    }
+    async function loadProducts() {
+      if (!canProductView) return renderProducts();
+      setStatus("加载中...", false);
+      const query = new URLSearchParams({ limit: "80", style_code: $("keyword").value.trim() });
+      const groups = { year: [], category: [], subcategory: [] };
+      state.selectedTags.forEach((tag) => {
+        const parsed = splitTag(tag);
+        if (groups[parsed.type]) groups[parsed.type].push(parsed.name);
+      });
+      if (groups.year.length) query.set("year_tags", groups.year.join(","));
+      if (groups.category.length) query.set("category_tags", groups.category.join(","));
+      if (groups.subcategory.length) query.set("subcategory_tags", groups.subcategory.join(","));
+      const data = await api("/api/v1/catalog/products?" + query.toString());
+      state.products = data.products || [];
+      renderProducts();
+      renderProductFilters();
+      setStatus(`产品 ${state.products.length} 条`, false);
+    }
+    async function loadColors() {
+      if (!canColorView) return renderColors();
+      setStatus("加载中...", false);
+      const query = new URLSearchParams({ limit: "100", keyword: $("keyword").value.trim() });
+      const data = await api("/api/v1/color-card/cards?" + query.toString());
+      state.colors = data.cards || [];
+      renderColors();
+      setStatus(`色卡 ${state.colors.length} 条`, false);
+    }
+    function loadCurrent() {
+      (state.type === "color" ? loadColors() : loadProducts()).catch((err) => setStatus(err.message || "加载失败", true));
+    }
+    function typedTag(kind, value) {
+      const clean = String(value || "").trim();
+      if (!clean) return "";
+      return `${kind}:${clean}`;
+    }
+    function normalizeTags(tags) {
+      const seen = new Set();
+      return (tags || []).map((tag) => String(tag || "").trim()).filter((tag) => {
+        if (!tag || seen.has(tag)) return false;
+        seen.add(tag);
+        return true;
+      });
+    }
+    function sourceImageUrl(jobId, sourceRelPath) {
+      const query = new URLSearchParams({ source_rel_path: sourceRelPath || "", max_edge: "360" });
+      if (token) query.set("token", token);
+      return "/api/v1/catalog/imports/" + encodeURIComponent(jobId) + "/source-image?" + query.toString();
+    }
+    function renderImportReview(job) {
+      state.importJob = job;
+      const items = job && job.items ? job.items : [];
+      $("importReviewBox").classList.toggle("hidden", !items.length);
+      $("importReviewMeta").textContent = items.length ? `已识别 ${items.length} 张，请确认后入库` : "";
+      $("importReviewList").innerHTML = items.map((item, index) => `
+        <div class="review-card" data-index="${index}">
+          <button class="review-img-btn" type="button" data-role="previewImportImage" data-index="${index}">
+            <img class="review-img" src="${sourceImageUrl(job.job_id, item.source_rel_path)}" alt="${item.source_name || ""}" />
+          </button>
+          <div class="review-fields">
+            <label class="review-check">
+              <input type="checkbox" data-role="importSelected" ${item.status === "ok" ? "checked" : ""} />
+              <span>${item.status === "ok" ? "导入此图" : "需人工确认后导入"}</span>
+            </label>
+            <input data-role="importFilename" value="${item.target_filename || item.proposed_filename || ""}" placeholder="导入文件名" />
+            <input data-role="importYear" value="${item.year_tag || item.proposed_year_tag || ""}" placeholder="年份，如 2026" list="yearOptions" />
+            <input data-role="importCategory" placeholder="类别，如 单品" list="categoryOptions" />
+            <input data-role="importSubcategory" placeholder="细类，如 短袖" list="subcategoryOptions" />
+            <div class="muted">${item.source_name || item.source_rel_path || ""}${item.error ? " · " + item.error : ""}</div>
+          </div>
+        </div>
+      `).join("");
+      $("importReviewList").querySelectorAll('[data-role="previewImportImage"]').forEach((button) => {
+        button.addEventListener("click", () => {
+          const item = items[Number(button.dataset.index || "-1")];
+          if (!item) return;
+          openImagePreview(item.source_name || item.source_rel_path || "导入图片", sourceImageUrl(job.job_id, item.source_rel_path));
+        });
+      });
+    }
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    function setColorStatus(message, isError) {
+      $("colorMeterStatus").textContent = message || "";
+      $("colorMeterStatus").className = isError ? "color-status err" : "color-status";
+    }
+    function colorChecksum(bytes) {
+      let sum = 0;
+      for (let i = 0; i < bytes.length - 1; i += 1) sum += bytes[i];
+      return sum & 255;
+    }
+    function colorU32le(n) {
+      const bytes = new Uint8Array(4);
+      new DataView(bytes.buffer).setUint32(0, n, true);
+      return Array.from(bytes);
+    }
+    function colorCommand(content, responseSize, timeout, needSign = true) {
+      const data = Uint8Array.from(content);
+      if (needSign) data[data.length - 1] = colorChecksum(data);
+      return { data, responseSize, timeout: timeout || 3000 };
+    }
+    function onColorNotify(event) {
+      if (!colorPending) return;
+      colorResponseBytes.push(...new Uint8Array(event.target.value.buffer));
+      if (colorResponseBytes.length < colorPending.responseSize) return;
+      const response = Uint8Array.from(colorResponseBytes);
+      const pending = colorPending;
+      colorPending = null;
+      colorResponseBytes = [];
+      clearTimeout(pending.timer);
+      colorChecksum(response) === response[response.length - 1] ? pending.resolve(response) : pending.reject(new Error("色差仪返回校验失败"));
+    }
+    async function colorWrite(buffer) {
+      if (colorCharacteristic.writeValueWithResponse) return colorCharacteristic.writeValueWithResponse(buffer);
+      return colorCharacteristic.writeValue(buffer);
+    }
+    async function colorExec(command) {
+      if (!colorCharacteristic) throw new Error("未连接色差仪");
+      if (colorPending) throw new Error("已有蓝牙命令执行中");
+      for (let i = 0; i < command.data.length; i += 20) await colorWrite(command.data.slice(i, i + 20));
+      if (!command.responseSize) return null;
+      return new Promise((resolve, reject) => {
+        colorPending = {
+          responseSize: command.responseSize,
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            colorPending = null;
+            colorResponseBytes = [];
+            reject(new Error("色差仪响应超时"));
+          }, command.timeout),
+        };
+      });
+    }
+    async function measureColorLab() {
+      await colorExec(colorCommand([0xf0], 0, 0, false));
+      await sleep(50);
+      colorMeasureId += 1;
+      await colorExec(colorCommand([0xbb, 1, 0, ...colorU32le(colorMeasureId), 0, 0xff, 0], 10, 5000));
+      await sleep(50);
+      await colorExec(colorCommand([0xf0], 0, 0, false));
+      await sleep(50);
+      const data = await colorExec(colorCommand([0xbb, 3, 0, 0, 0, 0, 0, 0, 0xff, 0], 20, 3000));
+      const view = new DataView(data.buffer);
+      return { L: view.getFloat32(5, true), a: view.getFloat32(9, true), b: view.getFloat32(13, true) };
+    }
+    async function connectColorMeter() {
+      if (!navigator.bluetooth) throw new Error("当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge");
+      if (!window.isSecureContext) throw new Error("Web Bluetooth 需要 HTTPS 或 localhost");
+      colorDevice = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [COLOR_SERVICE_UUID] });
+      colorDevice.addEventListener("gattserverdisconnected", () => {
+        colorCharacteristic = null;
+        $("colorMeterMeasureBtn").disabled = true;
+        setColorStatus("色差仪已断开", false);
+      });
+      const server = await colorDevice.gatt.connect();
+      const service = await server.getPrimaryService(COLOR_SERVICE_UUID);
+      colorCharacteristic = await service.getCharacteristic(COLOR_CHARACTERISTIC_UUID);
+      await colorCharacteristic.startNotifications();
+      colorCharacteristic.addEventListener("characteristicvaluechanged", onColorNotify);
+      $("colorMeterMeasureBtn").disabled = false;
+      setColorStatus("已连接：" + (colorDevice.name || "BLE 色差仪"), false);
+    }
+    async function waitImportJob(jobId) {
+      for (let i = 0; i < 90; i += 1) {
+        const job = await api("/api/v1/catalog/imports/" + encodeURIComponent(jobId));
+        const total = Number(job.total || 0);
+        const processed = Number(job.processed || 0);
+        if (job.status === "completed") return job;
+        if (job.status === "failed") throw new Error(job.message || "图片识别失败");
+        setStatus(total > 0 ? `识别中 ${processed}/${total}` : "识别中...", false);
+        await sleep(800);
+      }
+      throw new Error("图片识别超时，请稍后在后台查看导入任务");
+    }
+    async function uploadProducts() {
+      const files = Array.from($("productFiles").files || []);
+      if (!files.length) return setStatus("请选择产品图片", true);
+      const form = new FormData();
+      files.forEach((file) => form.append("files", file, file.name));
+      setStatus("上传中...", false);
+      const createdJob = await api("/api/v1/catalog/imports/upload", { method: "POST", body: form });
+      const job = await waitImportJob(createdJob.job_id);
+      renderImportReview(job);
+      setStatus("识别完成，请确认导入信息", false);
+    }
+    function collectImportReviewItems() {
+      const job = state.importJob;
+      if (!job) return [];
+      return Array.from($("importReviewList").querySelectorAll(".review-card")).map((card) => {
+        const index = Number(card.dataset.index || "-1");
+        const item = (job.items || [])[index] || {};
+        const category = card.querySelector('[data-role="importCategory"]').value;
+        const subcategory = card.querySelector('[data-role="importSubcategory"]').value;
+        return {
+          source_rel_path: item.source_rel_path,
+          selected: !!card.querySelector('[data-role="importSelected"]').checked,
+          target_filename: card.querySelector('[data-role="importFilename"]').value.trim(),
+          year_tag: card.querySelector('[data-role="importYear"]').value.trim(),
+          tags: normalizeTags([
+            typedTag("category", category),
+            typedTag("subcategory", subcategory),
+          ]),
+        };
+      });
+    }
+    async function commitImportReview() {
+      const job = state.importJob;
+      if (!job) return setStatus("请先上传识别图片", true);
+      const rows = collectImportReviewItems();
+      if (!rows.some((item) => item.selected)) {
+        return setStatus("请至少选择一张要导入的图片", true);
+      }
+      setStatus("正在写入产品库...", false);
+      await api("/api/v1/catalog/imports/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: job.job_id, items: rows }),
+      });
+      state.importJob = null;
+      $("importReviewBox").classList.add("hidden");
+      $("importReviewList").innerHTML = "";
+      $("productFiles").value = "";
+      await loadProducts();
+      setStatus("产品图片已导入", false);
+    }
+    function toggleImportSelection() {
+      const boxes = Array.from($("importReviewList").querySelectorAll('[data-role="importSelected"]'));
+      const shouldCheck = boxes.some((box) => !box.checked);
+      boxes.forEach((box) => { box.checked = shouldCheck; });
+    }
+    function cancelImportReview() {
+      state.importJob = null;
+      $("importReviewBox").classList.add("hidden");
+      $("importReviewList").innerHTML = "";
+      setStatus("已取消本次导入", false);
+    }
+    async function saveColor() {
+      const newLibrary = $("colorLibrary").value.trim();
+      const selected = $("colorLibrarySelect");
+      const library = newLibrary || selected.value;
+      const libraryName = newLibrary || (selected.options[selected.selectedIndex]?.textContent || library).replace(/\\s*\\(\\d+\\)\\s*$/, "");
+      const name = $("colorName").value.trim();
+      const L = Number($("colorL").value);
+      const a = Number($("colorA").value);
+      const b = Number($("colorB").value);
+      if (!library || !name || !Number.isFinite(L) || !Number.isFinite(a) || !Number.isFinite(b)) {
+        return setStatus("请填写色卡库、色号和 Lab 数值", true);
+      }
+      await api("/api/v1/color-card/cards", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ library_id: library, library_name: libraryName, name, note: $("colorNote").value.trim(), L, a, b }),
+      });
+      await loadColorLibraries(library);
+      await matchColorCards();
+      $("colorNote").value = "";
+      incrementColorNameNumber();
+      await loadColors();
+      setStatus("色卡已保存", false);
+    }
+    $("productTab").addEventListener("click", () => switchType("product"));
+    $("colorTab").addEventListener("click", () => switchType("color"));
+    $("searchBtn").addEventListener("click", loadCurrent);
+    $("keyword").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loadCurrent();
+      }
+    });
+    $("uploadProductsBtn").addEventListener("click", () => uploadProducts().catch((err) => setStatus(err.message || "上传失败", true)));
+    $("commitImportBtn").addEventListener("click", () => commitImportReview().catch((err) => setStatus(err.message || "入库失败", true)));
+    $("selectAllImportBtn").addEventListener("click", toggleImportSelection);
+    $("cancelImportBtn").addEventListener("click", cancelImportReview);
+    $("saveColorBtn").addEventListener("click", () => saveColor().catch((err) => setStatus(err.message || "保存失败", true)));
+    $("matchColorBtn").addEventListener("click", () => matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true)));
+    $("colorMeterConnectBtn").addEventListener("click", () => connectColorMeter().catch((err) => setColorStatus(err.message || "连接失败", true)));
+    $("colorMeterMeasureBtn").addEventListener("click", async () => {
+      try {
+        setColorStatus("正在测量...", false);
+        const lab = await measureColorLab();
+        $("colorL").value = lab.L.toFixed(2);
+        $("colorA").value = lab.a.toFixed(2);
+        $("colorB").value = lab.b.toFixed(2);
+        refreshColorSwatch();
+        setColorStatus("测量完成", false);
+        await matchColorCards();
+      } catch (err) {
+        setColorStatus(err.message || "测量失败", true);
+      }
+    });
+    ["colorL", "colorA", "colorB"].forEach((id) => $(id).addEventListener("input", refreshColorSwatch));
+    ["colorNamePrefix", "colorNameNumber", "colorNameSuffix"].forEach((id) => $(id).addEventListener("input", refreshColorName));
+    $("colorLibrary").addEventListener("input", () => maybeFillColorNamePrefix($("colorLibrary").value));
+    $("colorLibrarySelect").addEventListener("change", () => maybeFillColorNamePrefix($("colorLibrarySelect").options[$("colorLibrarySelect").selectedIndex]?.textContent || ""));
+    $("closeGalleryBtn").addEventListener("click", closeGallery);
+    $("galleryModal").addEventListener("click", (event) => {
+      if (event.target === $("galleryModal")) closeGallery();
+    });
+    if (!navigator.bluetooth) setColorStatus("当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge", true);
+    else if (!window.isSecureContext) setColorStatus("Web Bluetooth 需要 HTTPS 或 localhost", true);
+    else setColorStatus("浏览器支持 Web Bluetooth，可以连接色差仪", false);
+    $("productCreateBox").classList.toggle("hidden", !canProductCreate);
+    $("colorCreateBox").classList.toggle("hidden", !canColorCreate);
+    Promise.all([loadTags(), loadColorLibraries()]).finally(() => switchType(state.type));
+  </script>
+</body>
+</html>""".replace("__INITIAL_TYPE__", safe_type)
+
     @app.get("/catalog/login", response_class=HTMLResponse)
     def catalog_login_page(request: Request, error: int = 0) -> HTMLResponse:
         if catalog_web_auth_enabled and _catalog_read_session_user(request):
@@ -4035,7 +4953,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return resp
 
     @app.get("/catalog", response_class=HTMLResponse)
-    def catalog_page() -> str:
+    def catalog_page(request: Request, type: str = "", token: str = ""):
+        catalog_type = str(type or "").strip().lower()
+        if str(token or "").strip() or catalog_type in {"product", "color"}:
+            resp = HTMLResponse(_catalog_mobile_page(catalog_type))
+            token_user = _catalog_token_user(token)
+            if token_user:
+                session_value, exp_ts = _catalog_build_session_value(token_user)
+                resp.set_cookie(
+                    key=catalog_web_cookie_name,
+                    value=session_value,
+                    max_age=max(300, catalog_web_session_ttl_sec),
+                    expires=exp_ts,
+                    httponly=True,
+                    samesite="lax",
+                )
+            return resp
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -5527,7 +6460,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         limit: int = 200,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        _check_text_content_security(style_code, tags, year_tags, category_tags, subcategory_tags)
+        _catalog_require_permission(request, "product:view")
+        _check_text_content_security(style_code, tags, year_tags, category_tags, subcategory_tags, openid=_wechat_openid_from_request(request))
         base_url = _external_base_url(request)
         tag_list = [item.strip() for item in tags.split(",") if item.strip()]
         for kind, raw in (
@@ -5544,14 +6478,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/v1/catalog/products/{style_code}")
     def api_get_catalog_product(request: Request, style_code: str) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:view")
         product = catalog_store.get_product(style_code)
         if not product:
             raise HTTPException(status_code=404, detail="product not found")
         return _serialize_catalog_product(_external_base_url(request), product)
 
     @app.put("/api/v1/catalog/products/{style_code}/tags")
-    def api_replace_catalog_product_tags(style_code: str, payload: CatalogTagUpdateRequest) -> Dict[str, Any]:
-        _check_text_content_security(style_code, *payload.tags)
+    def api_replace_catalog_product_tags(request: Request, style_code: str, payload: CatalogTagUpdateRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        _check_text_content_security(style_code, *payload.tags, openid=_wechat_openid_from_request(request))
         try:
             tags_local = catalog_store.replace_product_tags(style_code, payload.tags)
         except ValueError as exc:
@@ -5559,28 +6495,44 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {"style_code": style_code, "tags": tags_local}
 
     @app.get("/api/v1/catalog/tags")
-    def api_list_catalog_tags() -> Dict[str, Any]:
+    def api_list_catalog_tags(request: Request) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:view")
         return {
             "tags": catalog_store.list_tags(),
             "tag_groups": catalog_store.list_tag_groups(),
         }
 
     @app.get("/api/v1/color-card/libraries")
-    def api_list_color_card_libraries() -> Dict[str, Any]:
+    def api_list_color_card_libraries(request: Request) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
         return {"libraries": color_card_store.list_libraries()}
 
     @app.post("/api/v1/color-card/libraries")
-    def api_upsert_color_card_library(payload: ColorCardLibraryUpsertRequest) -> Dict[str, Any]:
-        _check_text_content_security(payload.id, payload.name)
+    def api_upsert_color_card_library(request: Request, payload: ColorCardLibraryUpsertRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:create")
+        _check_text_content_security(payload.id, payload.name, openid=_wechat_openid_from_request(request))
         try:
             library = color_card_store.upsert_library(payload.id, payload.name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"library": library, "libraries": color_card_store.list_libraries()}
 
+    @app.get("/api/v1/color-card/cards")
+    def api_list_color_cards(
+        request: Request,
+        library_id: str = "",
+        keyword: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        _check_text_content_security(library_id, keyword, openid=_wechat_openid_from_request(request))
+        return {"cards": color_card_store.list_cards(library_id=library_id, keyword=keyword, limit=limit, offset=offset)}
+
     @app.post("/api/v1/color-card/cards")
-    def api_upsert_color_card(payload: ColorCardUpsertRequest) -> Dict[str, Any]:
-        _check_text_content_security(payload.library_id, payload.library_name, payload.name, payload.note)
+    def api_upsert_color_card(request: Request, payload: ColorCardUpsertRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:create")
+        _check_text_content_security(payload.library_id, payload.library_name, payload.name, payload.note, openid=_wechat_openid_from_request(request))
         try:
             card = color_card_store.upsert_card(
                 library_id=payload.library_id,
@@ -5599,7 +6551,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {"card": card}
 
     @app.post("/api/v1/color-card/match")
-    def api_match_color_cards(payload: ColorCardMatchRequest) -> Dict[str, Any]:
+    def api_match_color_cards(request: Request, payload: ColorCardMatchRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
         limit = max(1, min(int(payload.limit or 12), 100))
         library_id = str(payload.library_id or "").strip()
         matches = color_card_store.match((float(payload.L), float(payload.a), float(payload.b)), library_id=library_id, limit=limit)
@@ -5610,8 +6563,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
 
     @app.post("/api/v1/catalog/tags")
-    def api_create_catalog_tag(payload: CatalogTagCreateRequest) -> Dict[str, Any]:
-        _check_text_content_security(payload.name)
+    def api_create_catalog_tag(request: Request, payload: CatalogTagCreateRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        _check_text_content_security(payload.name, openid=_wechat_openid_from_request(request))
         name = payload.name
         if str(payload.type or "").strip():
             name = make_typed_tag(str(payload.type).strip(), payload.name) or payload.name
@@ -5622,7 +6576,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {"tag": tag}
 
     @app.delete("/api/v1/catalog/tags/{tag_name}")
-    def api_delete_catalog_tag(tag_name: str) -> Dict[str, Any]:
+    def api_delete_catalog_tag(request: Request, tag_name: str) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
         try:
             tag = catalog_store.delete_tag(tag_name)
         except ValueError as exc:
@@ -5630,12 +6585,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {"tag": tag, "deleted": True}
 
     @app.post("/api/v1/catalog/sync")
-    def api_sync_catalog() -> Dict[str, Any]:
+    def api_sync_catalog(request: Request) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
         with catalog_write_lock:
             return catalog_store.sync_from_standard_dir(standard_dir, image_exts)
 
     @app.post("/api/v1/catalog/imports/prepare")
-    def api_prepare_catalog_import(payload: CatalogImportPrepareRequest) -> Dict[str, Any]:
+    def api_prepare_catalog_import(request: Request, payload: CatalogImportPrepareRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
         source_dir_raw = str(payload.source_dir or "").strip() or catalog_import_source_dir
         if not source_dir_raw:
             raise HTTPException(status_code=400, detail="source_dir is empty; set catalog.import_source_dir in config or input it manually")
@@ -5649,7 +6606,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return _serialize_catalog_import_job(job)
 
     @app.post("/api/v1/catalog/imports/upload")
-    async def api_upload_catalog_import(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+    async def api_upload_catalog_import(request: Request, files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
         upload_files = [item for item in files if item and str(item.filename or "").strip()]
         if not upload_files:
             raise HTTPException(status_code=400, detail="no files uploaded")
@@ -5697,8 +6655,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("catalog import upload created job=%s saved=%d skipped=%d", job.get("job_id"), saved, len(skipped))
         return _serialize_catalog_import_job(job)
 
+    @app.post("/api/v1/wechat/session")
+    def api_wechat_session(payload: WechatSessionRequest) -> Dict[str, Any]:
+        return _wechat_jscode2session(payload.code)
+
     @app.get("/api/v1/catalog/imports/{job_id}")
-    def api_get_catalog_import_job(job_id: str) -> Dict[str, Any]:
+    def api_get_catalog_import_job(request: Request, job_id: str) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
         with catalog_import_lock:
             job = catalog_import_jobs.get(job_id)
             if job is None:
@@ -5706,7 +6669,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return _serialize_catalog_import_job(job)
 
     @app.get("/api/v1/catalog/imports/{job_id}/source-image")
-    def api_get_catalog_import_source_image(job_id: str, source_rel_path: str, max_edge: int = 0, q: int = 82) -> FileResponse:
+    def api_get_catalog_import_source_image(request: Request, job_id: str, source_rel_path: str, max_edge: int = 0, q: int = 82) -> FileResponse:
+        _catalog_require_permission(request, "product:create")
         with catalog_import_lock:
             job = catalog_import_jobs.get(job_id)
             if job is None:
@@ -5733,7 +6697,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
 
     @app.post("/api/v1/catalog/imports/commit")
-    def api_commit_catalog_import(payload: CatalogImportCommitRequest) -> Dict[str, Any]:
+    def api_commit_catalog_import(request: Request, payload: CatalogImportCommitRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
         with catalog_import_lock:
             job = catalog_import_jobs.get(payload.job_id)
             if job is None:
@@ -8537,7 +9502,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="空文件")
-        _check_text_content_security(prompt, negative_prompt)
+        _check_text_content_security(prompt, negative_prompt, openid=_wechat_openid_from_request(request))
         _check_search_upload_content_security(content, file.filename)
         try:
             ark_public_base_url = _external_base_url(request)

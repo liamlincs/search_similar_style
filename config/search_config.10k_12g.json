@@ -51,6 +51,15 @@
       "session_secret": "replace-with-catalog-session-secret",
       "session_ttl_sec": 43200,
       "cookie_name": "catalog_session"
+    },
+    "external_token_auth": {
+      "enabled": true,
+      "default_permissions": [
+        "product:view",
+        "product:create",
+        "color:view",
+        "color:create"
+      ]
     }
   },
   "color_card": {

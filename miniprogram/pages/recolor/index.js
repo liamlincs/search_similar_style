@@ -680,6 +680,7 @@ Page({
           deltaText: delta.toFixed(2),
           labText: `L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}`,
           textColor: lValue < 55 ? "#FFFFFF" : "#0F172A",
+          itemStyle: `background-color: #${String(item.hex || "CCCCCC").replace(/^#/, "").toUpperCase()}; color: ${lValue < 55 ? "#FFFFFF" : "#0F172A"};`,
         };
       });
       this.setData({ colorMatches: matches });
