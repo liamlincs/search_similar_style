@@ -4027,14 +4027,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
     button.weak { background: #f8fafc; color: #64748b; border: 1px solid #dbe2ea; }
     .muted { color: #6b7280; font-size: 13px; }
-    .filter-tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; min-height: 28px; }
-    .filter-tag { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+    .filter-tags { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 0 0 14px; min-height: 24px; }
+    .filter-tag-section { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+    .filter-tag-section > .muted { font-size: 12px; margin-right: 2px !important; }
+    .filter-tag { border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 4px 8px; font-size: 12px; cursor: pointer; min-height: 26px; }
     .filter-tag.active { background: #3730a3; color: #fff; border-color: #3730a3; }
     .filter-tag-wrap { display: inline-flex; align-items: center; border: 1px solid #c7d2fe; background: #eef2ff; border-radius: 999px; overflow: hidden; }
     .filter-tag-wrap.active { background: #3730a3; border-color: #3730a3; }
     .filter-tag-wrap .filter-tag { border: none; background: transparent; border-radius: 0; }
     .filter-tag-wrap.active .filter-tag { color: #fff; }
-    .filter-tag-delete { min-height: auto; height: 100%; padding: 5px 8px 5px 3px; border: none; border-radius: 0; background: transparent; color: #64748b; font-size: 13px; line-height: 1; }
+    .filter-tag-delete { min-height: 24px; height: 100%; padding: 3px 7px 3px 1px; border: none; border-radius: 0; background: transparent; color: #64748b; font-size: 12px; line-height: 1; }
     .filter-tag-wrap.active .filter-tag-delete { color: #e0e7ff; }
     .filter-tag-delete:hover { color: #b91c1c; background: rgba(255,255,255,0.5); }
     .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
@@ -4122,6 +4124,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       .toolbar { grid-template-columns: 1fr 1fr; }
       .toolbar input { grid-column: 1 / -1; }
       .toolbar button { min-height: 40px; }
+      .filter-tags { gap: 5px 8px; margin-bottom: 12px; }
+      .filter-tag-section { gap: 5px; width: 100%; }
+      .filter-tag-section > .muted { width: 40px; font-size: 12px; }
+      .filter-tag-section[data-type="year"] { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+      .filter-tag-section[data-type="year"]::-webkit-scrollbar { display: none; }
+      .filter-tag-section[data-type="year"] .filter-tag-wrap { flex: 0 0 auto; }
+      .filter-tag { padding: 3px 7px; font-size: 12px; min-height: 24px; }
+      .filter-tag-delete { min-height: 22px; padding: 2px 6px 2px 0; font-size: 12px; }
       .cards { grid-template-columns: 1fr; gap: 12px; }
       .card { padding: 12px; }
       .modal { padding: 12px; }
@@ -4554,8 +4564,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ['细类', 'subcategory', globalTagGroups.subcategory || []],
       ];
       els.activeFilterTags.innerHTML = sections.map(([title, type, list]) => `
-        <div class="filter-tag-section">
-          <span class="muted" style="margin-right:8px;">${title}</span>
+        <div class="filter-tag-section" data-type="${type}">
+          <span class="muted">${title}</span>
           ${list.map(name => {
             const tag = typedTag(type, name);
             const active = selectedFilterTags.includes(tag);
