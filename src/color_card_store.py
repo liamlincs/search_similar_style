@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 
+def clean_library_id(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    raw = "".join(ch if ch.isalnum() else "_" for ch in raw)
+    raw = "_".join(part for part in raw.split("_") if part)
+    return raw[:80]
+
+
 def lab_to_rgb_hex(l: float, a: float, b: float) -> str:
     y = (float(l) + 16.0) / 116.0
     x = float(a) / 500.0 + y
@@ -194,6 +201,95 @@ class ColorCardStore:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_library(self, library_id: str, name: str) -> Dict[str, Any]:
+        clean_id = clean_library_id(library_id) or clean_library_id(name)
+        clean_name = str(name or "").strip()
+        if not clean_id:
+            raise ValueError("library_id is empty")
+        if not clean_name:
+            raise ValueError("library name is empty")
+        with self._connect() as conn:
+            max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM color_libraries").fetchone()
+            conn.execute(
+                """
+                INSERT INTO color_libraries(id, name, source_file, sort_order)
+                VALUES (?, ?, 'manual', ?)
+                ON CONFLICT(id) DO UPDATE SET name=excluded.name
+                """,
+                (clean_id, clean_name, int(max_order["max_order"] or 0) + 1),
+            )
+            conn.commit()
+        return {"id": clean_id, "name": clean_name}
+
+    def upsert_card(
+        self,
+        *,
+        library_id: str,
+        library_name: str = "",
+        name: str,
+        note: str = "",
+        illuminant: str = "D65",
+        angle: float | None = 10,
+        l: float,
+        a: float,
+        b: float,
+        spectral: list[Any] | None = None,
+    ) -> Dict[str, Any]:
+        clean_lib_id = clean_library_id(library_id) or clean_library_id(library_name)
+        clean_name = str(name or "").strip()
+        if not clean_lib_id:
+            raise ValueError("library_id is empty")
+        if not clean_name:
+            raise ValueError("color name is empty")
+        lib_name = str(library_name or clean_lib_id).strip()
+        self.upsert_library(clean_lib_id, lib_name)
+        l_val = float(l)
+        a_val = float(a)
+        b_val = float(b)
+        hex_value = lab_to_rgb_hex(l_val, a_val, b_val)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO color_cards(
+                    library_id, name, note, illuminant, angle, l, a, b, hex, spectral_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library_id, name) DO UPDATE SET
+                    note=excluded.note,
+                    illuminant=excluded.illuminant,
+                    angle=excluded.angle,
+                    l=excluded.l,
+                    a=excluded.a,
+                    b=excluded.b,
+                    hex=excluded.hex,
+                    spectral_json=excluded.spectral_json
+                """,
+                (
+                    clean_lib_id,
+                    clean_name,
+                    str(note or "").strip(),
+                    str(illuminant or "").strip(),
+                    angle,
+                    l_val,
+                    a_val,
+                    b_val,
+                    hex_value,
+                    json.dumps(spectral or [], ensure_ascii=False),
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT c.id, c.library_id, l.name AS library_name, c.name, c.note,
+                       c.illuminant, c.angle, c.l, c.a, c.b, c.hex
+                FROM color_cards c
+                JOIN color_libraries l ON l.id=c.library_id
+                WHERE c.library_id=? AND c.name=?
+                """,
+                (clean_lib_id, clean_name),
+            ).fetchone()
+            conn.commit()
+        return dict(row)
 
     def match(self, lab: tuple[float, float, float], library_id: str = "", limit: int = 12) -> List[Dict[str, Any]]:
         params: list[Any] = []

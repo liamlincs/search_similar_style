@@ -198,6 +198,24 @@ class ColorCardMatchRequest(BaseModel):
     limit: int = 12
 
 
+class ColorCardLibraryUpsertRequest(BaseModel):
+    id: str = ""
+    name: str
+
+
+class ColorCardUpsertRequest(BaseModel):
+    library_id: str
+    library_name: str = ""
+    name: str
+    note: str = ""
+    illuminant: str = "D65"
+    angle: float | None = 10
+    L: float
+    a: float
+    b: float
+    spectral: List[Any] = []
+
+
 def _load_cfg(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"config not found: {path}")
@@ -1437,17 +1455,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         path = request.url.path
         is_catalog_ui = path == "/catalog"
+        is_color_card_ui = path == "/color-card-admin"
         is_catalog_login = path == "/catalog/login"
         is_catalog_logout = path == "/catalog/logout"
         is_catalog_api = path.startswith("/api/v1/catalog/")
         is_color_card_api = path.startswith("/api/v1/color-card/")
-        is_catalog_route = is_catalog_ui or is_catalog_login or is_catalog_logout or is_catalog_api
+        is_catalog_route = is_catalog_ui or is_color_card_ui or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
         allow_public = (
             path in {"/health", "/ready"}
             or is_catalog_login
             or is_catalog_logout
-            or ((not catalog_web_auth_enabled) and is_catalog_ui)
-            or ((not catalog_web_auth_enabled) and catalog_public and is_catalog_api)
+            or ((not catalog_web_auth_enabled) and (is_catalog_ui or is_color_card_ui))
+            or ((not catalog_web_auth_enabled) and catalog_public and (is_catalog_api or is_color_card_api))
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
             or path.startswith("/recolor-static/")
@@ -1455,7 +1474,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         allow_api = (
             path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
             or is_catalog_route
-            or is_color_card_api
             or path.startswith("/images/")
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
@@ -1509,7 +1527,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ua[:200],
                 )
                 return resp
-            if is_catalog_ui or is_catalog_logout:
+            if is_catalog_ui or is_color_card_ui or is_catalog_logout:
                 resp = RedirectResponse(url="/catalog/login", status_code=303)
             else:
                 resp = JSONResponse(status_code=401, content={"detail": "catalog login required"})
@@ -5071,6 +5089,34 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 </body>
 </html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True))
 
+    @app.get("/color-card-admin", response_class=HTMLResponse)
+    def color_card_admin_page() -> str:
+        return r"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>色卡蓝牙录入</title>
+<style>
+body{margin:0;background:#f4f7fb;color:#0f172a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,"Microsoft YaHei",sans-serif}.wrap{max-width:980px;margin:0 auto;padding:22px 18px 42px}.top{display:flex;justify-content:space-between;gap:16px;margin-bottom:16px}h1{margin:0;font-size:26px}.sub,.hint{color:#64748b;font-size:14px;line-height:1.5}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:#fff;border:1px solid #e7edf5;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.06);padding:16px}.full{grid-column:1/-1}.row{display:grid;grid-template-columns:110px 1fr;gap:10px;align-items:center;margin:10px 0}input,select,textarea{width:100%;min-height:40px;border:1px solid #dbe3ee;border-radius:10px;padding:8px 10px;font:inherit}textarea{min-height:74px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}button{border:0;border-radius:10px;min-height:42px;padding:0 16px;font:inherit;font-weight:650;cursor:pointer}.primary{background:#1d4ed8;color:#fff}.teal{background:#0f766e;color:#fff}.ghost{background:#e2e8f0;color:#334155}button:disabled{opacity:.55}.status{padding:10px 12px;border-radius:10px;background:#eef6ff;color:#1e3a8a;font-size:14px;line-height:1.45}.err{background:#fee2e2;color:#b91c1c}.swatch{height:92px;border-radius:12px;border:1px solid rgba(15,23,42,.16);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700}.lab{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}.metric{border:1px solid #dbe3ee;border-radius:10px;padding:10px;background:#f8fafc}.k{color:#64748b;font-size:12px}.v{margin-top:4px;font-size:20px;font-weight:700}.list{display:flex;flex-direction:column;gap:10px;margin-top:10px}.match{min-height:82px;border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:14px;box-shadow:inset 0 0 0 1px rgba(15,23,42,.14)}.name{font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:560px}.meta{margin-top:4px;font-size:13px;opacity:.9}.pill{display:inline-flex;align-items:center;min-height:28px;padding:0 10px;border-radius:999px;background:#eef2f7;color:#334155;font-size:13px;text-decoration:none}@media(max-width:760px){.wrap{padding:16px 12px 30px}.grid{grid-template-columns:1fr}.top{flex-direction:column}.row{grid-template-columns:1fr;gap:6px}.lab{grid-template-columns:1fr}.match{align-items:flex-start;flex-direction:column}.name{max-width:100%}}
+</style></head><body><main class="wrap">
+<div class="top"><div><h1>色卡蓝牙录入</h1><div class="sub">支持 Android Chrome、电脑 Chrome/Edge。线上使用需要 HTTPS，本机调试可用 localhost。</div></div><a class="pill" href="/catalog">返回款号库</a></div>
+<div class="grid">
+<section class="card"><h2>1. 连接与测量</h2><div id="btSupport" class="status">正在检查浏览器蓝牙能力...</div><div class="actions"><button id="connectBtn" class="teal">连接色差仪</button><button id="measureBtn" class="primary" disabled>测量</button><button id="disconnectBtn" class="ghost" disabled>断开</button></div><div class="lab"><div class="metric"><div class="k">L</div><div id="lVal" class="v">--</div></div><div class="metric"><div class="k">a</div><div id="aVal" class="v">--</div></div><div class="metric"><div class="k">b</div><div id="bVal" class="v">--</div></div></div><div id="swatch" class="swatch" style="margin-top:12px;background:#f1f5f9;color:#334155">未测量</div></section>
+<section class="card"><h2>2. 录入色卡</h2><div class="row"><label>色卡库</label><select id="librarySelect"></select></div><div class="row"><label>新色卡库</label><input id="newLibrary" placeholder="可选：输入后会新建/切换到该库"/></div><div class="row"><label>色号名称</label><input id="colorName" placeholder="例如 彩龙3351浅灰"/></div><div class="row"><label>备注</label><textarea id="note" placeholder="可选"></textarea></div><div class="actions"><button id="saveBtn" class="primary" disabled>保存到色卡库</button><button id="matchBtn" class="ghost" disabled>只匹配相似色</button></div><p class="hint">同一色卡库内色号名称重复时，会更新原记录的 Lab/Hex。</p></section>
+<section class="card full"><h2>相似色号列表</h2><div id="matchStatus" class="hint">测量后会按 dE*00 从小到大返回相似色号。</div><div id="matches" class="list"></div></section>
+</div></main>
+<script>
+const $=id=>document.getElementById(id),els={bt:$('btSupport'),connect:$('connectBtn'),measure:$('measureBtn'),disconnect:$('disconnectBtn'),save:$('saveBtn'),match:$('matchBtn'),lib:$('librarySelect'),newLib:$('newLibrary'),name:$('colorName'),note:$('note'),l:$('lVal'),a:$('aVal'),b:$('bVal'),swatch:$('swatch'),matchStatus:$('matchStatus'),matches:$('matches')};const SERVICE=0xFFE0,CHAR=0xFFE1;let dev=null,ch=null,pending=null,resp=[],mid=1,lastLab=null;
+function status(t,e=false){els.bt.textContent=t;els.bt.className=e?'status err':'status'}function clamp(n,min,max){return Math.max(min,Math.min(max,n))}function checksum(bytes){let s=0;for(let i=0;i<bytes.length-1;i++)s+=bytes[i];return s&255}function u32(n){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,true);return Array.from(b)}function cmd(a,size,timeout=3000,sign=true){const data=Uint8Array.from(a);if(sign)data[data.length-1]=checksum(data);return{data,size,timeout}}function wake(){return cmd([0xf0],0,0,false)}function measureCmd(){mid+=1;return cmd([0xbb,1,0,...u32(mid),0,0xff,0],10,5000)}function labCmd(){return cmd([0xbb,3,0,0,0,0,0,0,0xff,0],20,3000)}
+function notify(ev){if(!pending)return;resp.push(...new Uint8Array(ev.target.value.buffer));if(resp.length<pending.size)return;const out=Uint8Array.from(resp),ok=checksum(out)===out[out.length-1],p=pending;pending=null;resp=[];clearTimeout(p.timer);ok?p.resolve(out):p.reject(new Error('色差仪返回校验失败'))}
+async function write(buf){return ch.writeValueWithResponse?ch.writeValueWithResponse(buf):ch.writeValue(buf)}async function exec(c){if(!ch)throw new Error('未连接色差仪');if(pending)throw new Error('已有蓝牙命令执行中');for(let i=0;i<c.data.length;i+=20)await write(c.data.slice(i,i+20));if(!c.size)return null;return new Promise((resolve,reject)=>{pending={size:c.size,resolve,reject,timer:setTimeout(()=>{pending=null;resp=[];reject(new Error('色差仪响应超时'))},c.timeout)}})}async function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+async function measureLab(){await exec(wake());await sleep(50);await exec(measureCmd());await sleep(50);await exec(wake());await sleep(50);const data=await exec(labCmd()),v=new DataView(data.buffer);return{L:v.getFloat32(5,true),a:v.getFloat32(9,true),b:v.getFloat32(13,true)}}
+function labRgb(lab){let y=(lab.L+16)/116,x=lab.a/500+y,z=y-lab.b/200;const p=v=>v>6/29?Math.pow(v,3):(v-16/116)/7.787;x=p(x)*.95047;y=p(y);z=p(z)*1.08883;let r=3.2406*x-1.5372*y-.4986*z,g=-.9689*x+1.8758*y+.0415*z,b=.0557*x-.2040*y+1.0570*z;const gm=v=>clamp(Math.round((v>.0031308?1.055*Math.pow(v,1/2.4)-.055:12.92*v)*255),0,255);return{r:gm(r),g:gm(g),b:gm(b)}}function labHex(lab){const r=labRgb(lab);return[r.r,r.g,r.b].map(n=>n.toString(16).padStart(2,'0')).join('').toUpperCase()}function setLab(lab){lastLab=lab;els.l.textContent=lab.L.toFixed(2);els.a.textContent=lab.a.toFixed(2);els.b.textContent=lab.b.toFixed(2);const hx=labHex(lab);els.swatch.textContent='#'+hx;els.swatch.style.background='#'+hx;els.swatch.style.color=lab.L<55?'#fff':'#0f172a';els.save.disabled=false;els.match.disabled=false}
+async function loadLibs(sel=''){const r=await fetch('/api/v1/color-card/libraries');if(!r.ok)throw new Error(await r.text());const d=await r.json();els.lib.innerHTML='';(d.libraries||[]).forEach(lib=>{const o=document.createElement('option');o.value=lib.id;o.textContent=`${lib.name} (${lib.color_count||0})`;if(sel===lib.id)o.selected=true;els.lib.appendChild(o)})}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}async function doMatch(){if(!lastLab)return;els.matchStatus.textContent='正在匹配...';els.matches.innerHTML='';const r=await fetch('/api/v1/color-card/match',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({L:lastLab.L,a:lastLab.a,b:lastLab.b,library_id:els.lib.value,limit:12})});if(!r.ok)throw new Error(await r.text());const d=await r.json();els.matchStatus.textContent=`找到 ${(d.matches||[]).length} 条相似色号`;for(const it of d.matches||[]){const div=document.createElement('div');div.className='match';div.style.background='#'+(it.hex||'CCCCCC');div.style.color=Number(it.l)<55?'#fff':'#0f172a';div.innerHTML=`<div><div class="name">名称：${esc(it.name||'')}</div><div class="meta">色彩库：${esc(it.library_name||'')}</div><div class="meta">dE*00：${Number(it.delta_e_00||0).toFixed(2)} · L ${Number(it.l).toFixed(1)} / a ${Number(it.a).toFixed(1)} / b ${Number(it.b).toFixed(1)}</div></div><div class="pill">#${esc(it.hex||'')}</div>`;els.matches.appendChild(div)}}
+async function save(){if(!lastLab)throw new Error('请先测量');if(!els.name.value.trim())throw new Error('请填写色号名称');let lid=els.lib.value,lname=(els.lib.options[els.lib.selectedIndex]?.textContent||lid).replace(/\s*\(\d+\)\s*$/,'');if(els.newLib.value.trim()){lid=els.newLib.value.trim();lname=lid}const r=await fetch('/api/v1/color-card/cards',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({library_id:lid,library_name:lname,name:els.name.value.trim(),note:els.note.value,L:lastLab.L,a:lastLab.a,b:lastLab.b})});if(!r.ok)throw new Error(await r.text());const d=await r.json();await loadLibs(d.card.library_id);els.newLib.value='';await doMatch();status('已保存：'+d.card.name)}
+async function connect(){if(!navigator.bluetooth)throw new Error('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge');dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SERVICE]});dev.addEventListener('gattserverdisconnected',()=>{ch=null;els.measure.disabled=true;els.disconnect.disabled=true;status('色差仪已断开')});const server=await dev.gatt.connect(),svc=await server.getPrimaryService(SERVICE);ch=await svc.getCharacteristic(CHAR);await ch.startNotifications();ch.addEventListener('characteristicvaluechanged',notify);els.measure.disabled=false;els.disconnect.disabled=false;status('已连接：'+(dev.name||'BLE 色差仪'))}
+els.connect.onclick=()=>connect().catch(e=>status(e.message||'连接失败',true));els.measure.onclick=async()=>{try{els.measure.disabled=true;status('正在测量...');const lab=await measureLab();setLab(lab);status('测量完成');await doMatch()}catch(e){status(e.message||'测量失败',true)}finally{els.measure.disabled=!ch}};els.disconnect.onclick=()=>{if(dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();ch=null;els.measure.disabled=true;els.disconnect.disabled=true};els.save.onclick=()=>save().catch(e=>status(e.message||'保存失败',true));els.match.onclick=()=>doMatch().catch(e=>status(e.message||'匹配失败',true));if(!navigator.bluetooth)status('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge',true);else if(!window.isSecureContext)status('Web Bluetooth 需要 HTTPS 或 localhost',true);else status('浏览器支持 Web Bluetooth，可以连接色差仪');loadLibs().catch(e=>status(e.message||'加载色卡库失败',true));
+</script></body></html>"""
+
     @app.get("/api/v1/catalog/products")
     def api_list_catalog_products(
         request: Request,
@@ -5123,6 +5169,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/v1/color-card/libraries")
     def api_list_color_card_libraries() -> Dict[str, Any]:
         return {"libraries": color_card_store.list_libraries()}
+
+    @app.post("/api/v1/color-card/libraries")
+    def api_upsert_color_card_library(payload: ColorCardLibraryUpsertRequest) -> Dict[str, Any]:
+        _check_text_content_security(payload.id, payload.name)
+        try:
+            library = color_card_store.upsert_library(payload.id, payload.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"library": library, "libraries": color_card_store.list_libraries()}
+
+    @app.post("/api/v1/color-card/cards")
+    def api_upsert_color_card(payload: ColorCardUpsertRequest) -> Dict[str, Any]:
+        _check_text_content_security(payload.library_id, payload.library_name, payload.name, payload.note)
+        try:
+            card = color_card_store.upsert_card(
+                library_id=payload.library_id,
+                library_name=payload.library_name,
+                name=payload.name,
+                note=payload.note,
+                illuminant=payload.illuminant,
+                angle=payload.angle,
+                l=payload.L,
+                a=payload.a,
+                b=payload.b,
+                spectral=payload.spectral,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"card": card}
 
     @app.post("/api/v1/color-card/match")
     def api_match_color_cards(payload: ColorCardMatchRequest) -> Dict[str, Any]:
