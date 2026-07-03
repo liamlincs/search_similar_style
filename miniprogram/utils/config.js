@@ -10,6 +10,10 @@ const config = {
     products: "/api/v1/catalog/products",
     tags: "/api/v1/catalog/tags"
   },
+  colorCardPaths: {
+    libraries: "/api/v1/color-card/libraries",
+    match: "/api/v1/color-card/match"
+  },
   printPaths: {
     templates: "/api/v1/templates",
     upload: "/api/v1/images/upload",

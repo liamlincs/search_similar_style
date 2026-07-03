@@ -62,6 +62,7 @@ from search_similar_return_code import (
 from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
 from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag
+from color_card_store import ColorCardStore
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
 
@@ -187,6 +188,14 @@ class CatalogImportCommitItem(BaseModel):
 class CatalogImportCommitRequest(BaseModel):
     job_id: str
     items: List[CatalogImportCommitItem]
+
+
+class ColorCardMatchRequest(BaseModel):
+    L: float
+    a: float
+    b: float
+    library_id: str = ""
+    limit: int = 12
 
 
 def _load_cfg(path: Path) -> Dict[str, Any]:
@@ -585,6 +594,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     strip_w_stripe = float(search_cfg.get("strip_w_stripe", 0.25))
     auth_cfg = cfg.get("auth", {})
     catalog_cfg = cfg.get("catalog", {})
+    color_card_cfg = cfg.get("color_card", {})
     api_key_enabled = bool(auth_cfg.get("enabled", True))
     image_url_secret = str(auth_cfg.get("image_url_secret", "")).strip()
     image_url_ttl_sec = int(auth_cfg.get("image_url_ttl_sec", 600))
@@ -599,6 +609,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             api_key_map[key] = user
 
     catalog_db_path = Path(catalog_cfg.get("db_path", "data/product_catalog.db"))
+    color_card_db_path = Path(color_card_cfg.get("db_path", "data/color_cards.db"))
     catalog_import_source_dir = str(catalog_cfg.get("import_source_dir", "")).strip()
     catalog_public = bool(catalog_cfg.get("public_endpoints", True))
     catalog_image_max_edge = int(catalog_cfg.get("image_max_edge", 420))
@@ -981,6 +992,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     _reload_search_assets("startup")
     catalog_store = CatalogStore(catalog_db_path)
+    color_card_store = ColorCardStore(color_card_db_path)
     catalog_write_lock = threading.Lock()
     with catalog_write_lock:
         sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
@@ -1428,6 +1440,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         is_catalog_login = path == "/catalog/login"
         is_catalog_logout = path == "/catalog/logout"
         is_catalog_api = path.startswith("/api/v1/catalog/")
+        is_color_card_api = path.startswith("/api/v1/color-card/")
         is_catalog_route = is_catalog_ui or is_catalog_login or is_catalog_logout or is_catalog_api
         allow_public = (
             path in {"/health", "/ready"}
@@ -1442,6 +1455,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         allow_api = (
             path in {"/search", "/image-url", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
             or is_catalog_route
+            or is_color_card_api
             or path.startswith("/images/")
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
@@ -5104,6 +5118,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {
             "tags": catalog_store.list_tags(),
             "tag_groups": catalog_store.list_tag_groups(),
+        }
+
+    @app.get("/api/v1/color-card/libraries")
+    def api_list_color_card_libraries() -> Dict[str, Any]:
+        return {"libraries": color_card_store.list_libraries()}
+
+    @app.post("/api/v1/color-card/match")
+    def api_match_color_cards(payload: ColorCardMatchRequest) -> Dict[str, Any]:
+        limit = max(1, min(int(payload.limit or 12), 100))
+        library_id = str(payload.library_id or "").strip()
+        matches = color_card_store.match((float(payload.L), float(payload.a), float(payload.b)), library_id=library_id, limit=limit)
+        return {
+            "query_lab": {"L": payload.L, "a": payload.a, "b": payload.b},
+            "library_id": library_id,
+            "matches": matches,
         }
 
     @app.post("/api/v1/catalog/tags")

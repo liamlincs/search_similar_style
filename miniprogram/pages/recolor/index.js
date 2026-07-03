@@ -1,4 +1,4 @@
-const { recolorUpload, recolorAiUpload } = require("../../utils/api");
+const { recolorUpload, recolorAiUpload, fetchColorCardLibraries, matchColorCards } = require("../../utils/api");
 const config = require("../../utils/config");
 const { ColorMeter } = require("../../utils/color_meter_bluetooth");
 const { labToHex, retry } = require("../../utils/color_meter_utils");
@@ -228,6 +228,12 @@ Page({
     meterStatus: "未连接色差仪",
     meterLastLab: null,
     meterLastLabText: "",
+    colorLibraries: [],
+    selectedColorLibraryId: "",
+    selectedColorLibraryName: "全部色卡",
+    colorMatching: false,
+    colorMatches: [],
+    colorMatchError: "",
   },
 
   onLoad() {
@@ -247,6 +253,7 @@ Page({
         meterDeviceName: ColorMeter.connected.name || "已连接设备",
       });
     }
+    this.loadColorLibraries();
   },
 
   onUnload() {
@@ -625,6 +632,65 @@ Page({
     });
   },
 
+  async loadColorLibraries() {
+    try {
+      const res = await fetchColorCardLibraries();
+      const libs = (res.libraries || []).map((item) => ({
+        id: String(item.id || ""),
+        name: String(item.name || ""),
+        color_count: Number(item.color_count || 0),
+      })).filter((item) => item.id && item.name);
+      this.setData({ colorLibraries: libs });
+    } catch (err) {
+      console.warn("[color-card:libraries:error]", err);
+    }
+  },
+
+  async selectColorLibrary(e) {
+    const id = String((e.currentTarget.dataset && e.currentTarget.dataset.id) || "");
+    const name = String((e.currentTarget.dataset && e.currentTarget.dataset.name) || "全部色卡");
+    this.setData({
+      selectedColorLibraryId: id,
+      selectedColorLibraryName: name || "全部色卡",
+    });
+    if (this.data.meterLastLab) {
+      await this.matchMeasuredColor(this.data.meterLastLab);
+    }
+  },
+
+  async matchMeasuredColor(lab) {
+    if (!lab) return;
+    this.setData({ colorMatching: true, colorMatchError: "" });
+    try {
+      const res = await matchColorCards({
+        L: lab.L,
+        a: lab.a,
+        b: lab.b,
+        library_id: this.data.selectedColorLibraryId,
+        limit: 12,
+      });
+      const matches = (res.matches || []).map((item) => {
+        const lValue = Number(item.l || 0);
+        const delta = Number(item.delta_e_00 || 0);
+        return {
+          id: item.id,
+          name: String(item.name || ""),
+          library_name: String(item.library_name || ""),
+          hex: String(item.hex || "CCCCCC").replace(/^#/, "").toUpperCase(),
+          deltaText: delta.toFixed(2),
+          labText: `L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}`,
+          textColor: lValue < 55 ? "#FFFFFF" : "#0F172A",
+        };
+      });
+      this.setData({ colorMatches: matches });
+    } catch (err) {
+      console.error("[color-card:match:error]", err);
+      this.setData({ colorMatchError: err.message || "色卡匹配失败", colorMatches: [] });
+    } finally {
+      this.setData({ colorMatching: false });
+    }
+  },
+
   toggleMeterPanel() {
     const nextOpen = !this.data.meterPanelOpen;
     this.setData({ meterPanelOpen: nextOpen });
@@ -711,6 +777,7 @@ Page({
         meterLastLabText: `Lab：L ${lab.L.toFixed(2)} / a ${lab.a.toFixed(2)} / b ${lab.b.toFixed(2)}`,
         meterStatus: `测量完成 #${targetHex}`,
       });
+      await this.matchMeasuredColor(lab);
       wx.showToast({ title: "已设为目标色", icon: "none" });
     } catch (err) {
       console.error("[color-meter:measure:error]", err);

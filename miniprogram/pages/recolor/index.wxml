@@ -48,6 +48,39 @@
         <view class="meter-link" bindtap="toggleMeterPanel">{{meterPanelOpen ? '收起' : '连接设备'}}</view>
       </view>
       <view wx:if="{{meterLastLabText}}" class="meter-lab">{{meterLastLabText}}</view>
+      <view class="color-card-picker">
+        <view
+          class="color-lib-chip {{selectedColorLibraryId === '' ? 'active' : ''}}"
+          data-id=""
+          data-name="全部色卡"
+          bindtap="selectColorLibrary"
+        >全部色卡</view>
+        <view
+          wx:for="{{colorLibraries}}"
+          wx:key="id"
+          class="color-lib-chip {{selectedColorLibraryId === item.id ? 'active' : ''}}"
+          data-id="{{item.id}}"
+          data-name="{{item.name}}"
+          bindtap="selectColorLibrary"
+        >{{item.name}}</view>
+      </view>
+      <view wx:if="{{colorMatching}}" class="color-match-status">正在匹配相似色号...</view>
+      <view wx:if="{{colorMatchError}}" class="color-match-error">{{colorMatchError}}</view>
+      <view wx:if="{{colorMatches.length}}" class="color-match-list">
+        <view
+          wx:for="{{colorMatches}}"
+          wx:key="id"
+          class="color-match-item"
+          style="background-color: #{{item.hex}}; color: {{item.textColor}};"
+        >
+          <view class="color-match-main">
+            <view class="color-match-name">名称：{{item.name}}</view>
+            <view class="color-match-meta">色彩库：{{item.library_name}}</view>
+            <view class="color-match-meta">dE*00：{{item.deltaText}} · {{item.labText}}</view>
+          </view>
+          <view class="color-match-hex">#{{item.hex}}</view>
+        </view>
+      </view>
       <view wx:if="{{meterPanelOpen}}" class="meter-panel">
         <view class="meter-panel-head">
           <view class="meter-panel-title">附近设备</view>

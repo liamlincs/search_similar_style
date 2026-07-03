@@ -53,6 +53,9 @@
       "cookie_name": "catalog_session"
     }
   },
+  "color_card": {
+    "db_path": "data/color_cards.db"
+  },
   "debug": {
     "save_query_images": true,
     "query_image_dir": "outputs/debug_queries"

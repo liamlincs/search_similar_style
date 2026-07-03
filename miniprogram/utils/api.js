@@ -180,6 +180,24 @@ function fetchCatalogProductDetail(styleCode) {
   return requestJson(finalUrl, "GET");
 }
 
+function fetchColorCardLibraries() {
+  const paths = config.colorCardPaths || {};
+  const finalUrl = `${config.baseUrl}${paths.libraries || "/api/v1/color-card/libraries"}`;
+  return requestJson(finalUrl, "GET");
+}
+
+function matchColorCards(options = {}) {
+  const paths = config.colorCardPaths || {};
+  const finalUrl = `${config.baseUrl}${paths.match || "/api/v1/color-card/match"}`;
+  return requestJson(finalUrl, "POST", {
+    L: Number(options.L),
+    a: Number(options.a),
+    b: Number(options.b),
+    library_id: String(options.library_id || ""),
+    limit: Number(options.limit || 12),
+  });
+}
+
 function printRequest(path, method, data) {
   const finalUrl = buildPrintUrl(path);
   return new Promise((resolve, reject) => {
@@ -384,6 +402,8 @@ module.exports = {
   fetchCatalogTags,
   fetchCatalogProducts,
   fetchCatalogProductDetail,
+  fetchColorCardLibraries,
+  matchColorCards,
   fetchPrintTemplates,
   printUpload,
   renderPrintLayout,
