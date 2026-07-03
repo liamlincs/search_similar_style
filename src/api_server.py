@@ -4047,6 +4047,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .tag-edit-field { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 8px; }
     .tag-edit-field label { font-size: 12px; color: #64748b; font-weight: 700; white-space: nowrap; }
     .tag-edit-field input { width: 100%; min-width: 0; min-height: 34px; padding: 6px 9px; font-size: 13px; border-radius: 9px; }
+    .quick-picks { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; margin-top: -2px; }
+    .quick-pick { min-height: 24px; padding: 3px 8px; border-radius: 999px; border: 1px solid #dbe2ea; background: #f8fafc; color: #475569; font-size: 12px; }
+    .quick-pick:hover { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
     .tag-edit .picker-add-btn { width: 100%; min-height: 34px; font-weight: 700; }
     .picker-trigger { flex: 1; font-size: 12px; padding: 6px 10px; border-radius: 9px; border: 1px dashed #c7d2fe; background: #f8faff; min-height: 30px; display: flex; align-items: center; color: #6366f1; cursor: pointer; }
     .picker-trigger.active { border-color: #818cf8; background: #eef2ff; box-shadow: none; }
@@ -4090,6 +4093,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-batch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .import-batch-field label { display: block; font-size: 12px; color: #475569; font-weight: 600; margin-bottom: 6px; }
     .import-batch-field input { width: 100%; box-sizing: border-box; min-height: 34px; padding: 6px 8px; font-size: 12px; }
+    .import-batch-field .quick-picks { margin-top: 6px; }
     .import-tag-row { display: grid; grid-template-columns: 1fr 72px; gap: 6px; }
     .import-tag-row input[type="text"] { min-height: 34px; padding: 6px 8px; font-size: 12px; }
     .import-tag-add-btn { min-height: 34px; padding: 6px 8px; font-size: 12px; border-radius: 8px; }
@@ -4222,11 +4226,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="import-batch-grid">
           <div class="import-batch-field">
             <label for="importBatchCategoryInput">类别</label>
-            <input id="importBatchCategoryInput" type="text" list="categoryTagsList" placeholder="如 单品、罗纹、毛织配件、布匹" />
+            <input id="importBatchCategoryInput" type="text" placeholder="如 单品、罗纹、毛织配件、布匹" />
+            <div id="importBatchCategoryPicks" class="quick-picks"></div>
           </div>
           <div class="import-batch-field">
             <label for="importBatchSubcategoryInput">细类</label>
-            <input id="importBatchSubcategoryInput" type="text" list="subcategoryTagsList" placeholder="如 暂无，或输入新增细类" />
+            <input id="importBatchSubcategoryInput" type="text" placeholder="如 暂无，或输入新增细类" />
+            <div id="importBatchSubcategoryPicks" class="quick-picks"></div>
           </div>
         </div>
       </div>
@@ -4316,6 +4322,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       importPreviewSubTitle: document.getElementById('importPreviewSubTitle'),
       importPreviewImg: document.getElementById('importPreviewImg'),
       closeImportPreviewBtn: document.getElementById('closeImportPreviewBtn'),
+      importBatchCategoryPicks: document.getElementById('importBatchCategoryPicks'),
+      importBatchSubcategoryPicks: document.getElementById('importBatchSubcategoryPicks'),
     };
 
     function setStatus(msg, isError) {
@@ -4390,6 +4398,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       };
     }
 
+    function quickPickHtml(type) {
+      const list = (globalTagGroups && globalTagGroups[type]) || [];
+      if (!list.length) return '';
+      return `<div class="quick-picks">${list.map(name => `
+        <button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>
+      `).join('')}</div>`;
+    }
+
+    function bindQuickPicks(root) {
+      if (!root) return;
+      root.querySelectorAll('[data-role="quickPick"]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const field = button.closest('.tag-edit-field, .import-batch-field');
+          const input = field ? field.querySelector('input') : null;
+          if (!input) return;
+          input.value = button.dataset.value || '';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      });
+    }
+
     async function saveTags(styleCode, tags) {
       const resp = await fetch('/api/v1/catalog/products/' + encodeURIComponent(styleCode) + '/tags', {
         method: 'PUT',
@@ -4415,6 +4444,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (els.subcategoryTagsList) {
         els.subcategoryTagsList.innerHTML = (globalTagGroups.subcategory || []).map(tag => `<option value="${tag}"></option>`).join('');
       }
+      if (els.importBatchCategoryPicks) {
+        els.importBatchCategoryPicks.innerHTML = (globalTagGroups.category || []).map(name => `<button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>`).join('');
+      }
+      if (els.importBatchSubcategoryPicks) {
+        els.importBatchSubcategoryPicks.innerHTML = (globalTagGroups.subcategory || []).map(name => `<button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>`).join('');
+      }
+      bindQuickPicks(els.importModal);
     }
 
     async function deleteGlobalTag(tag) {
@@ -4837,21 +4873,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="tag-edit-grid">
               <div class="tag-edit-field">
                 <label>年份</label>
-                <input type="text" data-role="yearInput" value="${yearValue}" list="yearTagsList" placeholder="如 2026" />
+                <input type="text" data-role="yearInput" value="${yearValue}" placeholder="如 2026" />
+                ${quickPickHtml('year')}
               </div>
               <div class="tag-edit-field">
                 <label>类别</label>
-                <input type="text" data-role="categoryInput" value="${categoryValue}" list="categoryTagsList" placeholder="如 单品" />
+                <input type="text" data-role="categoryInput" value="${categoryValue}" placeholder="如 单品" />
+                ${quickPickHtml('category')}
               </div>
               <div class="tag-edit-field">
                 <label>细类</label>
-                <input type="text" data-role="subcategoryInput" value="${subcategoryValue}" list="subcategoryTagsList" placeholder="如 暂无" />
+                <input type="text" data-role="subcategoryInput" value="${subcategoryValue}" placeholder="如 暂无" />
+                ${quickPickHtml('subcategory')}
               </div>
             </div>
             <button type="button" class="picker-add-btn" data-role="saveBtn">保存标签修改</button>
           </div>
         `;
         card.querySelector('.thumb').addEventListener('click', () => openGallery(item));
+        bindQuickPicks(card);
         card.querySelectorAll('[data-role="filterFromCardBtn"]').forEach((button) => {
           button.addEventListener('click', () => toggleFilterTag(button.dataset.tag || ''));
         });
