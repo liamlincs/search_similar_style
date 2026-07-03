@@ -54,6 +54,8 @@
     },
     "external_token_auth": {
       "enabled": true,
+      "allow_unverified_tokens": false,
+      "allowed_tokens": [],
       "default_permissions": [
         "product:view",
         "product:create",

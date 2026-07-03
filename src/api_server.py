@@ -660,6 +660,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_web_cookie_name = str(catalog_web_auth_cfg.get("cookie_name", "catalog_session")).strip() or "catalog_session"
     catalog_external_auth_cfg = catalog_cfg.get("external_token_auth", {})
     catalog_external_token_enabled = bool(catalog_external_auth_cfg.get("enabled", True))
+    catalog_external_allow_unverified_env = os.getenv("CATALOG_ALLOW_UNVERIFIED_TOKENS", "").strip().lower()
+    catalog_external_allow_unverified_tokens = bool(catalog_external_auth_cfg.get("allow_unverified_tokens", False))
+    if catalog_external_allow_unverified_env in {"1", "true", "yes"}:
+        catalog_external_allow_unverified_tokens = True
+    elif catalog_external_allow_unverified_env in {"0", "false", "no"}:
+        catalog_external_allow_unverified_tokens = False
+    catalog_external_allowed_tokens = {
+        str(item).strip()
+        for item in catalog_external_auth_cfg.get("allowed_tokens", [])
+        if str(item).strip()
+    }
+    catalog_external_allowed_tokens.update(
+        item.strip()
+        for item in os.getenv("CATALOG_EXTERNAL_TOKENS", "").split(",")
+        if item.strip()
+    )
     catalog_external_default_permissions = [
         str(item).strip()
         for item in catalog_external_auth_cfg.get(
@@ -1438,6 +1454,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         clean = str(token or "").strip()
         if not catalog_external_token_enabled or len(clean) < 8:
             return ""
+        if clean not in catalog_external_allowed_tokens and not catalog_external_allow_unverified_tokens:
+            return ""
         digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
         return f"external_{digest}"
 
@@ -1476,6 +1494,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return ""
         expected = _catalog_session_sign(username, exp_ts)
         if not hmac.compare_digest(expected, sig):
+            return ""
+        if username.startswith("external_"):
             return ""
         return username
 
@@ -4956,19 +4976,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def catalog_page(request: Request, type: str = "", token: str = ""):
         catalog_type = str(type or "").strip().lower()
         if str(token or "").strip() or catalog_type in {"product", "color"}:
-            resp = HTMLResponse(_catalog_mobile_page(catalog_type))
-            token_user = _catalog_token_user(token)
-            if token_user:
-                session_value, exp_ts = _catalog_build_session_value(token_user)
-                resp.set_cookie(
-                    key=catalog_web_cookie_name,
-                    value=session_value,
-                    max_age=max(300, catalog_web_session_ttl_sec),
-                    expires=exp_ts,
-                    httponly=True,
-                    samesite="lax",
-                )
-            return resp
+            return HTMLResponse(_catalog_mobile_page(catalog_type))
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
