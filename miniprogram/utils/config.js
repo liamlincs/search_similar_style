@@ -22,7 +22,9 @@ const config = {
   },
   recolorPath: "/recolor",
   recolorAiPath: "/recolor-ai",
-  enableEnterpriseAiGeneration: true,
+  enableExperienceVersion: true,
+  catalogH5Path: "/catalog",
+  catalogH5Token: "",
   includeImageBase64: false,
   timeout: 300000,
   recolorUpload: {

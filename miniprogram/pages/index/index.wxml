@@ -46,6 +46,7 @@
     </view>
     <view class="catalog-actions">
       <button class="btn btn-main catalog-btn" bindtap="searchCatalog" loading="{{catalogLoading}}">查询款库</button>
+      <button wx:if="{{experienceVersionEnabled}}" class="btn btn-main catalog-btn" bindtap="openProductLibraryH5">产品库</button>
       <button class="btn btn-sub catalog-btn" bindtap="clearCatalogFilters" disabled="{{!catalogQuery && !selectedCatalogTags.length && !selectedCatalogTagGroups.year.length && !selectedCatalogTagGroups.category.length && !selectedCatalogTagGroups.subcategory.length}}">清空筛选</button>
     </view>
     <view wx:if="{{catalogLoading}}" class="loading-card">款库检索中...</view>

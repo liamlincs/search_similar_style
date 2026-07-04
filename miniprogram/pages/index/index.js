@@ -76,7 +76,8 @@ Page({
     catalogRequestSeq: 0,
     catalogActiveFilterKey: "",
     catalogErrorMessage: "",
-    catalogResults: []
+    catalogResults: [],
+    experienceVersionEnabled: !!config.enableExperienceVersion
   },
 
   onLoad() {
@@ -264,6 +265,21 @@ Page({
   },
 
   goSearchPage() {},
+
+  openProductLibraryH5() {
+    const baseUrl = String(config.baseUrl || "").replace(/\/+$/, "");
+    const path = config.catalogH5Path || "/catalog";
+    const token = config.catalogH5Token || config.apiKey || "";
+    if (!baseUrl || !token) {
+      wx.showToast({ title: "请先配置产品库体验 token", icon: "none" });
+      return;
+    }
+    const query = `type=product&token=${encodeURIComponent(token)}`;
+    const url = `${baseUrl}${path}?${query}`;
+    wx.navigateTo({
+      url: `/pages/catalog_webview/index?url=${encodeURIComponent(url)}`
+    });
+  },
 
   onCatalogQueryInput(e) {
     this.setData({ catalogQuery: e.detail.value || "" });

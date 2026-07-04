@@ -150,10 +150,12 @@
 .catalog-actions {
   margin-top: 18rpx;
   display: flex;
+  flex-wrap: wrap;
   gap: 16rpx;
 }
 
 .catalog-btn {
+  flex: 1 1 200rpx;
   height: 76rpx;
   line-height: 76rpx;
   font-size: 26rpx;

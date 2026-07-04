@@ -1,6 +1,7 @@
 {
   "pages": [
     "pages/index/index",
+    "pages/catalog_webview/index",
     "pages/print/index",
     "pages/recolor/index"
   ],

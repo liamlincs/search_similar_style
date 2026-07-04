@@ -4116,6 +4116,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     h1 { margin: 0; font-size: 20px; line-height: 1.2; }
     .status { color: #64748b; font-size: 12px; min-height: 18px; text-align: right; }
     .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .library-tabs { display: none; }
     .tab { min-height: 40px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #334155; font-size: 15px; font-weight: 700; }
     .tab.active { background: #0f172a; color: #fff; border-color: #0f172a; }
     .search { display: grid; grid-template-columns: 1fr 82px; gap: 8px; }
@@ -4130,12 +4131,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .panel { display: none; }
     .panel.active { display: block; }
     .list { display: grid; gap: 10px; }
+    .product-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
     .filter-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
     .filter-section { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; width: 100%; }
     .filter-label { min-width: 38px; color: #64748b; font-size: 12px; font-weight: 700; }
     .filter-chip { min-height: 28px; padding: 0 9px; border-radius: 999px; border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; font-size: 12px; }
     .filter-chip.active { background: #3730a3; color: #fff; border-color: #3730a3; }
     .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; box-shadow: 0 2px 10px rgba(15,23,42,.04); }
+    .product-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .product-tile { min-width: 0; padding: 0; overflow: hidden; }
+    .product-tile .thumb { width: 100%; height: auto; aspect-ratio: 1 / 1; border-radius: 0; }
+    .product-tile-body { padding: 8px; }
+    .product-tile .title { font-size: 13px; line-height: 1.25; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .product-tile .muted { font-size: 11px; }
+    .product-tile .tags { margin: 5px 0 0; max-height: 42px; overflow: hidden; }
     .product { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 10px; }
     .thumb { width: 92px; height: 92px; border-radius: 8px; object-fit: cover; background: #e5e7eb; }
     .title { font-weight: 800; font-size: 16px; margin-bottom: 4px; word-break: break-all; }
@@ -4186,10 +4195,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   <div class="app">
     <div class="top">
       <div class="head">
-        <h1>资料库</h1>
+        <h1 id="libraryTitle">资料库</h1>
         <div class="status" id="status"></div>
       </div>
-      <div class="tabs">
+      <div class="tabs library-tabs">
         <button class="tab" id="productTab" type="button">产品库</button>
         <button class="tab" id="colorTab" type="button">色卡库</button>
       </div>
@@ -4204,6 +4213,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <datalist id="yearOptions"></datalist>
         <datalist id="categoryOptions"></datalist>
         <datalist id="subcategoryOptions"></datalist>
+        <div class="product-mode-tabs">
+          <button class="tab active" id="productQueryTab" type="button">查询</button>
+          <button class="tab" id="productManageTab" type="button">管理</button>
+        </div>
         <div class="form hidden" id="productCreateBox">
           <div class="form-title">产品图片录入</div>
           <input id="productFiles" type="file" accept="image/*" multiple />
@@ -4289,6 +4302,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       importJob: null,
       tagGroups: { year: [], category: [], subcategory: [] },
       selectedTags: [],
+      productMode: "query",
     };
     const permissions = readPermissions(token);
     const canProductView = hasPerm("product:view");
@@ -4359,7 +4373,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function renderProductFilters() {
       const box = $("productFilters");
-      if (!box || state.type !== "product") {
+      if (!box || state.type !== "product" || state.productMode !== "query") {
         if (box) box.innerHTML = "";
         return;
       }
@@ -4391,12 +4405,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("colorTab").classList.toggle("active", state.type === "color");
       $("productPanel").classList.toggle("active", state.type === "product");
       $("colorPanel").classList.toggle("active", state.type === "color");
+      $("libraryTitle").textContent = state.type === "color" ? "色卡库" : "产品库";
+      $("productQueryTab").classList.toggle("active", state.productMode === "query");
+      $("productManageTab").classList.toggle("active", state.productMode === "manage");
+      $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.productMode === "manage"));
+      document.querySelector(".search").classList.toggle("hidden", state.type === "product" && state.productMode === "manage");
       renderProductFilters();
       $("keyword").placeholder = state.type === "product" ? "输入产品款号" : "输入色号、名称或备注";
       const nextParams = new URLSearchParams(location.search);
       nextParams.set("type", state.type);
       history.replaceState(null, "", location.pathname + "?" + nextParams.toString());
       loadCurrent();
+    }
+    function switchProductMode(mode) {
+      state.productMode = mode === "manage" ? "manage" : "query";
+      switchType("product");
     }
     function productTags(item) {
       const groups = item.tag_groups || {};
@@ -4412,6 +4435,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         box.innerHTML = '<div class="empty">暂无产品数据</div>';
         return;
       }
+      if (state.productMode === "query") {
+        box.className = "product-grid";
+        box.innerHTML = state.products.map((item) => `
+          <div class="card product-tile" data-role="viewProductTile" data-code="${item.style_code || ""}">
+            <img class="thumb" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
+            <div class="product-tile-body">
+              <div class="title">${item.style_code || ""}</div>
+              <div class="muted">${(item.images || []).length} 张</div>
+              <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
+            </div>
+          </div>
+        `).join("");
+        box.querySelectorAll("[data-role=viewProductTile]").forEach((tile) => {
+          tile.addEventListener("click", () => openGallery(state.products.find((row) => row.style_code === tile.dataset.code)));
+        });
+        return;
+      }
+      box.className = "list";
       box.innerHTML = state.products.map((item) => `
         <div class="card product">
           <img class="thumb" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
@@ -4599,15 +4640,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     async function loadProducts() {
       if (!canProductView) return renderProducts();
       setStatus("加载中...", false);
-      const query = new URLSearchParams({ limit: "80", style_code: $("keyword").value.trim() });
+      const query = new URLSearchParams({ limit: "80" });
+      if (state.productMode === "query") query.set("style_code", $("keyword").value.trim());
       const groups = { year: [], category: [], subcategory: [] };
-      state.selectedTags.forEach((tag) => {
-        const parsed = splitTag(tag);
-        if (groups[parsed.type]) groups[parsed.type].push(parsed.name);
-      });
-      if (groups.year.length) query.set("year_tags", groups.year.join(","));
-      if (groups.category.length) query.set("category_tags", groups.category.join(","));
-      if (groups.subcategory.length) query.set("subcategory_tags", groups.subcategory.join(","));
+      if (state.productMode === "query") {
+        state.selectedTags.forEach((tag) => {
+          const parsed = splitTag(tag);
+          if (groups[parsed.type]) groups[parsed.type].push(parsed.name);
+        });
+        if (groups.year.length) query.set("year_tags", groups.year.join(","));
+        if (groups.category.length) query.set("category_tags", groups.category.join(","));
+        if (groups.subcategory.length) query.set("subcategory_tags", groups.subcategory.join(","));
+      }
       const data = await api("/api/v1/catalog/products?" + query.toString());
       state.products = data.products || [];
       renderProducts();
@@ -4859,6 +4903,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     $("productTab").addEventListener("click", () => switchType("product"));
     $("colorTab").addEventListener("click", () => switchType("color"));
+    $("productQueryTab").addEventListener("click", () => switchProductMode("query"));
+    $("productManageTab").addEventListener("click", () => switchProductMode("manage"));
     $("searchBtn").addEventListener("click", loadCurrent);
     $("keyword").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -4898,7 +4944,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if (!navigator.bluetooth) setColorStatus("当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge", true);
     else if (!window.isSecureContext) setColorStatus("Web Bluetooth 需要 HTTPS 或 localhost", true);
     else setColorStatus("浏览器支持 Web Bluetooth，可以连接色差仪", false);
-    $("productCreateBox").classList.toggle("hidden", !canProductCreate);
+    $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.productMode === "manage"));
     $("colorCreateBox").classList.toggle("hidden", !canColorCreate);
     Promise.all([loadTags(), loadColorLibraries()]).finally(() => switchType(state.type));
   </script>

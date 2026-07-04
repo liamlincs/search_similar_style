@@ -172,7 +172,7 @@ function buildAiGenerationPrompt(userPrompt, hasImage2, hasImage3, targetHex) {
 Page({
   data: {
     mode: "fast", // fast | ai
-    enterpriseAiEnabled: !!config.enableEnterpriseAiGeneration,
+    enterpriseAiEnabled: true,
     localImage: "",
     referenceImage2: "",
     referenceImage3: "",
@@ -234,6 +234,7 @@ Page({
     colorMatching: false,
     colorMatches: [],
     colorMatchError: "",
+    experienceVersionEnabled: !!config.enableExperienceVersion,
   },
 
   onLoad() {
@@ -276,6 +277,20 @@ Page({
   },
 
   goRecolorPage() {},
+
+  openColorLibraryH5() {
+    const baseUrl = String(config.baseUrl || "").replace(/\/+$/, "");
+    const path = config.catalogH5Path || "/catalog";
+    const token = config.catalogH5Token || config.apiKey || "";
+    if (!baseUrl || !token) {
+      wx.showToast({ title: "请先配置色卡库体验 token", icon: "none" });
+      return;
+    }
+    const url = `${baseUrl}${path}?type=color&token=${encodeURIComponent(token)}`;
+    wx.navigateTo({
+      url: `/pages/catalog_webview/index?url=${encodeURIComponent(url)}`
+    });
+  },
 
   switchMode(e) {
     const mode = e.currentTarget.dataset.mode;
