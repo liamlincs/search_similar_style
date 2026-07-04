@@ -4145,6 +4145,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .product-tile .title { font-size: 13px; line-height: 1.25; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .product-tile .muted { font-size: 11px; }
     .product-tile .tags { margin: 5px 0 0; max-height: 42px; overflow: hidden; }
+    .load-more { padding: 12px 0; color: #64748b; font-size: 12px; text-align: center; }
     .product { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 10px; }
     .thumb { width: 92px; height: 92px; border-radius: 8px; object-fit: cover; background: #e5e7eb; }
     .title { font-weight: 800; font-size: 16px; margin-bottom: 4px; word-break: break-all; }
@@ -4181,6 +4182,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
     .swatch { width: 58px; min-width: 58px; height: 58px; border-radius: 8px; border: 1px solid rgba(15,23,42,.14); }
     .color-row { display: flex; gap: 10px; align-items: center; }
+    .color-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
     .color-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .color-name-builder { display: grid; grid-template-columns: 1fr 86px 1fr; gap: 8px; }
     .color-status { padding: 8px 10px; border-radius: 8px; background: #eef6ff; color: #1e3a8a; font-size: 12px; }
@@ -4238,15 +4240,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           </div>
         </div>
         <div class="list" id="productList"></div>
+        <div class="load-more" id="productLoadMore"></div>
       </section>
       <section class="panel" id="colorPanel">
-        <div class="form hidden" id="colorCreateBox">
-          <div class="form-title">色卡录入</div>
+        <div class="color-mode-tabs">
+          <button class="tab active" id="colorQueryTab" type="button">查询</button>
+          <button class="tab" id="colorManageTab" type="button">管理</button>
+        </div>
+        <div class="form" id="colorMeterBox">
           <div class="color-status" id="colorMeterStatus">正在检查浏览器蓝牙能力...</div>
           <div class="color-actions">
             <button id="colorMeterConnectBtn" type="button">连接色差仪</button>
             <button id="colorMeterMeasureBtn" class="secondary" type="button" disabled>测量</button>
           </div>
+          <div class="grid3">
+            <input id="colorL" type="number" step="0.01" placeholder="L" />
+            <input id="colorA" type="number" step="0.01" placeholder="a" />
+            <input id="colorB" type="number" step="0.01" placeholder="b" />
+          </div>
+          <div class="swatch" id="colorSwatch" style="width:100%;height:64px;background:#f1f5f9;"></div>
+          <button id="matchColorBtn" class="secondary" type="button">匹配近似色号</button>
+          <div class="muted" id="colorMatchStatus">测量或输入 Lab 后可匹配近似色号。</div>
+          <div class="color-match-list" id="colorMatchList"></div>
+        </div>
+        <div class="form hidden" id="colorCreateBox">
+          <div class="form-title">色卡录入</div>
           <select id="colorLibrarySelect"></select>
           <input id="colorLibrary" placeholder="新色卡库名称，可选" />
           <div class="color-name-builder">
@@ -4256,16 +4274,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           </div>
           <input id="colorName" placeholder="色号名称，如 彩龙3351浅灰" />
           <textarea id="colorNote" placeholder="备注，可选"></textarea>
-          <div class="grid3">
-            <input id="colorL" type="number" step="0.01" placeholder="L" />
-            <input id="colorA" type="number" step="0.01" placeholder="a" />
-            <input id="colorB" type="number" step="0.01" placeholder="b" />
-          </div>
-          <div class="swatch" id="colorSwatch" style="width:100%;height:64px;background:#f1f5f9;"></div>
-          <button id="matchColorBtn" class="secondary" type="button">匹配近似色号</button>
           <button id="saveColorBtn" type="button">保存色卡</button>
-          <div class="muted" id="colorMatchStatus">测量或输入 Lab 后可匹配近似色号。</div>
-          <div class="color-match-list" id="colorMatchList"></div>
         </div>
         <div class="list" id="colorList"></div>
       </section>
@@ -4303,6 +4312,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       tagGroups: { year: [], category: [], subcategory: [] },
       selectedTags: [],
       productMode: "query",
+      productLimit: 9,
+      productOffset: 0,
+      productHasMore: true,
+      productLoading: false,
+      colorMode: "query",
     };
     const permissions = readPermissions(token);
     const canProductView = hasPerm("product:view");
@@ -4395,7 +4409,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         btn.addEventListener("click", () => {
           const tag = btn.dataset.tag || "";
           state.selectedTags = state.selectedTags.includes(tag) ? state.selectedTags.filter((x) => x !== tag) : state.selectedTags.concat([tag]);
-          loadProducts().catch((err) => setStatus(err.message || "加载失败", true));
+          loadProducts(true).catch((err) => setStatus(err.message || "加载失败", true));
         });
       });
     }
@@ -4408,8 +4422,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("libraryTitle").textContent = state.type === "color" ? "色卡库" : "产品库";
       $("productQueryTab").classList.toggle("active", state.productMode === "query");
       $("productManageTab").classList.toggle("active", state.productMode === "manage");
+      $("colorQueryTab").classList.toggle("active", state.colorMode === "query");
+      $("colorManageTab").classList.toggle("active", state.colorMode === "manage");
       $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.productMode === "manage"));
-      document.querySelector(".search").classList.toggle("hidden", state.type === "product" && state.productMode === "manage");
+      $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
+      $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
+      $("colorMeterBox").classList.toggle("hidden", state.type !== "color");
+      const isManage = (state.type === "product" && state.productMode === "manage") || (state.type === "color" && state.colorMode === "manage");
+      document.querySelector(".search").classList.toggle("hidden", isManage);
       renderProductFilters();
       $("keyword").placeholder = state.type === "product" ? "输入产品款号" : "输入色号、名称或备注";
       const nextParams = new URLSearchParams(location.search);
@@ -4419,7 +4439,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function switchProductMode(mode) {
       state.productMode = mode === "manage" ? "manage" : "query";
+      state.productOffset = 0;
+      state.productHasMore = true;
       switchType("product");
+    }
+    function switchColorMode(mode) {
+      state.colorMode = mode === "manage" ? "manage" : "query";
+      switchType("color");
     }
     function productTags(item) {
       const groups = item.tag_groups || {};
@@ -4433,6 +4459,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       if (!state.products.length) {
         box.innerHTML = '<div class="empty">暂无产品数据</div>';
+        $("productLoadMore").textContent = "";
         return;
       }
       if (state.productMode === "query") {
@@ -4450,9 +4477,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         box.querySelectorAll("[data-role=viewProductTile]").forEach((tile) => {
           tile.addEventListener("click", () => openGallery(state.products.find((row) => row.style_code === tile.dataset.code)));
         });
+        $("productLoadMore").textContent = state.productLoading ? "加载中..." : (state.productHasMore ? "向下滑动加载更多" : "已加载全部");
         return;
       }
       box.className = "list";
+      $("productLoadMore").textContent = "";
       box.innerHTML = state.products.map((item) => `
         <div class="card product">
           <img class="thumb" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
@@ -4496,7 +4525,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
               body: JSON.stringify({ tags }),
             });
             await loadTags();
-            await loadProducts();
+            await loadProducts(true);
             setStatus("标签已保存", false);
           } catch (err) {
             setStatus(err.message || "保存标签失败", true);
@@ -4637,10 +4666,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>`;
       }).join("");
     }
-    async function loadProducts() {
+    async function loadProducts(reset = true) {
       if (!canProductView) return renderProducts();
+      if (state.productLoading) return;
+      if (state.productMode === "query" && !reset && !state.productHasMore) return;
+      if (reset) {
+        state.productOffset = 0;
+        state.productHasMore = true;
+        if (state.productMode === "query") state.products = [];
+      }
+      state.productLoading = true;
+      $("productLoadMore").textContent = state.productMode === "query" ? "加载中..." : "";
       setStatus("加载中...", false);
-      const query = new URLSearchParams({ limit: "80" });
+      const limit = state.productMode === "query" ? state.productLimit : 80;
+      const query = new URLSearchParams({ limit: String(limit), offset: String(state.productMode === "query" ? state.productOffset : 0) });
       if (state.productMode === "query") query.set("style_code", $("keyword").value.trim());
       const groups = { year: [], category: [], subcategory: [] };
       if (state.productMode === "query") {
@@ -4652,14 +4691,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (groups.category.length) query.set("category_tags", groups.category.join(","));
         if (groups.subcategory.length) query.set("subcategory_tags", groups.subcategory.join(","));
       }
-      const data = await api("/api/v1/catalog/products?" + query.toString());
-      state.products = data.products || [];
-      renderProducts();
-      renderProductFilters();
-      setStatus(`产品 ${state.products.length} 条`, false);
+      try {
+        const data = await api("/api/v1/catalog/products?" + query.toString());
+        const rows = data.products || [];
+        if (state.productMode === "query") {
+          state.products = reset ? rows : state.products.concat(rows);
+          state.productOffset += rows.length;
+          state.productHasMore = rows.length >= limit;
+        } else {
+          state.products = rows;
+          state.productHasMore = false;
+        }
+        renderProducts();
+        renderProductFilters();
+        setStatus(`产品 ${state.products.length} 条`, false);
+      } finally {
+        state.productLoading = false;
+        if (state.productMode === "query") {
+          $("productLoadMore").textContent = state.productHasMore ? "向下滑动加载更多" : (state.products.length ? "已加载全部" : "");
+        }
+      }
     }
     async function loadColors() {
       if (!canColorView) return renderColors();
+      if (state.colorMode !== "query") {
+        state.colors = [];
+        renderColors();
+        setStatus("", false);
+        return;
+      }
       setStatus("加载中...", false);
       const query = new URLSearchParams({ limit: "100", keyword: $("keyword").value.trim() });
       const data = await api("/api/v1/color-card/cards?" + query.toString());
@@ -4668,7 +4728,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       setStatus(`色卡 ${state.colors.length} 条`, false);
     }
     function loadCurrent() {
-      (state.type === "color" ? loadColors() : loadProducts()).catch((err) => setStatus(err.message || "加载失败", true));
+      (state.type === "color" ? loadColors() : loadProducts(true)).catch((err) => setStatus(err.message || "加载失败", true));
     }
     function typedTag(kind, value) {
       const clean = String(value || "").trim();
@@ -4863,7 +4923,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("importReviewBox").classList.add("hidden");
       $("importReviewList").innerHTML = "";
       $("productFiles").value = "";
-      await loadProducts();
+      await loadProducts(true);
       setStatus("产品图片已导入", false);
     }
     function toggleImportSelection() {
@@ -4905,6 +4965,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("colorTab").addEventListener("click", () => switchType("color"));
     $("productQueryTab").addEventListener("click", () => switchProductMode("query"));
     $("productManageTab").addEventListener("click", () => switchProductMode("manage"));
+    $("colorQueryTab").addEventListener("click", () => switchColorMode("query"));
+    $("colorManageTab").addEventListener("click", () => switchColorMode("manage"));
     $("searchBtn").addEventListener("click", loadCurrent);
     $("keyword").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -4944,8 +5006,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if (!navigator.bluetooth) setColorStatus("当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge", true);
     else if (!window.isSecureContext) setColorStatus("Web Bluetooth 需要 HTTPS 或 localhost", true);
     else setColorStatus("浏览器支持 Web Bluetooth，可以连接色差仪", false);
+    window.addEventListener("scroll", () => {
+      if (state.type !== "product" || state.productMode !== "query" || state.productLoading || !state.productHasMore) return;
+      const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160;
+      if (nearBottom) loadProducts(false).catch((err) => setStatus(err.message || "加载失败", true));
+    }, { passive: true });
     $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.productMode === "manage"));
-    $("colorCreateBox").classList.toggle("hidden", !canColorCreate);
+    $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
     Promise.all([loadTags(), loadColorLibraries()]).finally(() => switchType(state.type));
   </script>
 </body>
