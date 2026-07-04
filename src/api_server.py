@@ -4259,6 +4259,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <input id="colorB" type="number" step="0.01" placeholder="b" />
           </div>
           <div class="swatch" id="colorSwatch" style="width:100%;height:64px;background:#f1f5f9;"></div>
+          <div class="form" id="colorMatchBox">
+            <button id="matchColorBtn" class="secondary" type="button">匹配近似色号</button>
+            <div class="muted" id="colorMatchStatus">测量或输入 Lab 后可匹配近似色号。</div>
+            <div class="color-match-list" id="colorMatchList"></div>
+          </div>
         </div>
         <div class="form hidden" id="colorCreateBox">
           <div class="form-title">色卡录入</div>
@@ -4427,6 +4432,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
       $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
       $("colorMeterBox").classList.toggle("hidden", state.type !== "color");
+      $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
       const isManage = (state.type === "product" && state.productMode === "manage") || (state.type === "color" && state.colorMode === "manage");
       document.querySelector(".search").classList.toggle("hidden", isManage);
       renderProductFilters();
@@ -4977,6 +4983,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("selectAllImportBtn").addEventListener("click", toggleImportSelection);
     $("cancelImportBtn").addEventListener("click", cancelImportReview);
     $("saveColorBtn").addEventListener("click", () => saveColor().catch((err) => setStatus(err.message || "保存失败", true)));
+    $("matchColorBtn").addEventListener("click", () => matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true)));
     $("colorMeterConnectBtn").addEventListener("click", () => connectColorMeter().catch((err) => setColorStatus(err.message || "连接失败", true)));
     $("colorMeterMeasureBtn").addEventListener("click", async () => {
       try {
@@ -4987,6 +4994,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         $("colorB").value = lab.b.toFixed(2);
         refreshColorSwatch();
         setColorStatus("测量完成", false);
+        if (state.colorMode === "query") await matchColorCards();
       } catch (err) {
         setColorStatus(err.message || "测量失败", true);
       }
