@@ -111,7 +111,7 @@
     </view>
 
     <view wx:if="{{enterpriseAiEnabled && mode === 'ai'}}">
-      <button class="btn btn-ghost" bindtap="chooseReferenceImage" data-slot="2">{{referenceImage2 ? '重新选择部件图' : '选择部件图'}}</button>
+      <button class="btn btn-ghost ref-action" bindtap="chooseReferenceImage" data-slot="2">{{referenceImage2 ? '重新选择部件图' : '选择部件图'}}</button>
       <view
         wx:if="{{referenceImage2}}"
         class="stage ref-stage"
