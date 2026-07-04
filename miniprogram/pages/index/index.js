@@ -277,7 +277,7 @@ Page({
     const query = `type=product&token=${encodeURIComponent(token)}`;
     const url = `${baseUrl}${path}?${query}`;
     wx.navigateTo({
-      url: `/pages/catalog_webview/index?url=${encodeURIComponent(url)}`
+      url: `/pages/catalog_webview/index?title=${encodeURIComponent("产品库")}&url=${encodeURIComponent(url)}`
     });
   },
 

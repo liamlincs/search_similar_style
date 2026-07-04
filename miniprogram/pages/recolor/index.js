@@ -288,7 +288,7 @@ Page({
     }
     const url = `${baseUrl}${path}?type=color&token=${encodeURIComponent(token)}`;
     wx.navigateTo({
-      url: `/pages/catalog_webview/index?url=${encodeURIComponent(url)}`
+      url: `/pages/catalog_webview/index?title=${encodeURIComponent("色卡库")}&url=${encodeURIComponent(url)}`
     });
   },
 

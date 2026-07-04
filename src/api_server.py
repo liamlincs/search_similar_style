@@ -4204,9 +4204,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <button class="tab" id="productTab" type="button">产品库</button>
         <button class="tab" id="colorTab" type="button">色卡库</button>
       </div>
+      <div class="product-mode-tabs" id="productModeTabs">
+        <button class="tab active" id="productQueryTab" type="button">查询</button>
+        <button class="tab" id="productManageTab" type="button">管理</button>
+      </div>
+      <div class="color-mode-tabs hidden" id="colorModeTabs">
+        <button class="tab active" id="colorQueryTab" type="button">查询</button>
+        <button class="tab" id="colorManageTab" type="button">管理</button>
+      </div>
       <div class="search">
         <input id="keyword" placeholder="输入款号、色号或名称" />
-        <button id="searchBtn" type="button">查询</button>
+        <button id="searchBtn" type="button">搜索</button>
       </div>
       <div class="filter-tags" id="productFilters"></div>
     </div>
@@ -4215,10 +4223,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <datalist id="yearOptions"></datalist>
         <datalist id="categoryOptions"></datalist>
         <datalist id="subcategoryOptions"></datalist>
-        <div class="product-mode-tabs">
-          <button class="tab active" id="productQueryTab" type="button">查询</button>
-          <button class="tab" id="productManageTab" type="button">管理</button>
-        </div>
         <div class="form hidden" id="productCreateBox">
           <div class="form-title">产品图片录入</div>
           <input id="productFiles" type="file" accept="image/*" multiple />
@@ -4243,10 +4247,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="load-more" id="productLoadMore"></div>
       </section>
       <section class="panel" id="colorPanel">
-        <div class="color-mode-tabs">
-          <button class="tab active" id="colorQueryTab" type="button">查询</button>
-          <button class="tab" id="colorManageTab" type="button">管理</button>
-        </div>
         <div class="form" id="colorMeterBox">
           <div class="color-status" id="colorMeterStatus">正在检查浏览器蓝牙能力...</div>
           <div class="color-actions">
@@ -4420,6 +4420,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productPanel").classList.toggle("active", state.type === "product");
       $("colorPanel").classList.toggle("active", state.type === "color");
       $("libraryTitle").textContent = state.type === "color" ? "色卡库" : "产品库";
+      $("productModeTabs").classList.toggle("hidden", state.type !== "product");
+      $("colorModeTabs").classList.toggle("hidden", state.type !== "color");
       $("productQueryTab").classList.toggle("active", state.productMode === "query");
       $("productManageTab").classList.toggle("active", state.productMode === "manage");
       $("colorQueryTab").classList.toggle("active", state.colorMode === "query");
@@ -4704,7 +4706,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
         renderProducts();
         renderProductFilters();
-        setStatus(`产品 ${state.products.length} 条`, false);
+        setStatus(`已加载 ${state.products.length} 条`, false);
       } finally {
         state.productLoading = false;
         if (state.productMode === "query") {
@@ -4725,7 +4727,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const data = await api("/api/v1/color-card/cards?" + query.toString());
       state.colors = data.cards || [];
       renderColors();
-      setStatus(`色卡 ${state.colors.length} 条`, false);
+      setStatus(`已加载 ${state.colors.length} 条`, false);
     }
     function loadCurrent() {
       (state.type === "color" ? loadColors() : loadProducts(true)).catch((err) => setStatus(err.message || "加载失败", true));
