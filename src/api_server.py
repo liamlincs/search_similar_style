@@ -4489,14 +4489,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productLoadMore").textContent = "";
       box.innerHTML = state.products.map((item) => `
         <div class="card product">
-          <img class="thumb" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
+          <img class="thumb" data-role="viewProduct" data-code="${item.style_code || ""}" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
           <div>
             <div class="title">${item.style_code || ""}</div>
             <div class="muted">图片数：${(item.images || []).length}</div>
             <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
-            <div class="actions">
-              <button class="secondary" type="button" data-role="viewProduct" data-code="${item.style_code || ""}">查看图片</button>
-            </div>
             <div class="tag-edit">
               <div class="tag-edit-row"><label>年份</label><input data-role="yearInput" value="${((item.tag_groups || {}).year || []).join("、")}" list="yearOptions" /></div>
               <div class="tag-edit-row"><label>类别</label><input data-role="categoryInput" value="${((item.tag_groups || {}).category || []).join("、")}" list="categoryOptions" /></div>
