@@ -61,7 +61,7 @@ from search_similar_return_code import (
 )
 from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
-from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag
+from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag, parse_catalog_tag
 from color_card_store import ColorCardStore
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
@@ -6623,7 +6623,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             tags_local = catalog_store.replace_product_tags(style_code, payload.tags)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"style_code": style_code, "tags": tags_local}
+        parsed_groups = {"year": [], "category": [], "subcategory": []}
+        for tag in tags_local:
+            parsed = parse_catalog_tag(tag)
+            tag_type = str(parsed.get("type", ""))
+            if tag_type in parsed_groups:
+                parsed_groups[tag_type].append(str(parsed.get("name", "")).strip())
+        return {"style_code": style_code, "tags": tags_local, "tag_groups": parsed_groups}
 
     @app.get("/api/v1/catalog/tags")
     def api_list_catalog_tags(request: Request) -> Dict[str, Any]:

@@ -1,4 +1,5 @@
 const {
+  fetchCatalogTags,
   fetchCatalogProducts,
   replaceCatalogProductTags,
   uploadCatalogImportFiles,
@@ -19,11 +20,8 @@ function displayTags(tags) {
   return (tags || []).map((tag) => String(tag || "").trim()).filter(Boolean).join("，");
 }
 
-function parseTags(raw) {
-  return String(raw || "")
-    .split(/[,，\n\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+function firstOf(list) {
+  return Array.isArray(list) && list.length ? String(list[0] || "").trim() : "";
 }
 
 function deriveYearFromFilename(filename) {
@@ -33,6 +31,18 @@ function deriveYearFromFilename(filename) {
   const prefix = styleCode.split("-", 1)[0] || "";
   const match = prefix.match(/(\d{2})$/);
   return match ? `20${match[1]}` : "";
+}
+
+function uniq(list) {
+  const seen = new Set();
+  const out = [];
+  (list || []).forEach((item) => {
+    const value = String(item || "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    out.push(value);
+  });
+  return out;
 }
 
 function compressImage(filePath) {
@@ -52,11 +62,21 @@ Page({
     mode: "tags",
 
     query: "",
+    catalogTagGroups: { year: [], category: [], subcategory: [] },
+    categoryOptions: [],
+    subcategoryOptions: [],
     products: [],
+    productLimit: 9,
+    productOffset: 0,
+    productHasMore: true,
     productLoading: false,
+    productLoadingMore: false,
     productMessage: "",
     editingStyleCode: "",
-    editingTagsText: "",
+    editModalOpen: false,
+    editYear: "",
+    editCategory: "",
+    editSubcategory: "",
     savingTags: false,
     tagMessage: "",
 
@@ -77,6 +97,17 @@ Page({
     this.stopPolling();
   },
 
+  onLoad() {
+    this.loadTagOptions();
+    this.loadProducts(true);
+  },
+
+  onReachBottom() {
+    if (this.data.mode !== "tags") return;
+    if (this.data.productLoading || this.data.productLoadingMore || !this.data.productHasMore) return;
+    this.loadProducts(false);
+  },
+
   switchMode(e) {
     const mode = e.currentTarget.dataset.mode;
     if (mode === "tags" || mode === "import") this.setData({ mode });
@@ -86,66 +117,138 @@ Page({
     this.setData({ query: e.detail.value || "" });
   },
 
-  async searchProducts() {
-    if (this.data.productLoading) return;
-    this.setData({ productLoading: true, productMessage: "", products: [], editingStyleCode: "", editingTagsText: "" });
+  async loadTagOptions() {
+    try {
+      const res = await fetchCatalogTags();
+      const groups = res.tag_groups || {};
+      this.setData({
+        catalogTagGroups: groups,
+        categoryOptions: uniq((groups.category || []).concat(["单品", "罗纹", "毛织配件", "布匹"])),
+        subcategoryOptions: uniq((groups.subcategory || []).concat(["暂无"])),
+      });
+    } catch (err) {
+      console.warn("[catalog-tags:error]", err);
+    }
+  },
+
+  normalizeProducts(rawProducts) {
+    return (rawProducts || []).map((item) => ({
+      styleCode: item.style_code || item.styleCode || "",
+      coverImageUrl: item.cover_image_url || item.coverImageUrl || "",
+      imageCount: (item.images || []).length,
+      tags: item.tags || [],
+      tagGroups: item.tag_groups || item.tagGroups || {},
+      tagsText: displayTags(item.tags || []),
+    })).filter((item) => item.styleCode);
+  },
+
+  async loadProducts(reset) {
+    if (reset ? this.data.productLoading : this.data.productLoadingMore) return;
+    const offset = reset ? 0 : Number(this.data.productOffset || 0);
+    const limit = Number(this.data.productLimit || 9);
+    this.setData({
+      productLoading: reset,
+      productLoadingMore: !reset,
+      productMessage: reset ? "" : this.data.productMessage,
+      products: reset ? [] : this.data.products,
+      productOffset: reset ? 0 : this.data.productOffset,
+      productHasMore: reset ? true : this.data.productHasMore,
+      editingStyleCode: reset ? "" : this.data.editingStyleCode,
+      editModalOpen: reset ? false : this.data.editModalOpen,
+    });
     try {
       const res = await fetchCatalogProducts({
         style_code: this.data.query,
-        limit: 20,
-        offset: 0,
+        limit,
+        offset,
       });
-      const products = (res.products || []).map((item) => ({
-        styleCode: item.style_code || item.styleCode || "",
-        coverImageUrl: item.cover_image_url || item.coverImageUrl || "",
-        imageCount: (item.images || []).length,
-        tags: item.tags || [],
-        tagsText: displayTags(item.tags || []),
-      })).filter((item) => item.styleCode);
+      const list = this.normalizeProducts(res.products || []);
+      const merged = reset ? list : (this.data.products || []).concat(list);
       this.setData({
-        products,
-        productMessage: products.length ? "" : "没有找到款号",
+        products: merged,
+        productOffset: merged.length,
+        productHasMore: list.length >= limit,
+        productMessage: merged.length ? "" : (this.data.query ? "没有找到款号" : "暂无款图"),
       });
     } catch (err) {
       this.setData({ productMessage: err.message || "查询失败" });
     } finally {
-      this.setData({ productLoading: false });
+      this.setData({ productLoading: false, productLoadingMore: false });
     }
+  },
+
+  searchProducts() {
+    this.loadProducts(true);
+  },
+
+  loadMoreProducts() {
+    this.loadProducts(false);
   },
 
   editProductTags(e) {
     const index = Number(e.currentTarget.dataset.index);
     const item = this.data.products[index];
     if (!item) return;
+    const groups = item.tagGroups || {};
     this.setData({
       editingStyleCode: item.styleCode,
-      editingTagsText: displayTags(item.tags || []),
+      editModalOpen: true,
+      editYear: firstOf(groups.year),
+      editCategory: firstOf(groups.category),
+      editSubcategory: firstOf(groups.subcategory) || "暂无",
       tagMessage: "",
     });
   },
 
-  onEditingTagsInput(e) {
-    this.setData({ editingTagsText: e.detail.value || "" });
+  onEditFieldInput(e) {
+    const key = e.currentTarget.dataset.key;
+    if (!key) return;
+    this.setData({ [key]: e.detail.value || "" });
+  },
+
+  selectEditTag(e) {
+    const kind = e.currentTarget.dataset.kind;
+    const value = String(e.currentTarget.dataset.value || "");
+    if (kind === "category") this.setData({ editCategory: value });
+    if (kind === "subcategory") this.setData({ editSubcategory: value });
   },
 
   cancelEditTags() {
-    this.setData({ editingStyleCode: "", editingTagsText: "", tagMessage: "" });
+    this.setData({
+      editingStyleCode: "",
+      editModalOpen: false,
+      editYear: "",
+      editCategory: "",
+      editSubcategory: "",
+      tagMessage: "",
+    });
+  },
+
+  noop() {},
+
+  buildEditTags() {
+    return [
+      String(this.data.editYear || "").trim(),
+      typedTag("category", this.data.editCategory),
+      typedTag("subcategory", this.data.editSubcategory),
+    ].filter(Boolean);
   },
 
   async saveTags() {
     if (!this.data.editingStyleCode || this.data.savingTags) return;
     this.setData({ savingTags: true, tagMessage: "正在保存标签..." });
     try {
-      const tags = parseTags(this.data.editingTagsText);
+      const tags = this.buildEditTags();
       const res = await replaceCatalogProductTags(this.data.editingStyleCode, tags);
       const products = (this.data.products || []).map((item) => {
         if (item.styleCode !== this.data.editingStyleCode) return item;
         return Object.assign({}, item, {
           tags: res.tags || tags,
+          tagGroups: res.tag_groups || item.tagGroups || {},
           tagsText: displayTags(res.tags || tags),
         });
       });
-      this.setData({ products, savingTags: false, tagMessage: "标签已保存" });
+      this.setData({ products, savingTags: false, tagMessage: "标签已保存", editModalOpen: false });
       wx.showToast({ title: "标签已保存", icon: "none" });
     } catch (err) {
       this.setData({ savingTags: false, tagMessage: err.message || "保存失败" });
@@ -249,6 +352,13 @@ Page({
     const key = e.currentTarget.dataset.key;
     if (!key) return;
     this.setData({ [key]: e.detail.value || "" });
+  },
+
+  selectBatchTag(e) {
+    const kind = e.currentTarget.dataset.kind;
+    const value = String(e.currentTarget.dataset.value || "");
+    if (kind === "category") this.setData({ batchCategory: value });
+    if (kind === "subcategory") this.setData({ batchSubcategory: value });
   },
 
   toggleItemSelected(e) {

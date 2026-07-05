@@ -25,16 +25,40 @@
         <view class="tag-line">{{item.tagsText || '暂无标签'}}</view>
       </view>
     </view>
+    <view wx:if="{{productLoading}}" class="status">正在加载款库...</view>
+    <view wx:elif="{{productLoadingMore}}" class="status">继续加载中...</view>
+    <view wx:elif="{{products.length && productHasMore}}" class="load-more" bindtap="loadMoreProducts">继续加载</view>
+    <view wx:elif="{{products.length && !productHasMore}}" class="status">已加载全部</view>
   </view>
 
-  <view wx:if="{{mode === 'tags' && editingStyleCode}}" class="card">
-    <view class="section-title">编辑 {{editingStyleCode}}</view>
-    <textarea class="textarea" placeholder="多个标签用空格、逗号或换行分隔" value="{{editingTagsText}}" bindinput="onEditingTagsInput" />
-    <view class="action-row">
-      <button class="btn secondary" bindtap="cancelEditTags">取消</button>
-      <button class="btn primary" loading="{{savingTags}}" bindtap="saveTags">保存标签</button>
+  <view wx:if="{{editModalOpen}}" class="modal-mask" catchtap="cancelEditTags">
+    <view class="modal-panel" catchtap="noop">
+      <view class="modal-head">
+        <view class="section-title modal-title">编辑 {{editingStyleCode}}</view>
+        <view class="modal-close" bindtap="cancelEditTags">关闭</view>
+      </view>
+
+      <view class="field-label">年份</view>
+      <input class="input" placeholder="如 2024" value="{{editYear}}" bindinput="onEditFieldInput" data-key="editYear" />
+
+      <view class="field-label">类别</view>
+      <input class="input" placeholder="类别，如 单品" value="{{editCategory}}" bindinput="onEditFieldInput" data-key="editCategory" />
+      <view class="quick-list modal-quick-list">
+        <view wx:for="{{categoryOptions}}" wx:key="*this" class="quick-chip {{editCategory === item ? 'active' : ''}}" data-kind="category" data-value="{{item}}" bindtap="selectEditTag">{{item}}</view>
+      </view>
+
+      <view class="field-label">子类</view>
+      <input class="input" placeholder="子类，如 短袖" value="{{editSubcategory}}" bindinput="onEditFieldInput" data-key="editSubcategory" />
+      <view class="quick-list modal-quick-list">
+        <view wx:for="{{subcategoryOptions}}" wx:key="*this" class="quick-chip {{editSubcategory === item ? 'active' : ''}}" data-kind="subcategory" data-value="{{item}}" bindtap="selectEditTag">{{item}}</view>
+      </view>
+
+      <view wx:if="{{tagMessage}}" class="status">{{tagMessage}}</view>
+      <view class="action-row">
+        <button class="btn secondary" bindtap="cancelEditTags">取消</button>
+        <button class="btn primary" loading="{{savingTags}}" bindtap="saveTags">保存标签</button>
+      </view>
     </view>
-    <view wx:if="{{tagMessage}}" class="status">{{tagMessage}}</view>
   </view>
 
   <view wx:if="{{mode === 'import'}}" class="card">
@@ -49,8 +73,18 @@
   <view wx:if="{{mode === 'import' && items.length}}" class="card">
     <view class="section-title">确认导入</view>
     <view class="batch-grid">
-      <input class="input" placeholder="类别，如 单品" value="{{batchCategory}}" bindinput="onBatchInput" data-key="batchCategory" />
-      <input class="input" placeholder="细类，如 短袖" value="{{batchSubcategory}}" bindinput="onBatchInput" data-key="batchSubcategory" />
+      <view>
+        <input class="input" placeholder="类别，如 单品" value="{{batchCategory}}" bindinput="onBatchInput" data-key="batchCategory" />
+        <view class="quick-list">
+          <view wx:for="{{categoryOptions}}" wx:key="*this" class="quick-chip {{batchCategory === item ? 'active' : ''}}" data-kind="category" data-value="{{item}}" bindtap="selectBatchTag">{{item}}</view>
+        </view>
+      </view>
+      <view>
+        <input class="input" placeholder="细类，如 短袖" value="{{batchSubcategory}}" bindinput="onBatchInput" data-key="batchSubcategory" />
+        <view class="quick-list">
+          <view wx:for="{{subcategoryOptions}}" wx:key="*this" class="quick-chip {{batchSubcategory === item ? 'active' : ''}}" data-kind="subcategory" data-value="{{item}}" bindtap="selectBatchTag">{{item}}</view>
+        </view>
+      </view>
     </view>
 
     <view wx:for="{{items}}" wx:key="source_rel_path" class="item-card {{item.selected ? '' : 'muted-item'}}">
