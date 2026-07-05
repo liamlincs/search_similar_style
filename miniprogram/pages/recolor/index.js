@@ -278,17 +278,9 @@ Page({
 
   goRecolorPage() {},
 
-  openColorLibraryH5() {
-    const baseUrl = String(config.baseUrl || "").replace(/\/+$/, "");
-    const path = config.catalogH5Path || "/catalog";
-    const token = config.catalogH5Token || config.apiKey || "";
-    if (!baseUrl || !token) {
-      wx.showToast({ title: "请先配置色卡库体验 token", icon: "none" });
-      return;
-    }
-    const url = `${baseUrl}${path}?type=color&token=${encodeURIComponent(token)}`;
+  openColorLibraryNative() {
     wx.navigateTo({
-      url: `/pages/catalog_webview/index?title=${encodeURIComponent("色卡库")}&url=${encodeURIComponent(url)}`
+      url: "/pages/color_card/index"
     });
   },
 

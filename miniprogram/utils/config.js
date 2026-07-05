@@ -9,10 +9,12 @@ const config = {
   imageUrlPath: "/api/v1/image-url",
   catalogPaths: {
     products: "/api/v1/catalog/products",
-    tags: "/api/v1/catalog/tags"
+    tags: "/api/v1/catalog/tags",
+    imports: "/api/v1/catalog/imports"
   },
   colorCardPaths: {
     libraries: "/api/v1/color-card/libraries",
+    cards: "/api/v1/color-card/cards",
     match: "/api/v1/color-card/match"
   },
   printPaths: {

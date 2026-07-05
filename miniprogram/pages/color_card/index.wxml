@@ -1,0 +1,87 @@
+<view class="page">
+  <view class="hero">
+    <view>
+      <view class="title">色卡库</view>
+      <view class="subtitle">{{meterDeviceName ? '已连接 ' + meterDeviceName : meterStatus}}</view>
+    </view>
+    <view class="conn-pill {{meterDeviceName ? 'ok' : ''}}">
+      <view class="dot"></view>
+      <text>{{meterDeviceName ? '已连接' : '未连接'}}</text>
+    </view>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{mode === 'query' ? 'active' : ''}}" data-mode="query" bindtap="switchMode">查询</view>
+    <view class="tab {{mode === 'manage' ? 'active' : ''}}" data-mode="manage" bindtap="switchMode">管理</view>
+  </view>
+
+  <view class="card">
+    <view class="meter-actions">
+      <button class="btn primary" loading="{{meterConnecting || meterScanning}}" bindtap="toggleMeterPanel">连接色差仪</button>
+      <button class="btn secondary" loading="{{meterMeasuring}}" disabled="{{!meterDeviceName}}" bindtap="measureColor">测量</button>
+    </view>
+    <view class="lab-grid">
+      <view class="lab-box"><view class="lab-label">L</view><view class="lab-value">{{labLText}}</view></view>
+      <view class="lab-box"><view class="lab-label">a</view><view class="lab-value">{{labAText}}</view></view>
+      <view class="lab-box"><view class="lab-label">b</view><view class="lab-value">{{labBText}}</view></view>
+    </view>
+    <view class="swatch" style="background-color: {{currentColor}}; color: {{currentTextColor}};">#{{currentHex}}</view>
+    <view wx:if="{{meterPanelOpen}}" class="meter-panel">
+      <view class="meter-panel-head">
+        <view>扫描完成</view>
+        <view class="small-action" bindtap="startMeterScan">{{meterScanning ? '扫描中' : '扫描设备'}}</view>
+        <view wx:if="{{meterDeviceName}}" class="small-action muted" bindtap="disconnectMeter">断开</view>
+      </view>
+      <view wx:if="{{!meterDevices.length}}" class="empty">未发现设备时，请确认仪器已开机并靠近手机</view>
+      <view wx:for="{{meterDevices}}" wx:key="deviceId" class="device-row" data-device="{{item}}" bindtap="connectMeter">
+        <view class="device-name">{{item.name}}</view>
+        <view class="device-rssi">RSSI {{item.RSSI || '--'}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{mode === 'query'}}" class="card">
+    <view class="section-title">色卡查询</view>
+    <picker mode="selector" range="{{libraryPickerNames}}" value="{{selectedLibraryIndex}}" bindchange="onLibraryPickerChange">
+      <view class="select">{{selectedLibraryName}}</view>
+    </picker>
+    <view class="manual-grid">
+      <input class="input" placeholder="L" value="{{manualL}}" bindinput="onManualInput" data-key="manualL" />
+      <input class="input" placeholder="a" value="{{manualA}}" bindinput="onManualInput" data-key="manualA" />
+      <input class="input" placeholder="b" value="{{manualB}}" bindinput="onManualInput" data-key="manualB" />
+    </view>
+    <button class="btn primary full" loading="{{colorMatching}}" bindtap="matchManualColor">返回相似色号</button>
+  </view>
+
+  <view wx:if="{{mode === 'manage'}}" class="card">
+    <view class="section-title">色卡录入</view>
+    <picker mode="selector" range="{{libraryManagePickerNames}}" value="{{manageLibraryIndex}}" bindchange="onManageLibraryChange">
+      <view class="select">{{manageLibraryName}}</view>
+    </picker>
+    <input class="input wide" placeholder="新色卡库名称，可选" value="{{newLibraryName}}" bindinput="onFieldInput" data-key="newLibraryName" />
+    <view class="template-row">
+      <input class="input" placeholder="前缀，如彩龙" value="{{namePrefix}}" bindinput="onTemplateInput" data-key="namePrefix" />
+      <input class="input number" placeholder="编号" type="number" value="{{nameNumber}}" bindinput="onTemplateInput" data-key="nameNumber" />
+      <input class="input" placeholder="色名，如浅灰" value="{{nameSuffix}}" bindinput="onTemplateInput" data-key="nameSuffix" />
+    </view>
+    <input class="input wide" placeholder="色号名称" value="{{colorName}}" bindinput="onFieldInput" data-key="colorName" />
+    <textarea class="textarea" placeholder="备注，可选" value="{{note}}" bindinput="onFieldInput" data-key="note" />
+    <button class="btn primary full" loading="{{saving}}" disabled="{{!canSave}}" bindtap="saveCurrentColor">保存色卡</button>
+    <view class="hint">同一色卡库内色号名称重复时，会更新原记录。</view>
+  </view>
+
+  <view class="card">
+    <view class="section-title">相似色号</view>
+    <view wx:if="{{colorMatching}}" class="empty">正在匹配相似色号...</view>
+    <view wx:if="{{colorMatchError}}" class="error">{{colorMatchError}}</view>
+    <view wx:if="{{!colorMatching && !colorMatches.length && !colorMatchError}}" class="empty">测量或输入 Lab 后显示相似色号</view>
+    <view wx:for="{{colorMatches}}" wx:key="id" class="match-card" style="{{item.itemStyle}}">
+      <view class="match-main">
+        <view class="match-name">名称：{{item.name}}</view>
+        <view class="match-meta">色彩库：{{item.library_name}}</view>
+        <view class="match-meta">dE*00：{{item.deltaText}} · {{item.labText}}</view>
+      </view>
+      <view class="match-hex">#{{item.hex}}</view>
+    </view>
+  </view>
+</view>

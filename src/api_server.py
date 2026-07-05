@@ -173,6 +173,15 @@ class CatalogImportPrepareRequest(BaseModel):
     source_dir: str
 
 
+class CatalogImportWechatUploadFile(BaseModel):
+    filename: str
+    data_base64: str
+
+
+class CatalogImportWechatUploadRequest(BaseModel):
+    files: List[CatalogImportWechatUploadFile]
+
+
 class WechatSessionRequest(BaseModel):
     code: str
 
@@ -6775,6 +6784,65 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if skipped:
             job["message"] = f"任务已创建，已跳过 {len(skipped)} 个非图片文件"
         logging.info("catalog import upload created job=%s saved=%d skipped=%d", job.get("job_id"), saved, len(skipped))
+        return _serialize_catalog_import_job(job)
+
+    @app.post("/api/v1/catalog/imports/wechat-upload")
+    def api_wechat_upload_catalog_import(request: Request, payload: CatalogImportWechatUploadRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        upload_files = [item for item in payload.files if item and str(item.filename or "").strip() and str(item.data_base64 or "").strip()]
+        if not upload_files:
+            raise HTTPException(status_code=400, detail="no files uploaded")
+        if len(upload_files) > 9:
+            raise HTTPException(status_code=400, detail="最多一次上传 9 张图片")
+        job_id = uuid.uuid4().hex
+        source_dir = (catalog_upload_dir / job_id).resolve()
+        source_dir.mkdir(parents=True, exist_ok=True)
+        used_names: set[str] = set()
+        saved = 0
+        skipped: List[str] = []
+        for index, item in enumerate(upload_files, start=1):
+            try:
+                safe = _sanitize_upload_filename(item.filename or "", f"upload_{index}.jpg")
+            except ValueError:
+                skipped.append(str(item.filename or f"file-{index}"))
+                continue
+            stem = Path(safe).stem
+            suffix = Path(safe).suffix.lower()
+            candidate = safe
+            seq = 1
+            while candidate.lower() in used_names or (source_dir / candidate).exists():
+                candidate = f"{stem}_{seq}{suffix}"
+                seq += 1
+            raw_text = str(item.data_base64 or "").strip()
+            if "," in raw_text and raw_text.lower().startswith("data:"):
+                raw_text = raw_text.split(",", 1)[1]
+            try:
+                raw = base64.b64decode(raw_text, validate=True)
+            except Exception:
+                skipped.append(str(item.filename or f"file-{index}"))
+                continue
+            if not raw:
+                skipped.append(str(item.filename or f"file-{index}"))
+                continue
+            try:
+                _check_search_upload_content_security(raw, item.filename or candidate)
+            except HTTPException:
+                shutil.rmtree(source_dir, ignore_errors=True)
+                raise
+            (source_dir / candidate).write_bytes(raw)
+            used_names.add(candidate.lower())
+            saved += 1
+        if saved <= 0:
+            shutil.rmtree(source_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="uploaded files have no supported images")
+        try:
+            job = _create_catalog_import_job(source_dir, "wechat_upload")
+        except ValueError as exc:
+            shutil.rmtree(source_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if skipped:
+            job["message"] = f"任务已创建，已跳过 {len(skipped)} 个非图片文件"
+        logging.info("catalog wechat upload created job=%s saved=%d skipped=%d", job.get("job_id"), saved, len(skipped))
         return _serialize_catalog_import_job(job)
 
     @app.post("/api/v1/wechat/session")

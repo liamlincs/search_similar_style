@@ -233,6 +233,94 @@ function fetchCatalogProductDetail(styleCode) {
   return requestJson(finalUrl, "GET");
 }
 
+function replaceCatalogProductTags(styleCode, tags) {
+  const code = String(styleCode || "").trim();
+  if (!code) return Promise.reject(new Error("缺少款号"));
+  const paths = config.catalogPaths || {};
+  const basePath = paths.products || "/api/v1/catalog/products";
+  const finalUrl = `${config.baseUrl}${basePath}/${encodeURIComponent(code)}/tags`;
+  return requestJson(finalUrl, "PUT", {
+    tags: Array.isArray(tags) ? tags : [],
+  });
+}
+
+function readFileBase64(filePath) {
+  return new Promise((resolve, reject) => {
+    wx.getFileSystemManager().readFile({
+      filePath,
+      encoding: "base64",
+      success: (res) => resolve(String(res.data || "")),
+      fail: (err) => reject(new Error((err && err.errMsg) || "读取图片失败")),
+    });
+  });
+}
+
+async function uploadCatalogImportFiles(files = []) {
+  const paths = config.catalogPaths || {};
+  const basePath = paths.imports || "/api/v1/catalog/imports";
+  const finalUrl = `${config.baseUrl}${basePath}/wechat-upload`;
+  const payloadFiles = [];
+  for (let i = 0; i < files.length; i += 1) {
+    const item = files[i] || {};
+    const filePath = item.tempFilePath || item.path || "";
+    if (!filePath) continue;
+    const ext = String(filePath).split(".").pop() || "jpg";
+    payloadFiles.push({
+      filename: item.name || `upload_${i + 1}.${ext}`,
+      data_base64: await readFileBase64(filePath),
+    });
+  }
+  return requestJson(finalUrl, "POST", { files: payloadFiles });
+}
+
+function uploadCatalogImport(filePath, options = {}) {
+  const paths = config.catalogPaths || {};
+  const basePath = paths.imports || "/api/v1/catalog/imports";
+  const finalUrl = `${config.baseUrl}${basePath}/upload`;
+  return new Promise((resolve, reject) => {
+    buildApiHeader().then((header) => wx.uploadFile({
+      url: finalUrl,
+      filePath,
+      name: "files",
+      fileName: options.fileName || "catalog.jpg",
+      timeout: config.timeout,
+      header,
+      success: (res) => {
+        let parsed = {};
+        try {
+          parsed = JSON.parse(res.data || "{}");
+        } catch (_err) {
+          reject(new Error("导入返回解析失败"));
+          return;
+        }
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(parsed);
+          return;
+        }
+        reject(new Error(parseErrorMessage({ statusCode: res.statusCode, data: parsed })));
+      },
+      fail: (err) => reject(new Error((err && err.errMsg) || "上传款图失败"))
+    })).catch(reject);
+  });
+}
+
+function fetchCatalogImportJob(jobId) {
+  const paths = config.catalogPaths || {};
+  const basePath = paths.imports || "/api/v1/catalog/imports";
+  const finalUrl = `${config.baseUrl}${basePath}/${encodeURIComponent(jobId)}`;
+  return requestJson(finalUrl, "GET");
+}
+
+function commitCatalogImport(jobId, items) {
+  const paths = config.catalogPaths || {};
+  const basePath = paths.imports || "/api/v1/catalog/imports";
+  const finalUrl = `${config.baseUrl}${basePath}/commit`;
+  return requestJson(finalUrl, "POST", {
+    job_id: String(jobId || ""),
+    items: Array.isArray(items) ? items : [],
+  });
+}
+
 function fetchColorCardLibraries() {
   const paths = config.colorCardPaths || {};
   const finalUrl = `${config.baseUrl}${paths.libraries || "/api/v1/color-card/libraries"}`;
@@ -248,6 +336,21 @@ function matchColorCards(options = {}) {
     b: Number(options.b),
     library_id: String(options.library_id || ""),
     limit: Number(options.limit || 12),
+  });
+}
+
+function saveColorCard(options = {}) {
+  const paths = config.colorCardPaths || {};
+  const finalUrl = `${config.baseUrl}${paths.cards || "/api/v1/color-card/cards"}`;
+  return requestJson(finalUrl, "POST", {
+    library_id: String(options.library_id || ""),
+    library_name: String(options.library_name || ""),
+    name: String(options.name || ""),
+    L: Number(options.L),
+    a: Number(options.a),
+    b: Number(options.b),
+    hex: String(options.hex || "").replace(/^#/, "").toUpperCase(),
+    note: String(options.note || ""),
   });
 }
 
@@ -446,8 +549,14 @@ module.exports = {
   fetchCatalogTags,
   fetchCatalogProducts,
   fetchCatalogProductDetail,
+  replaceCatalogProductTags,
+  uploadCatalogImportFiles,
+  uploadCatalogImport,
+  fetchCatalogImportJob,
+  commitCatalogImport,
   fetchColorCardLibraries,
   matchColorCards,
+  saveColorCard,
   fetchPrintTemplates,
   printUpload,
   renderPrintLayout,

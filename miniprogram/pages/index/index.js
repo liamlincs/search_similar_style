@@ -266,19 +266,8 @@ Page({
 
   goSearchPage() {},
 
-  openProductLibraryH5() {
-    const baseUrl = String(config.baseUrl || "").replace(/\/+$/, "");
-    const path = config.catalogH5Path || "/catalog";
-    const token = config.catalogH5Token || config.apiKey || "";
-    if (!baseUrl || !token) {
-      wx.showToast({ title: "请先配置产品库体验 token", icon: "none" });
-      return;
-    }
-    const query = `type=product&token=${encodeURIComponent(token)}`;
-    const url = `${baseUrl}${path}?${query}`;
-    wx.navigateTo({
-      url: `/pages/catalog_webview/index?title=${encodeURIComponent("产品库")}&url=${encodeURIComponent(url)}`
-    });
+  openCatalogImportNative() {
+    wx.navigateTo({ url: "/pages/catalog_import/index" });
   },
 
   onCatalogQueryInput(e) {

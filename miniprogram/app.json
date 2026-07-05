@@ -1,10 +1,13 @@
 {
   "pages": [
     "pages/index/index",
+    "pages/color_card/index",
+    "pages/catalog_import/index",
     "pages/catalog_webview/index",
     "pages/print/index",
     "pages/recolor/index"
   ],
+  "subPackages": [],
   "window": {
     "navigationBarTitleText": "以图搜款",
     "navigationBarBackgroundColor": "#0f172a",

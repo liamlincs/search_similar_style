@@ -1,0 +1,71 @@
+<view class="page">
+  <view class="hero">
+    <view class="title">管理款库</view>
+    <view class="subtitle">修改款号标签，批量智能录入款图</view>
+  </view>
+
+  <view class="tabs">
+    <view class="tab {{mode === 'tags' ? 'active' : ''}}" data-mode="tags" bindtap="switchMode">修改标签</view>
+    <view class="tab {{mode === 'import' ? 'active' : ''}}" data-mode="import" bindtap="switchMode">智能录入</view>
+  </view>
+
+  <view wx:if="{{mode === 'tags'}}" class="card">
+    <view class="section-title">修改标签</view>
+    <view class="search-row">
+      <input class="input" placeholder="输入款号，如 GZ25-1177" value="{{query}}" bindinput="onQueryInput" confirm-type="search" bindconfirm="searchProducts" />
+      <button class="btn primary small" loading="{{productLoading}}" bindtap="searchProducts">查询</button>
+    </view>
+    <view wx:if="{{productMessage}}" class="status">{{productMessage}}</view>
+
+    <view wx:for="{{products}}" wx:key="styleCode" class="product-card" data-index="{{index}}" bindtap="editProductTags">
+      <image wx:if="{{item.coverImageUrl}}" class="product-img" src="{{item.coverImageUrl}}" mode="aspectFill" />
+      <view class="product-body">
+        <view class="product-code">{{item.styleCode}}</view>
+        <view class="product-meta">{{item.imageCount}} 张图</view>
+        <view class="tag-line">{{item.tagsText || '暂无标签'}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view wx:if="{{mode === 'tags' && editingStyleCode}}" class="card">
+    <view class="section-title">编辑 {{editingStyleCode}}</view>
+    <textarea class="textarea" placeholder="多个标签用空格、逗号或换行分隔" value="{{editingTagsText}}" bindinput="onEditingTagsInput" />
+    <view class="action-row">
+      <button class="btn secondary" bindtap="cancelEditTags">取消</button>
+      <button class="btn primary" loading="{{savingTags}}" bindtap="saveTags">保存标签</button>
+    </view>
+    <view wx:if="{{tagMessage}}" class="status">{{tagMessage}}</view>
+  </view>
+
+  <view wx:if="{{mode === 'import'}}" class="card">
+    <view class="section-title">多图智能录入</view>
+    <button class="btn primary" loading="{{uploading}}" bindtap="chooseImportImages">选择款图</button>
+    <view wx:if="{{selectedFiles.length}}" class="thumb-grid">
+      <image wx:for="{{selectedFiles}}" wx:key="tempFilePath" class="thumb" src="{{item.tempFilePath}}" mode="aspectFill" />
+    </view>
+    <view wx:if="{{jobMessage}}" class="status">{{jobMessage}}</view>
+  </view>
+
+  <view wx:if="{{mode === 'import' && items.length}}" class="card">
+    <view class="section-title">确认导入</view>
+    <view class="batch-grid">
+      <input class="input" placeholder="类别，如 单品" value="{{batchCategory}}" bindinput="onBatchInput" data-key="batchCategory" />
+      <input class="input" placeholder="细类，如 短袖" value="{{batchSubcategory}}" bindinput="onBatchInput" data-key="batchSubcategory" />
+    </view>
+
+    <view wx:for="{{items}}" wx:key="source_rel_path" class="item-card {{item.selected ? '' : 'muted-item'}}">
+      <view class="item-head">
+        <checkbox checked="{{item.selected}}" data-index="{{index}}" bindtap="toggleItemSelected" />
+        <view class="item-title">{{item.source_name}}</view>
+        <view class="badge {{item.status === 'ok' ? 'ok' : 'warn'}}">{{item.statusText}}</view>
+      </view>
+      <view class="meta">识别款号：{{item.proposed_style_code || '-'}}</view>
+      <input class="input wide" placeholder="导入后文件名" value="{{item.target_filename}}" data-index="{{index}}" data-key="target_filename" bindinput="onItemInput" />
+      <input class="input wide" placeholder="年份，如 2024" value="{{item.year_tag}}" data-index="{{index}}" data-key="year_tag" bindinput="onItemInput" />
+      <view wx:if="{{item.error}}" class="error">{{item.error}}</view>
+    </view>
+
+    <button class="btn primary full" loading="{{committing}}" disabled="{{!canCommit}}" bindtap="commitImport">确认导入</button>
+    <view wx:if="{{commitMessage}}" class="status">{{commitMessage}}</view>
+  </view>
+</view>
