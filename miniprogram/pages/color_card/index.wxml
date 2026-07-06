@@ -1,7 +1,7 @@
 <view class="page">
   <view class="hero">
     <view>
-      <view class="title">色卡库</view>
+      <view class="title">管理色卡</view>
       <view class="subtitle">{{meterDeviceName ? '已连接 ' + meterDeviceName : meterStatus}}</view>
     </view>
     <view class="conn-pill {{meterDeviceName ? 'ok' : ''}}">
