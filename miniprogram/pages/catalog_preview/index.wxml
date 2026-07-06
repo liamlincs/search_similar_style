@@ -1,0 +1,12 @@
+<view class="preview-page">
+  <view class="counter">{{currentIndex + 1}} / {{images.length}}</view>
+  <swiper class="swiper" current="{{currentIndex}}" bindchange="onSwiperChange">
+    <swiper-item wx:for="{{images}}" wx:key="url" class="swiper-item">
+      <image class="preview-img" src="{{item.url}}" mode="aspectFit" bindtap="goBack" />
+    </swiper-item>
+  </swiper>
+  <view class="bottom-bar">
+    <view class="style-code">{{styleCode}}</view>
+    <button class="origin-btn" bindtap="viewOriginal">查看原图</button>
+  </view>
+</view>

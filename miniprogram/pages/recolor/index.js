@@ -707,6 +707,12 @@ Page({
     }
   },
 
+  openMeterPanelOnly() {
+    if (!this.data.meterPanelOpen) {
+      this.setData({ meterPanelOpen: true });
+    }
+  },
+
   async startMeterScan() {
     if (this.data.meterScanning) return;
     try {
@@ -772,7 +778,7 @@ Page({
   async measureTargetColor() {
     if (this.data.meterMeasuring) return;
     if (!ColorMeter.connected) {
-      this.setData({ meterPanelOpen: true });
+      this.openMeterPanelOnly();
       wx.showToast({ title: "请先连接色差仪", icon: "none" });
       return;
     }

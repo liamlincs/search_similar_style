@@ -45,6 +45,19 @@ function uniq(list) {
   return out;
 }
 
+function withThumbParams(url, maxEdge = 180, quality = 68) {
+  const raw = String(url || "");
+  if (!raw) return "";
+  const parts = raw.split("?");
+  const base = parts[0];
+  const kept = parts.length > 1
+    ? parts[1]
+      .split("&")
+      .filter((part) => part && !/^max_edge=/i.test(part) && !/^q=/i.test(part))
+    : [];
+  return `${base}?${[`max_edge=${maxEdge}`, `q=${quality}`].concat(kept).join("&")}`;
+}
+
 function compressImage(filePath) {
   return new Promise((resolve) => {
     if (!filePath) return resolve(filePath);
@@ -134,7 +147,7 @@ Page({
   normalizeProducts(rawProducts) {
     return (rawProducts || []).map((item) => ({
       styleCode: item.style_code || item.styleCode || "",
-      coverImageUrl: item.cover_image_url || item.coverImageUrl || "",
+      coverImageUrl: withThumbParams(item.cover_image_url || item.coverImageUrl || ""),
       imageCount: (item.images || []).length,
       tags: item.tags || [],
       tagGroups: item.tag_groups || item.tagGroups || {},

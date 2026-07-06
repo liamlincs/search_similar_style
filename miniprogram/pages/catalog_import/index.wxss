@@ -25,7 +25,8 @@
 .quick-list { display: flex; flex-wrap: wrap; gap: 8rpx; margin-top: 10rpx; }
 .quick-chip { max-width: 100%; padding: 7rpx 12rpx; border-radius: 999rpx; background: #eef2f7; color: #475569; font-size: 22rpx; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quick-chip.active { background: #0f172a; color: #fff; }
-.action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14rpx; margin-top: 16rpx; }
+.action-row { display: flex; gap: 14rpx; margin-top: 16rpx; width: 100%; box-sizing: border-box; overflow: hidden; }
+.action-row .btn { flex: 1 1 0; min-width: 0; width: 0; }
 .product-card { display: flex; gap: 16rpx; align-items: center; min-width: 0; margin-top: 14rpx; padding: 14rpx; border-radius: 16rpx; background: #f8fafc; border: 1rpx solid #e2e8f0; }
 .product-img { flex: none; width: 126rpx; height: 126rpx; border-radius: 12rpx; background: #e2e8f0; }
 .product-body { min-width: 0; flex: 1; }
@@ -43,8 +44,8 @@
 .badge.warn { background: #ffedd5; color: #c2410c; }
 .meta { margin-top: 12rpx; color: #64748b; font-size: 24rpx; line-height: 1.35; }
 .error { margin-top: 10rpx; color: #b91c1c; font-size: 23rpx; line-height: 1.35; }
-.modal-mask { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 50; display: flex; align-items: flex-end; padding: 24rpx; box-sizing: border-box; background: rgba(15, 23, 42, .44); }
-.modal-panel { width: 100%; max-height: 88vh; overflow: auto; padding: 24rpx; box-sizing: border-box; border-radius: 22rpx; background: #fff; box-shadow: 0 20rpx 60rpx rgba(15, 23, 42, .28); }
+.modal-mask { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 50; display: flex; align-items: flex-end; padding: 24rpx 36rpx calc(28rpx + env(safe-area-inset-bottom)); box-sizing: border-box; background: rgba(15, 23, 42, .44); }
+.modal-panel { width: 100%; max-height: 88vh; overflow: auto; padding: 24rpx 24rpx 30rpx; box-sizing: border-box; border-radius: 22rpx; background: #fff; box-shadow: 0 20rpx 60rpx rgba(15, 23, 42, .28); }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; margin-bottom: 12rpx; }
 .modal-title { margin-bottom: 0; min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-close { flex: none; padding: 9rpx 14rpx; border-radius: 10rpx; background: #eef2f7; color: #334155; font-size: 24rpx; font-weight: 700; }

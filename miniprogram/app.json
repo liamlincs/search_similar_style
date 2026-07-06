@@ -3,6 +3,7 @@
     "pages/index/index",
     "pages/color_card/index",
     "pages/catalog_import/index",
+    "pages/catalog_preview/index",
     "pages/catalog_webview/index",
     "pages/print/index",
     "pages/recolor/index"

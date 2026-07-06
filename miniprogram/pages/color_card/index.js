@@ -283,7 +283,18 @@ Page({
   toggleMeterPanel() {
     const nextOpen = !this.data.meterPanelOpen;
     this.setData({ meterPanelOpen: nextOpen });
+    if (!nextOpen && this._meterScanHandler) {
+      ColorMeter.stopScan(this._meterScanHandler);
+      this._meterScanHandler = null;
+      this.setData({ meterScanning: false });
+    }
     if (nextOpen && !ColorMeter.connected && !this.data.meterScanning) this.startMeterScan();
+  },
+
+  openMeterPanelOnly() {
+    if (!this.data.meterPanelOpen) {
+      this.setData({ meterPanelOpen: true });
+    }
   },
 
   async startMeterScan() {
@@ -350,7 +361,7 @@ Page({
   async measureColor() {
     if (this.data.meterMeasuring) return;
     if (!ColorMeter.connected) {
-      this.setData({ meterPanelOpen: true });
+      this.openMeterPanelOnly();
       wx.showToast({ title: "请先连接色差仪", icon: "none" });
       return;
     }

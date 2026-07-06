@@ -1,12 +1,12 @@
 <view class="page">
   <view class="hero">
     <view class="title">管理款库</view>
-    <view class="subtitle">修改款号标签，批量智能录入款图</view>
+    <view class="subtitle">修改款号标签，批量录入款图</view>
   </view>
 
   <view class="tabs">
     <view class="tab {{mode === 'tags' ? 'active' : ''}}" data-mode="tags" bindtap="switchMode">修改标签</view>
-    <view class="tab {{mode === 'import' ? 'active' : ''}}" data-mode="import" bindtap="switchMode">智能录入</view>
+    <view class="tab {{mode === 'import' ? 'active' : ''}}" data-mode="import" bindtap="switchMode">款图录入</view>
   </view>
 
   <view wx:if="{{mode === 'tags'}}" class="card">
@@ -62,7 +62,7 @@
   </view>
 
   <view wx:if="{{mode === 'import'}}" class="card">
-    <view class="section-title">多图智能录入</view>
+    <view class="section-title">多图识别录入</view>
     <button class="btn primary" loading="{{uploading}}" bindtap="chooseImportImages">选择款图</button>
     <view wx:if="{{selectedFiles.length}}" class="thumb-grid">
       <image wx:for="{{selectedFiles}}" wx:key="tempFilePath" class="thumb" src="{{item.tempFilePath}}" mode="aspectFill" />

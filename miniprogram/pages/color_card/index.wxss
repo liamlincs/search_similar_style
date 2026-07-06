@@ -6,6 +6,9 @@
 .conn-pill.ok { background: #ecfdf5; color: #047857; }
 .dot { width: 12rpx; height: 12rpx; border-radius: 50%; background: #94a3b8; }
 .conn-pill.ok .dot { background: #22c55e; }
+.control-row { box-sizing: border-box; }
+.top-control-row { margin-left: 22rpx; margin-right: 22rpx; }
+.meter-control-row { margin-left: 0; margin-right: 0; }
 .tabs { display: flex; gap: 16rpx; margin-bottom: 22rpx; }
 .tab { flex: 1; height: 78rpx; line-height: 78rpx; text-align: center; border-radius: 14rpx; background: #fff; color: #334155; border: 2rpx solid #d7dee8; font-size: 30rpx; font-weight: 700; }
 .tab.active { background: #0f172a; color: #fff; border-color: #0f172a; }

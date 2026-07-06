@@ -36,6 +36,37 @@ function buildPreviewUrls(product) {
   return cover ? [cover] : [];
 }
 
+function buildOriginalImageUrl(imageName) {
+  const safe = String(imageName || "").trim();
+  if (!safe) return "";
+  return `${config.baseUrl}/images/${encodeURIComponent(safe)}`;
+}
+
+function stripPreviewParams(url) {
+  const raw = String(url || "");
+  if (!raw) return "";
+  const parts = raw.split("?");
+  if (parts.length < 2) return raw;
+  const kept = parts[1]
+    .split("&")
+    .filter((part) => !/^max_edge=/i.test(part) && !/^q=/i.test(part))
+    .filter(Boolean);
+  return kept.length ? `${parts[0]}?${kept.join("&")}` : parts[0];
+}
+
+function buildPreviewItems(product, fallbackUrl) {
+  const images = (product.images || [])
+    .map((item) => {
+      const url = item.image_url || item.imageUrl || "";
+      const originalUrl = stripPreviewParams(url) || buildOriginalImageUrl(item.image_name || item.imageName);
+      return url ? { url, originalUrl: originalUrl || url } : null;
+    })
+    .filter(Boolean);
+  if (images.length) return images;
+  const cover = product.coverImageUrl || product.cover_image_url || product.imageUrl || fallbackUrl || "";
+  return cover ? [{ url: cover, originalUrl: stripPreviewParams(cover) || cover }] : [];
+}
+
 function buildCatalogFilterKey(query, tags, tagGroups) {
   const q = String(query || "").trim();
   const tagKey = (tags || []).map((tag) => String(tag || "").trim()).filter(Boolean).sort().join("|");
@@ -535,6 +566,7 @@ Page({
     try {
       const detail = await fetchCatalogProductDetail(styleCode);
       const urls = buildPreviewUrls(detail);
+      const previewItems = buildPreviewItems(detail, fallbackUrl);
       const current = urls[0] || fallbackUrl || "";
       if (!current) return;
       if (catalogIndex >= 0 && urls.length) {
@@ -543,11 +575,23 @@ Page({
           [`catalogResults[${catalogIndex}].previewUrls`]: urls
         });
       }
-      wx.previewImage({ current, urls: urls.length ? urls : [current] });
+      this.openCatalogPreview(styleCode, previewItems);
     } catch (_err) {
       if (!fallbackUrl) return;
-      wx.previewImage({ current: fallbackUrl, urls: [fallbackUrl] });
+      this.openCatalogPreview(styleCode, [{ url: fallbackUrl, originalUrl: stripPreviewParams(fallbackUrl) || fallbackUrl }]);
     }
+  },
+
+  openCatalogPreview(styleCode, images) {
+    const list = (images || []).filter((item) => item && item.url);
+    if (!list.length) return;
+    const key = `catalog_preview_${Date.now()}`;
+    wx.setStorageSync(key, {
+      styleCode: String(styleCode || ""),
+      images: list,
+      current: 0,
+    });
+    wx.navigateTo({ url: `/pages/catalog_preview/index?key=${encodeURIComponent(key)}` });
   },
 
   async onResultImageError(e) {

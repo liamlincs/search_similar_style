@@ -10,14 +10,14 @@
     </view>
   </view>
 
-  <view class="tabs">
+  <view class="tabs control-row top-control-row">
     <view class="tab {{mode === 'query' ? 'active' : ''}}" data-mode="query" bindtap="switchMode">查询</view>
     <view class="tab {{mode === 'manage' ? 'active' : ''}}" data-mode="manage" bindtap="switchMode">管理</view>
   </view>
 
   <view class="card">
-    <view class="meter-actions">
-      <button class="btn primary" loading="{{meterConnecting || meterScanning}}" bindtap="toggleMeterPanel">连接色差仪</button>
+    <view class="meter-actions control-row meter-control-row">
+      <button class="btn primary" loading="{{meterConnecting || meterScanning}}" bindtap="toggleMeterPanel">{{meterPanelOpen ? '收起' : '连接色差仪'}}</button>
       <button class="btn secondary" loading="{{meterMeasuring}}" disabled="{{!meterDeviceName}}" bindtap="measureColor">测量</button>
     </view>
     <view class="lab-grid">
