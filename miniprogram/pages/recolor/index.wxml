@@ -40,7 +40,7 @@
       </view>
       <view class="meter-bar">
         <button class="meter-btn" loading="{{meterMeasuring}}" bindtap="measureTargetColor">仪器测色</button>
-        <button wx:if="{{experienceVersionEnabled}}" class="meter-btn color-library-btn" bindtap="openColorLibraryNative">色卡库</button>
+        <button wx:if="{{experienceVersionEnabled}}" class="meter-btn color-library-btn" bindtap="openColorLibraryNative">管理色卡</button>
       </view>
       <view class="meter-status-row">
         <view class="meter-status">
