@@ -3,6 +3,31 @@ const config = require("../../utils/config");
 const { ColorMeter } = require("../../utils/color_meter_bluetooth");
 const { labToHex, retry } = require("../../utils/color_meter_utils");
 
+function showBluetoothError(err) {
+  const message = ColorMeter.getErrorMessage ? ColorMeter.getErrorMessage(err) : "蓝牙不可用或未授权";
+  const openSetting = () => {
+    if (wx.openAppAuthorizeSetting) {
+      wx.openAppAuthorizeSetting({ fail: () => wx.openSetting && wx.openSetting() });
+    } else if (wx.openSetting) {
+      wx.openSetting();
+    }
+  };
+  const canOpenSetting = ColorMeter.shouldOpenSetting ? ColorMeter.shouldOpenSetting(err) : ColorMeter.isPermissionError && ColorMeter.isPermissionError(err);
+  if (canOpenSetting && (wx.openAppAuthorizeSetting || wx.openSetting)) {
+    wx.showModal({
+      title: "无法使用蓝牙",
+      content: message,
+      confirmText: "去设置",
+      success: (res) => {
+        if (res.confirm) openSetting();
+      },
+    });
+  } else {
+    wx.showToast({ title: message, icon: "none", duration: 3000 });
+  }
+  return message;
+}
+
 function toAbsolute(pathOrUrl) {
   if (!pathOrUrl) return "";
   if (/^https?:\/\//.test(pathOrUrl)) return pathOrUrl;
@@ -739,8 +764,8 @@ Page({
       }, 10200);
     } catch (err) {
       console.error("[color-meter:scan:error]", err);
-      this.setData({ meterScanning: false, meterStatus: "蓝牙不可用或未授权" });
-      wx.showToast({ title: "蓝牙不可用或未授权", icon: "none" });
+      const message = showBluetoothError(err);
+      this.setData({ meterScanning: false, meterStatus: message });
     }
   },
 

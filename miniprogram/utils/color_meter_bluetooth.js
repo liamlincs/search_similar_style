@@ -7,6 +7,43 @@ const {
   waitFor,
 } = require("./color_meter_utils");
 
+function getErrorText(err) {
+  return String((err && (err.errMsg || err.message)) || "");
+}
+
+function isBluetoothAlreadyOpened(err) {
+  return /already opened/i.test(getErrorText(err));
+}
+
+function isBluetoothPermissionError(err) {
+  const text = getErrorText(err).toLowerCase();
+  return /auth|authorize|permission|privacy|deny|denied|unauthorized/.test(text);
+}
+
+function shouldOpenBluetoothSetting(err) {
+  const text = getErrorText(err).toLowerCase();
+  if (/privacy/.test(text)) return false;
+  return /auth|authorize|permission|deny|denied|unauthorized/.test(text);
+}
+
+function getBluetoothErrorMessage(err) {
+  const code = err && err.errCode;
+  if (isBluetoothAlreadyOpened(err)) return "";
+  const text = getErrorText(err);
+  if (/appid privacy/i.test(text)) {
+    return "蓝牙接口未通过正式版隐私校验，请在小程序后台用户隐私保护指引中声明蓝牙用途后重新发布";
+  }
+  if (code === 10001) return "请打开手机蓝牙，并允许微信使用蓝牙";
+  if (code === 10009) return "当前系统版本不支持低功耗蓝牙";
+  if (code === 10000) return "蓝牙初始化失败，请关闭页面后重试";
+  if (code === 10008) return "蓝牙系统错误，请重启蓝牙后重试";
+  if (isBluetoothPermissionError(err)) {
+    return text ? `蓝牙授权失败：${text}` : "蓝牙授权失败，请检查微信蓝牙权限";
+  }
+  if (text) return `蓝牙不可用：${text}`;
+  return "蓝牙不可用或未授权";
+}
+
 class ColorMeterBluetooth {
   constructor() {
     this.listeners = new Set();
@@ -27,7 +64,7 @@ class ColorMeterBluetooth {
   }
 
   init() {
-    if (this.inited) return this.openAdapter().catch(() => null);
+    if (this.inited) return this.openAdapter();
     this.inited = true;
     wx.onBluetoothAdapterStateChange((res) => {
       this.discovering = !!res.discovering;
@@ -50,7 +87,7 @@ class ColorMeterBluetooth {
       }
     });
     wx.onBLECharacteristicValueChange(({ value }) => this.notifySubscriber(value));
-    return this.openAdapter().catch(() => null);
+    return this.openAdapter();
   }
 
   subscribe(cb) {
@@ -65,10 +102,39 @@ class ColorMeterBluetooth {
     this.listeners.forEach((cb) => cb && cb(event));
   }
 
-  openAdapter() {
+  requirePrivacyAuthorize() {
+    if (!wx.requirePrivacyAuthorize) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      wx.openBluetoothAdapter({ success: resolve, fail: reject });
+      wx.requirePrivacyAuthorize({
+        success: resolve,
+        fail: reject,
+      });
     });
+  }
+
+  async openAdapter() {
+    await this.requirePrivacyAuthorize();
+    return new Promise((resolve, reject) => {
+      wx.openBluetoothAdapter({
+        success: resolve,
+        fail: (err) => {
+          if (isBluetoothAlreadyOpened(err)) resolve(err);
+          else reject(err);
+        },
+      });
+    });
+  }
+
+  getErrorMessage(err) {
+    return getBluetoothErrorMessage(err);
+  }
+
+  isPermissionError(err) {
+    return isBluetoothPermissionError(err);
+  }
+
+  shouldOpenSetting(err) {
+    return shouldOpenBluetoothSetting(err);
   }
 
   getAdapterState() {
@@ -326,4 +392,7 @@ const shared = new ColorMeterBluetooth();
 module.exports = {
   ColorMeterBluetooth,
   ColorMeter: shared,
+  getBluetoothErrorMessage,
+  isBluetoothPermissionError,
+  shouldOpenBluetoothSetting,
 };
