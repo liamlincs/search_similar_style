@@ -42,6 +42,8 @@ Environment=PUBLIC_BASE_URL=https://api.openfire.cloud
 Environment=ARK_3D_MODEL=doubao-seed3d-2-0-260328
 Environment=ARK_3D_SUBDIVISION=low
 Environment=ARK_3D_FILE_FORMAT=usdz
+Environment=ARK_3D_POLL_INTERVAL=30
+Environment=ARK_3D_TIMEOUT_SEC=1800
 ```
 
 Nginx 侧把 `/api/v1/garment/`、`/api/v1/health`、`/static-inputs/` 反代到：

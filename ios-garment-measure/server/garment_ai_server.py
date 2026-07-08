@@ -513,13 +513,23 @@ def _call_seed3d(image_bytes: bytes) -> dict[str, Any]:
     logging.info("seed3d task created id=%s raw=%s", task_id, _truncate(json.dumps(created, ensure_ascii=False), 1200))
     task_url = f"{ARK_CONTENT_TASKS_URL}/{task_id}"
 
-    deadline = time.time() + ARK_3D_TIMEOUT_SEC
+    started_at = time.time()
+    deadline = started_at + ARK_3D_TIMEOUT_SEC
     last_data: dict[str, Any] = created
     while time.time() < deadline:
         data = _ark_request_json(task_url, None, method="GET")
         last_data = data
         status = _task_status(data)
-        logging.info("seed3d task id=%s status=%s", task_id, status or "(unknown)")
+        elapsed = int(time.time() - started_at)
+        remaining = max(0, int(deadline - time.time()))
+        logging.info(
+            "seed3d task id=%s status=%s elapsed=%ss remaining=%ss timeout=%ss",
+            task_id,
+            status or "(unknown)",
+            elapsed,
+            remaining,
+            int(ARK_3D_TIMEOUT_SEC),
+        )
         if status in {"succeeded", "success", "completed", "done"}:
             model_url = _find_first_url(data)
             if not model_url:
@@ -541,7 +551,7 @@ def _call_seed3d(image_bytes: bytes) -> dict[str, Any]:
             raise HTTPException(status_code=502, detail=f"Seed3D 任务失败: {data}")
         time.sleep(ARK_3D_POLL_INTERVAL)
 
-    raise HTTPException(status_code=504, detail=f"Seed3D 任务超时: {last_data}")
+    raise HTTPException(status_code=504, detail=f"Seed3D 任务超时，已等待 {int(ARK_3D_TIMEOUT_SEC)} 秒: {last_data}")
 
 
 def _build_prompt(measurements: dict[str, Any]) -> str:
