@@ -75,13 +75,22 @@ struct GarmentAIGenerationClient {
         measurements: [GarmentDimension: Double],
         onStatus: @escaping @MainActor (String) -> Void = { _ in }
     ) async throws -> GeneratedGarmentModelResult {
+        let responsePayload = try await generateModelViaJob(photo: photo, measurements: measurements, onStatus: onStatus)
+        return try await resolveModelResponse(responsePayload, onStatus: onStatus)
+    }
+
+    private func generateModelViaJob(
+        photo: UIImage,
+        measurements: [GarmentDimension: Double],
+        onStatus: @escaping @MainActor (String) -> Void
+    ) async throws -> GarmentModelResponse {
         guard let imageData = photo.resizedForUpload(maxSide: 1280).jpegData(compressionQuality: 0.82) else {
             throw GarmentAIGenerationError.invalidImageData
         }
 
-        var request = URLRequest(url: baseURL.appendingPathComponent("/api/v1/garment/model"))
+        var request = URLRequest(url: baseURL.appendingPathComponent("/api/v1/garment/model/jobs"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 1800
+        request.timeoutInterval = 90
 
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -102,6 +111,7 @@ struct GarmentAIGenerationClient {
         body.append("--\(boundary)--\r\n")
         request.httpBody = body
 
+        await onStatus("已提交 3D 生成任务，服务端后台处理中...")
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 
@@ -111,7 +121,51 @@ struct GarmentAIGenerationClient {
             throw GarmentAIGenerationError.server(detail)
         }
 
-        let responsePayload = try JSONDecoder().decode(GarmentModelResponse.self, from: data)
+        let createdJob = try JSONDecoder().decode(GarmentModelJobResponse.self, from: data)
+        return try await pollModelJob(id: createdJob.jobId, onStatus: onStatus)
+    }
+
+    private func pollModelJob(
+        id: String,
+        onStatus: @escaping @MainActor (String) -> Void
+    ) async throws -> GarmentModelResponse {
+        let startedAt = Date()
+        let timeout: TimeInterval = 1800
+        while Date().timeIntervalSince(startedAt) < timeout {
+            var request = URLRequest(url: baseURL.appendingPathComponent("/api/v1/garment/model/jobs/\(id)"))
+            request.timeoutInterval = 60
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(statusCode) else {
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let detail = (json?["detail"] as? String) ?? HTTPURLResponse.localizedString(forStatusCode: statusCode)
+                throw GarmentAIGenerationError.server(detail)
+            }
+
+            let job = try JSONDecoder().decode(GarmentModelJobResponse.self, from: data)
+            let elapsed = Int(Date().timeIntervalSince(startedAt))
+            switch job.status.lowercased() {
+            case "succeeded", "success", "completed", "done":
+                guard let result = job.result else {
+                    throw GarmentAIGenerationError.server("3D 生成已完成，但服务端未返回模型结果")
+                }
+                await onStatus("真 3D 模型已生成，正在下载模型文件...")
+                return result
+            case "failed", "fail", "error", "cancelled", "canceled":
+                throw GarmentAIGenerationError.server(job.message ?? "3D 生成失败")
+            default:
+                let message = job.message ?? "Seed3D 正在生成"
+                await onStatus("\(message)（已等待 \(elapsed) 秒）")
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+        }
+        throw GarmentAIGenerationError.server("3D 生成超时，请稍后从历史或服务端日志确认结果")
+    }
+
+    private func resolveModelResponse(
+        _ responsePayload: GarmentModelResponse,
+        onStatus: @escaping @MainActor (String) -> Void
+    ) async throws -> GeneratedGarmentModelResult {
         await onStatus("真 3D 模型已生成，正在下载模型文件...")
         if let modelBase64 = responsePayload.modelBase64,
            let modelData = Data(base64Encoded: modelBase64) {
@@ -193,6 +247,20 @@ struct GarmentModelResponse: Codable {
         case modelBase64 = "model_base64"
         case fileName = "file_name"
         case fileExt = "file_ext"
+    }
+}
+
+struct GarmentModelJobResponse: Codable {
+    let jobId: String
+    let status: String
+    let message: String?
+    let result: GarmentModelResponse?
+
+    enum CodingKeys: String, CodingKey {
+        case jobId = "job_id"
+        case status
+        case message
+        case result
     }
 }
 

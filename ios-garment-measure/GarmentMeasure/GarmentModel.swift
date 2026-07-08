@@ -72,8 +72,6 @@ struct GarmentModelArchive: Codable, Identifiable {
 
 @MainActor
 final class GarmentMeasurementStore: ObservableObject {
-    private static let maximumInlineModelBytes: Int64 = 16 * 1024 * 1024
-
     @Published var selectedDimension: GarmentDimension = .bodyLength
     @Published private(set) var values: [GarmentDimension: Double] = [:]
     @Published private(set) var history: [MeasuredSegment] = []
@@ -91,7 +89,7 @@ final class GarmentMeasurementStore: ObservableObject {
 
     init() {
         loadModelArchives()
-        if let latest = modelArchives.first(where: { isArchiveInlineLoadable($0) }) {
+        if let latest = modelArchives.first {
             selectArchive(latest)
         }
     }
@@ -200,15 +198,9 @@ final class GarmentMeasurementStore: ObservableObject {
                 )
                 activeArchiveID = archive.id
                 loadModelArchives()
-                if isArchiveInlineLoadable(archive) {
-                    generatedMesh = result.mesh
-                    generatedModelURL = archiveModelURL(for: archive)
-                    generationStatus = "Seed3D 模型已生成"
-                } else {
-                    generatedMesh = nil
-                    generatedModelURL = nil
-                    generationStatus = "真实模型已保存；文件较大，当前显示本地尺寸版型。"
-                }
+                generatedMesh = result.mesh
+                generatedModelURL = archiveModelURL(for: archive)
+                generationStatus = "Seed3D 模型已生成"
             } else {
                 generatedMesh = result.mesh
                 generatedModelURL = nil
@@ -230,17 +222,6 @@ final class GarmentMeasurementStore: ObservableObject {
             loadModelArchives()
             return
         }
-        guard isArchiveInlineLoadable(archive) else {
-            restoreArchiveInputs(archive)
-            generatedModelURL = nil
-            generatedMesh = nil
-            generatedPreview = nil
-            activeArchiveID = archive.id
-            generationStatus = "真实模型文件较大，当前显示本地尺寸版型。"
-            bumpPreviewRevision()
-            return
-        }
-
         restoreArchiveInputs(archive)
         generatedModelURL = modelURL
         generatedMesh = nil
@@ -371,16 +352,6 @@ final class GarmentMeasurementStore: ObservableObject {
         archiveRootURL
             .appendingPathComponent(archive.id, isDirectory: true)
             .appendingPathComponent(archive.modelFileName)
-    }
-
-    private func isArchiveInlineLoadable(_ archive: GarmentModelArchive) -> Bool {
-        modelFileByteCount(for: archive) <= Self.maximumInlineModelBytes
-    }
-
-    private func modelFileByteCount(for archive: GarmentModelArchive) -> Int64 {
-        let url = archiveModelURL(for: archive)
-        let values = try? url.resourceValues(forKeys: [.fileSizeKey])
-        return Int64(values?.fileSize ?? Int.max)
     }
 
     private func archiveThumbnailURL(for archive: GarmentModelArchive) -> URL? {

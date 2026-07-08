@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import io
 import json
 import logging
@@ -68,6 +69,8 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 INPUT_DIR = BASE_DIR / "inputs"
 INPUT_DIR.mkdir(parents=True, exist_ok=True)
+MODEL_JOBS: dict[str, dict[str, Any]] = {}
+MODEL_JOB_LIMIT = 40
 
 app = FastAPI(title="GarmentMeasure AI Preview")
 app.add_middleware(
@@ -84,6 +87,37 @@ def _truncate(value: str, limit: int = 1800) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}...<truncated {len(text) - limit} chars>"
+
+
+def _parse_measurements(value: str) -> dict[str, Any]:
+    try:
+        dims = json.loads(value or "{}")
+        if isinstance(dims, dict):
+            return dims
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid measurements json") from exc
+    raise HTTPException(status_code=400, detail="invalid measurements json")
+
+
+def _remember_model_job(job_id: str, **updates: Any) -> None:
+    now = time.time()
+    job = MODEL_JOBS.setdefault(
+        job_id,
+        {
+            "job_id": job_id,
+            "status": "queued",
+            "message": "已加入生成队列",
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    job.update(updates)
+    job["updated_at"] = now
+
+    if len(MODEL_JOBS) > MODEL_JOB_LIMIT:
+        oldest = sorted(MODEL_JOBS.values(), key=lambda item: item.get("updated_at", 0))
+        for item in oldest[: max(0, len(MODEL_JOBS) - MODEL_JOB_LIMIT)]:
+            MODEL_JOBS.pop(str(item["job_id"]), None)
 
 
 def _downscale_image(raw: bytes, max_side: int = 1280) -> bytes:
@@ -569,6 +603,70 @@ def _call_seed3d(image_bytes: bytes) -> dict[str, Any]:
     raise HTTPException(status_code=504, detail=f"Seed3D 任务超时，已等待 {int(ARK_3D_TIMEOUT_SEC)} 秒: {last_data}")
 
 
+async def _build_garment_model_response(raw: bytes, dims: dict[str, Any]) -> dict[str, Any]:
+    if ARK_API_KEY:
+        try:
+            asset = await run_in_threadpool(_call_seed3d, raw)
+            job_id = uuid.uuid4().hex
+            ext = str(asset["ext"])
+            out_path = OUTPUT_DIR / f"{job_id}.{ext}"
+            out_path.write_bytes(asset["bytes"])
+            mesh = _make_parametric_mesh(raw, dims)
+            logging.info("garment model response ready job=%s file=%s bytes=%s", job_id, out_path.name, len(asset["bytes"]))
+            return {
+                "job_id": job_id,
+                "provider": "volcengine_seed3d",
+                "model_url": f"/api/v1/garment/model/{out_path.name}",
+                "mesh": mesh,
+                "file_name": asset["file_name"],
+                "file_ext": ext,
+                "source_url": asset["source_url"],
+                "used_params": {
+                    "model": ARK_3D_MODEL,
+                    "file_format": ARK_3D_FILE_FORMAT,
+                    "subdivision": ARK_3D_SUBDIVISION,
+                    "task_id": asset["task_id"],
+                },
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logging.exception("seed3d failed, fallback to parametric mesh")
+            if os.getenv("ARK_3D_STRICT", "0").strip().lower() in {"1", "true", "yes"}:
+                raise HTTPException(status_code=502, detail=f"Seed3D 生成失败: {exc}") from exc
+
+    mesh = _make_parametric_mesh(raw, dims)
+    job_id = uuid.uuid4().hex
+    mesh_path = OUTPUT_DIR / f"{job_id}.json"
+    mesh_path.write_text(json.dumps(mesh, ensure_ascii=False), encoding="utf-8")
+    return {
+        "job_id": job_id,
+        "model_url": f"/api/v1/garment/model/{mesh_path.name}",
+        "mesh": mesh,
+    }
+
+
+async def _run_model_job(job_id: str, raw: bytes, dims: dict[str, Any]) -> None:
+    logging.info("garment model async job start job=%s bytes=%s", job_id, len(raw))
+    _remember_model_job(job_id, status="running", message="Seed3D 正在生成，通常需要 10 分钟左右")
+    try:
+        result = await _build_garment_model_response(raw, dims)
+        result["job_id"] = job_id
+        _remember_model_job(
+            job_id,
+            status="succeeded",
+            message="真 3D 模型已生成，正在下载模型文件",
+            result=result,
+        )
+        logging.info("garment model async job succeeded job=%s model_url=%s", job_id, result.get("model_url"))
+    except HTTPException as exc:
+        _remember_model_job(job_id, status="failed", message=str(exc.detail or exc))
+        logging.exception("garment model async job failed job=%s", job_id)
+    except Exception as exc:
+        _remember_model_job(job_id, status="failed", message=f"Seed3D 生成失败: {exc}")
+        logging.exception("garment model async job failed job=%s", job_id)
+
+
 def _build_prompt(measurements: dict[str, Any]) -> str:
     dims = _format_measurements(measurements)
     return (
@@ -654,12 +752,7 @@ async def create_garment_ai_preview(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty image")
-    try:
-        dims = json.loads(measurements or "{}")
-        if not isinstance(dims, dict):
-            dims = {}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="invalid measurements json") from exc
+    dims = _parse_measurements(measurements)
 
     result_bytes = await run_in_threadpool(_call_ark, raw, dims)
     job_id = uuid.uuid4().hex
@@ -688,53 +781,33 @@ async def create_garment_model(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="empty image")
-    try:
-        dims = json.loads(measurements or "{}")
-        if not isinstance(dims, dict):
-            dims = {}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="invalid measurements json") from exc
+    dims = _parse_measurements(measurements)
+    return await _build_garment_model_response(raw, dims)
 
-    if ARK_API_KEY:
-        try:
-            asset = await run_in_threadpool(_call_seed3d, raw)
-            job_id = uuid.uuid4().hex
-            ext = str(asset["ext"])
-            out_path = OUTPUT_DIR / f"{job_id}.{ext}"
-            out_path.write_bytes(asset["bytes"])
-            mesh = _make_parametric_mesh(raw, dims)
-            logging.info("garment model response ready job=%s file=%s bytes=%s", job_id, out_path.name, len(asset["bytes"]))
-            return {
-                "job_id": job_id,
-                "provider": "volcengine_seed3d",
-                "model_url": f"/api/v1/garment/model/{out_path.name}",
-                "mesh": mesh,
-                "file_name": asset["file_name"],
-                "file_ext": ext,
-                "source_url": asset["source_url"],
-                "used_params": {
-                    "model": ARK_3D_MODEL,
-                    "file_format": ARK_3D_FILE_FORMAT,
-                    "subdivision": ARK_3D_SUBDIVISION,
-                    "task_id": asset["task_id"],
-                },
-            }
-        except HTTPException:
-            raise
-        except Exception as exc:
-            logging.exception("seed3d failed, fallback to parametric mesh")
-            if os.getenv("ARK_3D_STRICT", "0").strip().lower() in {"1", "true", "yes"}:
-                raise HTTPException(status_code=502, detail=f"Seed3D 生成失败: {exc}") from exc
 
-    mesh = _make_parametric_mesh(raw, dims)
+@app.post("/api/v1/garment/model/jobs")
+async def create_garment_model_job(
+    file: UploadFile = File(...),
+    measurements: str = Form("{}"),
+) -> dict[str, Any]:
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty image")
+    dims = _parse_measurements(measurements)
     job_id = uuid.uuid4().hex
-    mesh_path = OUTPUT_DIR / f"{job_id}.json"
-    mesh_path.write_text(json.dumps(mesh, ensure_ascii=False), encoding="utf-8")
-    return {
-        "job_id": job_id,
-        "model_url": f"/api/v1/garment/model/{mesh_path.name}",
-        "mesh": mesh,
-    }
+    _remember_model_job(job_id, status="queued", message="已提交生成任务")
+    asyncio.create_task(_run_model_job(job_id, raw, dims))
+    logging.info("garment model async job queued job=%s bytes=%s", job_id, len(raw))
+    return MODEL_JOBS[job_id]
+
+
+@app.get("/api/v1/garment/model/jobs/{job_id}")
+def get_garment_model_job(job_id: str) -> dict[str, Any]:
+    safe = Path(job_id).name
+    job = MODEL_JOBS.get(safe)
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
 
 
 @app.get("/api/v1/garment/model/{name}")
