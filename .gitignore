@@ -9,3 +9,16 @@ logs/*
 
 models/
 miniprogram/project.private.config.json
+
+# iOS/Xcode build artifacts and local user state
+DerivedData/
+ios-garment-measure/DerivedData/
+*.xcuserstate
+*.xcuserdata/
+xcuserdata/
+*.xcuserdatad/
+
+# GarmentMeasure server runtime files
+ios-garment-measure/server/inputs/
+ios-garment-measure/server/outputs/
+ios-garment-measure/server/__pycache__/
