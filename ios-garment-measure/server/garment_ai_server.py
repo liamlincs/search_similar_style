@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import math
 import os
 import uuid
@@ -21,10 +22,25 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from starlette.concurrency import run_in_threadpool
 
+BASE_DIR = Path(__file__).resolve().parent
+LOG_FILE = os.getenv("LOG_FILE", str(BASE_DIR / "logs" / "garment_ai_server.log")).strip()
+LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(20 * 1024 * 1024)))
+LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "5"))
+Path(LOG_FILE).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        ),
+    ],
     force=True,
 )
 
@@ -48,7 +64,6 @@ ARK_3D_POLL_INTERVAL = float(os.getenv("ARK_3D_POLL_INTERVAL", "60"))
 ARK_3D_TIMEOUT_SEC = float(os.getenv("ARK_3D_TIMEOUT_SEC", "1200"))
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 
-BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 INPUT_DIR = BASE_DIR / "inputs"
