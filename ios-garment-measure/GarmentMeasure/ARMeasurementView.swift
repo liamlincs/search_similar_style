@@ -95,8 +95,10 @@ struct ARMeasurementView: UIViewRepresentable {
                 return SCNVector3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
             }
 
-            let results = sceneView.hitTest(point, types: [.featurePoint])
-            guard let result = results.first else { return nil }
+            guard let result = sceneView.raycastQuery(from: point, allowing: .estimatedPlane, alignment: .any)
+                .flatMap({ sceneView.session.raycast($0).first }) else {
+                return nil
+            }
             let transform = result.worldTransform
             return SCNVector3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
         }

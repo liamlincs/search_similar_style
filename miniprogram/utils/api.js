@@ -19,6 +19,7 @@ function wxLoginCode() {
 }
 
 function fetchWechatOpenid() {
+  if (!config.enableWechatSession || !config.wechatSessionPath) return Promise.resolve("");
   if (wechatOpenid) return Promise.resolve(wechatOpenid);
   if (wechatOpenidPromise) return wechatOpenidPromise;
   wechatOpenidPromise = wxLoginCode()
@@ -26,7 +27,7 @@ function fetchWechatOpenid() {
       wx.request({
         url: `${config.baseUrl}${config.wechatSessionPath || "/api/v1/wechat/session"}`,
         method: "POST",
-        timeout: config.timeout,
+        timeout: config.wechatSessionTimeout || 5000,
         data: { code },
         header: {
           "content-type": "application/json",
@@ -77,6 +78,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function requestTimeout() {
+  return Number(config.requestTimeout || config.timeout || 15000);
+}
+
+function uploadTimeout() {
+  return Number(config.uploadTimeout || config.timeout || 300000);
+}
+
+function networkError(action, url, err) {
+  const raw = (err && err.errMsg) || (err && err.message) || "网络错误";
+  return new Error(`${action}失败：${raw}（${url}）`);
+}
+
 function computeBackoffDelay(attempt) {
   const retryCfg = config.retry || {};
   const base = Number(retryCfg.baseDelayMs || 800);
@@ -106,7 +120,7 @@ function doUpload(filePath, options = {}) {
       url: buildSearchUrl(),
       filePath,
       name: "file",
-      timeout: config.timeout,
+      timeout: uploadTimeout(),
       formData,
       header,
       success: (res) => {
@@ -129,7 +143,7 @@ function doUpload(filePath, options = {}) {
         reject(err);
       },
       fail: (err) => {
-        const e = new Error(err.errMsg || "上传失败");
+        const e = networkError("以图搜款上传", buildSearchUrl(), err);
         e.isNetworkError = true;
         reject(e);
       }
@@ -144,7 +158,7 @@ function fetchSignedImageUrl(imageName, options = {}) {
     buildApiHeader().then((header) => wx.request({
       url: `${config.baseUrl}${config.imageUrlPath}`,
       method: "GET",
-      timeout: config.timeout,
+      timeout: requestTimeout(),
       data,
       header,
       success: (res) => {
@@ -157,7 +171,7 @@ function fetchSignedImageUrl(imageName, options = {}) {
         resolve(body);
       },
       fail: (err) => {
-        reject(new Error(err.errMsg || "刷新图片地址失败"));
+        reject(networkError("刷新图片地址", `${config.baseUrl}${config.imageUrlPath}`, err));
       }
     })).catch(reject);
   });
@@ -182,7 +196,7 @@ function requestJson(url, method, data) {
       url,
       method: method || "GET",
       data: data || null,
-      timeout: config.timeout,
+      timeout: requestTimeout(),
       header,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -191,7 +205,7 @@ function requestJson(url, method, data) {
         }
         reject(new Error(parseErrorMessage(res)));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "网络错误"))
+      fail: (err) => reject(networkError(method || "GET", url, err))
     })).catch(reject);
   });
 }
@@ -283,7 +297,7 @@ function uploadCatalogImport(filePath, options = {}) {
       filePath,
       name: "files",
       fileName: options.fileName || "catalog.jpg",
-      timeout: config.timeout,
+      timeout: uploadTimeout(),
       header,
       success: (res) => {
         let parsed = {};
@@ -299,7 +313,7 @@ function uploadCatalogImport(filePath, options = {}) {
         }
         reject(new Error(parseErrorMessage({ statusCode: res.statusCode, data: parsed })));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "上传款图失败"))
+      fail: (err) => reject(networkError("上传款图", finalUrl, err))
     })).catch(reject);
   });
 }
@@ -361,7 +375,7 @@ function printRequest(path, method, data) {
       url: finalUrl,
       method: method || "GET",
       data: data || null,
-      timeout: config.timeout,
+      timeout: requestTimeout(),
       header,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -372,7 +386,7 @@ function printRequest(path, method, data) {
       },
       fail: (err) => {
         console.error("[printRequest:fail]", method || "GET", finalUrl, err);
-        reject(new Error((err && err.errMsg) || "网络错误"));
+        reject(networkError(method || "GET", finalUrl, err));
       }
     })).catch(reject);
   });
@@ -387,7 +401,7 @@ function printUpload(filePath) {
       url: finalUrl,
       filePath,
       name: "file",
-      timeout: config.timeout,
+      timeout: uploadTimeout(),
       header,
       success: (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -402,7 +416,7 @@ function printUpload(filePath) {
       },
       fail: (err) => {
         console.error("[printUpload:fail]", finalUrl, err);
-        reject(new Error((err && err.errMsg) || "上传失败"));
+        reject(networkError("上传图片", finalUrl, err));
       }
     })).catch(reject);
   });
@@ -444,7 +458,7 @@ function recolorUpload(filePath, options = {}) {
       url: finalUrl,
       filePath,
       name: "file",
-      timeout: config.timeout,
+      timeout: uploadTimeout(),
       formData,
       header,
       success: (res) => {
@@ -468,7 +482,7 @@ function recolorUpload(filePath, options = {}) {
         }
         reject(new Error(raw || "换色失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "换色失败"))
+      fail: (err) => reject(networkError("换色上传", finalUrl, err))
     })).catch(reject);
   });
 }
@@ -488,7 +502,7 @@ function recolorAiUpload(filePath, options = {}) {
       url: finalUrl,
       filePath,
       name: "file",
-      timeout: config.timeout,
+      timeout: uploadTimeout(),
       formData,
       header,
       success: (res) => {
@@ -512,7 +526,7 @@ function recolorAiUpload(filePath, options = {}) {
         }
         reject(new Error(raw || "预览失败"));
       },
-      fail: (err) => reject(new Error((err && err.errMsg) || "预览失败"))
+      fail: (err) => reject(networkError("融合预览上传", finalUrl, err))
     })).catch(reject);
   });
 }

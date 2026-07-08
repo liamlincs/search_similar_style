@@ -254,10 +254,6 @@ private struct GarmentPreviewScreen: View {
         }
         .sheet(isPresented: $showingModelHistory) {
             ModelHistoryView(
-                onSelect: { archive in
-                    garment.selectArchive(archive)
-                    showingModelHistory = false
-                },
                 onPreview: { archive in
                     garment.selectArchive(archive)
                     let url = garment.quickLookURL(for: archive)
@@ -296,6 +292,9 @@ private struct GarmentPreviewScreen: View {
             Button {
                 Task {
                     await garment.generateModel(serverURL: aiBaseURL)
+                    if let url = garment.activeQuickLookURL {
+                        detailModelURL = ModelPreviewURL(url: url)
+                    }
                 }
             } label: {
                 if garment.isGeneratingPreview {
@@ -360,15 +359,6 @@ private struct GarmentPreviewScreen: View {
                 .foregroundStyle(.white.opacity(0.78))
                 .background(Color.white.opacity(0.1), in: Circle())
             }
-
-            TextField("AI 服务地址", text: $aiBaseURL)
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.72))
-                .padding(.horizontal, 10)
-                .frame(height: 34)
-                .background(Color.black.opacity(0.22), in: Capsule())
         }
     }
 
@@ -387,7 +377,6 @@ private struct GarmentPreviewScreen: View {
 private struct ModelHistoryView: View {
     @EnvironmentObject private var garment: GarmentMeasurementStore
     @Environment(\.dismiss) private var dismiss
-    var onSelect: (GarmentModelArchive) -> Void
     var onPreview: (GarmentModelArchive) -> Void
 
     var body: some View {
@@ -785,7 +774,6 @@ private struct GarmentPhotoStrip: View {
     let generatedPreview: UIImage?
     let status: String
     let isGenerating: Bool
-    @Binding var aiBaseURL: String
     var onAdd: () -> Void
     var onRegenerate: () -> Void
     var onClear: () -> Void
@@ -882,21 +870,6 @@ private struct GarmentPhotoStrip: View {
                         .stroke(Color.white.opacity(0.08), lineWidth: 1)
                 )
         )
-        .overlay(alignment: .bottomLeading) {
-            if image != nil {
-                TextField("AI 服务地址", text: $aiBaseURL)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(Color.black.opacity(0.22), in: Capsule())
-                    .padding(.leading, 92)
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: 310)
-            }
-        }
     }
 
     private var title: String {

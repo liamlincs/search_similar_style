@@ -4,6 +4,7 @@ const config = {
   // 拼图打印服务地址；不填则复用 baseUrl
   printBaseUrl: "https://api.openfire.cloud",
   apiKey: "replace-with-real-key-a",
+  enableWechatSession: false,
   searchPath: "/search",
   wechatSessionPath: "/api/v1/wechat/session",
   imageUrlPath: "/api/v1/image-url",
@@ -28,7 +29,10 @@ const config = {
   catalogH5Path: "/catalog",
   catalogH5Token: "",
   includeImageBase64: false,
+  requestTimeout: 15000,
+  uploadTimeout: 300000,
   timeout: 300000,
+  wechatSessionTimeout: 5000,
   recolorUpload: {
     maxSide: 1600,
     quality: 82

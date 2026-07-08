@@ -279,7 +279,6 @@ Page({
         meterDeviceName: ColorMeter.connected.name || "已连接设备",
       });
     }
-    this.loadColorLibraries();
   },
 
   onUnload() {
@@ -727,6 +726,9 @@ Page({
   toggleMeterPanel() {
     const nextOpen = !this.data.meterPanelOpen;
     this.setData({ meterPanelOpen: nextOpen });
+    if (nextOpen && !this.data.colorLibraries.length) {
+      this.loadColorLibraries();
+    }
     if (nextOpen && !ColorMeter.connected && !this.data.meterScanning) {
       this.startMeterScan();
     }

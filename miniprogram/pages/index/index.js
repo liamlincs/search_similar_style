@@ -111,10 +111,7 @@ Page({
     experienceVersionEnabled: !!config.enableExperienceVersion
   },
 
-  onLoad() {
-    this.loadCatalogFilters();
-    this.searchCatalog(true);
-  },
+  onLoad() {},
 
   onReachBottom() {
     if (this.data.pageMode !== "catalog") return;
@@ -127,6 +124,7 @@ Page({
     if (mode === this.data.pageMode) return;
     this.setData({ pageMode: mode });
     if (mode === "catalog" && !this.data.catalogResults.length && !this.data.catalogLoading) {
+      this.loadCatalogFilters();
       this.searchCatalog(true);
     }
   },

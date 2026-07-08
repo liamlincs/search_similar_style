@@ -42,7 +42,7 @@ struct GarmentPreviewView: UIViewRepresentable {
     }
 
     private var renderKey: String {
-        let modelPath = activeModelURL?.path ?? "none"
+        let modelPath = externalModelURL?.path ?? store.generatedModelURL?.path ?? "none"
         let measurementKey = GarmentDimension.allCases
             .map { "\($0.rawValue):\(store.value(for: $0).rounded(toPlaces: 1))" }
             .joined(separator: "|")
@@ -59,7 +59,7 @@ struct GarmentPreviewView: UIViewRepresentable {
 
     private func makeScene() -> SCNScene {
         let scene = SCNScene()
-        let hasExternalModel = activeModelURL != nil
+        let hasExternalModel = externalModelURL != nil
         scene.background.contents = previewBackgroundColor
         scene.lightingEnvironment.contents = UIColor.white
         scene.lightingEnvironment.intensity = 0.82
@@ -110,8 +110,10 @@ struct GarmentPreviewView: UIViewRepresentable {
         root.eulerAngles.x = -.pi / 140
         scene.rootNode.addChildNode(root)
 
-        if let generatedModelURL = activeModelURL, addExternalModel(generatedModelURL, to: root) {
+        if let generatedModelURL = externalModelURL, addExternalModel(generatedModelURL, to: root) {
             // Loaded external model.
+        } else if store.generatedModelURL != nil {
+            addTShirt(to: root)
         } else if let generatedMesh = store.generatedMesh {
             addGeneratedMesh(generatedMesh, to: root)
         } else if let generatedPreview = store.generatedPreview {
@@ -124,10 +126,6 @@ struct GarmentPreviewView: UIViewRepresentable {
 
     private var previewBackgroundColor: UIColor {
         .white
-    }
-
-    private var activeModelURL: URL? {
-        externalModelURL ?? store.generatedModelURL
     }
 
     @discardableResult
