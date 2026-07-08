@@ -9,6 +9,9 @@ User=john
 WorkingDirectory=/home/john/workspaces/search_similar_style/ios-garment-measure/server
 Environment=ARK_API_KEY=ark-***
 Environment=PUBLIC_BASE_URL=https://api.openfire.cloud
+Environment=ARK_3D_MODEL=doubao-seed3d-2-0-260328
+Environment=ARK_3D_SUBDIVISION=low
+Environment=ARK_3D_FILE_FORMAT=usdz
 ExecStart=/home/john/workspaces/search_similar_style/.venv/bin/python -m uvicorn garment_ai_server:app --host 0.0.0.0 --port 8002
 Restart=always
 RestartSec=3

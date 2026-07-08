@@ -35,6 +35,15 @@ sudo systemctl enable --now garment-3d-laptop.service
 sudo systemctl status garment-3d-laptop.service --no-pager -l
 ```
 
+服务文件里需要包含这些运行参数：
+
+```ini
+Environment=PUBLIC_BASE_URL=https://api.openfire.cloud
+Environment=ARK_3D_MODEL=doubao-seed3d-2-0-260328
+Environment=ARK_3D_SUBDIVISION=low
+Environment=ARK_3D_FILE_FORMAT=usdz
+```
+
 Nginx 侧把 `/api/v1/garment/`、`/api/v1/health`、`/static-inputs/` 反代到：
 
 ```text
