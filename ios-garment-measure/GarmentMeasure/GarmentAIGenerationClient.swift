@@ -70,7 +70,11 @@ struct GarmentAIGenerationClient {
         return image
     }
 
-    func generateModel(photo: UIImage, measurements: [GarmentDimension: Double]) async throws -> GeneratedGarmentModelResult {
+    func generateModel(
+        photo: UIImage,
+        measurements: [GarmentDimension: Double],
+        onStatus: @escaping @MainActor (String) -> Void = { _ in }
+    ) async throws -> GeneratedGarmentModelResult {
         guard let imageData = photo.resizedForUpload(maxSide: 1280).jpegData(compressionQuality: 0.82) else {
             throw GarmentAIGenerationError.invalidImageData
         }
@@ -108,6 +112,7 @@ struct GarmentAIGenerationClient {
         }
 
         let responsePayload = try JSONDecoder().decode(GarmentModelResponse.self, from: data)
+        await onStatus("真 3D 模型已生成，正在下载模型文件...")
         if let modelBase64 = responsePayload.modelBase64,
            let modelData = Data(base64Encoded: modelBase64) {
             let ext = responsePayload.fileExt?.isEmpty == false ? responsePayload.fileExt! : "obj"
@@ -125,7 +130,9 @@ struct GarmentAIGenerationClient {
         }
         if let modelPath = responsePayload.modelUrl,
            let downloadURL = resolvedURL(for: modelPath) {
-            let (downloadedFileURL, modelResponse) = try await URLSession.shared.download(from: downloadURL)
+            var downloadRequest = URLRequest(url: downloadURL)
+            downloadRequest.timeoutInterval = 600
+            let (downloadedFileURL, modelResponse) = try await URLSession.shared.download(for: downloadRequest)
             let modelStatus = (modelResponse as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(modelStatus) else {
                 throw GarmentAIGenerationError.server("模型文件下载失败：\(modelStatus)")

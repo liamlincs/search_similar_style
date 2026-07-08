@@ -743,6 +743,7 @@ def get_model(name: str) -> FileResponse:
     path = OUTPUT_DIR / safe
     if not path.is_file():
         raise HTTPException(status_code=404, detail="not found")
+    logging.info("garment model download start file=%s bytes=%s", safe, path.stat().st_size)
     media_types = {
         ".glb": "model/gltf-binary",
         ".gltf": "model/gltf+json",

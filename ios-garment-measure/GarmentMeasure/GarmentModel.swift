@@ -187,7 +187,9 @@ final class GarmentMeasurementStore: ObservableObject {
 
         do {
             let result = try await GarmentAIGenerationClient(baseURL: url)
-                .generateModel(photo: garmentPhoto, measurements: measurementsSnapshot())
+                .generateModel(photo: garmentPhoto, measurements: measurementsSnapshot()) { [weak self] status in
+                    self?.generationStatus = status
+                }
             if let localModelURL = result.localModelURL {
                 let archive = try persistGeneratedModel(
                     temporaryURL: localModelURL,
