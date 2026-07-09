@@ -22,3 +22,4 @@ xcuserdata/
 ios-garment-measure/server/inputs/
 ios-garment-measure/server/outputs/
 ios-garment-measure/server/__pycache__/
+data/product_catalog.db
