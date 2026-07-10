@@ -4559,6 +4559,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .modal.open { display: flex; }
     .modal-panel { width: min(680px, 100%); max-height: 90vh; overflow: auto; background: #fff; border-radius: 8px; padding: 12px; }
     .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .modal-head > div:first-child { min-width: 0; flex: 1; }
+    .modal-close-btn { flex: none; width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; color: #111827; font-size: 30px; line-height: 1; font-weight: 700; display: inline-grid; place-items: center; }
     .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 8px; background: #e5e7eb; }
     .gallery-item.preview-full { grid-column: 1 / -1; }
@@ -4751,7 +4753,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="muted" id="gallerySubTitle"></div>
           </div>
           <button class="personal-btn" id="addPersonalBtn" type="button">加入个人产品</button>
-          <button class="secondary" id="closeGalleryBtn" type="button">关闭</button>
+          <button class="modal-close-btn" id="closeGalleryBtn" type="button" aria-label="关闭" title="关闭">×</button>
         </div>
         <div class="gallery-grid" id="galleryGrid"></div>
       </div>
@@ -6060,7 +6062,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .modal { position: fixed; inset: 0; background: rgba(17,24,39,0.68); display: none; align-items: center; justify-content: center; padding: 24px; z-index: 999; }
     .modal.open { display: flex; }
     .modal-panel { width: min(1080px, 100%); max-height: 90vh; overflow: auto; background: #fff; border-radius: 16px; padding: 18px; }
-    .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .modal-head > div:first-child { min-width: 0; flex: 1; }
+    .modal-close-btn { flex: none; width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; color: #111827; font-size: 30px; line-height: 1; font-weight: 700; display: inline-grid; place-items: center; }
     .modal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
     .gallery-item { background: #f9fafb; border-radius: 12px; padding: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; background: #e5e7eb; }
@@ -6214,7 +6218,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <div id="galleryTitle" class="code" style="margin:0;"></div>
           <div id="gallerySubTitle" class="muted"></div>
         </div>
-        <button id="closeGalleryBtn" class="secondary">关闭</button>
+        <button id="closeGalleryBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
       <div id="galleryGrid" class="modal-grid"></div>
     </div>
@@ -6226,7 +6230,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <div class="code" style="margin:0;">款图录入</div>
           <div class="muted">支持服务器目录或浏览器上传图片，先 OCR 生成候选文件名，再手工修改后导入到产品库图片目录。</div>
         </div>
-        <button id="closeImportBtn" class="secondary">关闭</button>
+        <button id="closeImportBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
       <div class="import-source-block">
         <div class="import-source-title">服务器目录</div>
@@ -6289,7 +6293,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <div id="importPreviewTitle" class="code" style="margin:0;"></div>
           <div id="importPreviewSubTitle" class="muted"></div>
         </div>
-        <button id="closeImportPreviewBtn" class="secondary">关闭</button>
+        <button id="closeImportPreviewBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
       <img id="importPreviewImg" class="import-preview-img" alt="source preview" />
     </div>
@@ -6300,7 +6304,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div>
           <div class="code" style="margin:0;">色卡蓝牙录入</div>
         </div>
-        <button id="closeColorCardBtn" class="secondary">关闭</button>
+        <button id="closeColorCardBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
       <div class="color-meter-grid">
         <section class="color-meter-card">

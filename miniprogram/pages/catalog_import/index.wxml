@@ -35,7 +35,7 @@
     <view class="modal-panel" catchtap="noop">
       <view class="modal-head">
         <view class="section-title modal-title">编辑 {{editingStyleCode}}</view>
-        <view class="modal-close" bindtap="cancelEditTags">关闭</view>
+        <view class="modal-close" bindtap="cancelEditTags" aria-label="关闭">×</view>
       </view>
 
       <view class="field-label">年份</view>
