@@ -4809,6 +4809,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       productOffset: 0,
       productHasMore: true,
       productLoading: false,
+      productLoadSeq: 0,
       colorMode: "query",
       currentGalleryProduct: null,
       imageSearchFile: null,
@@ -5055,6 +5056,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         $("productLoadMore").textContent = "";
         return;
       }
+      if (state.productLoading && !state.products.length) {
+        box.className = "product-grid";
+        box.innerHTML = '<div class="empty">加载中...</div>';
+        $("productLoadMore").textContent = "";
+        return;
+      }
       if (!state.products.length) {
         box.innerHTML = '<div class="empty">暂无产品数据</div>';
         $("productLoadMore").textContent = "";
@@ -5298,8 +5305,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     async function loadProducts(reset = true) {
       if (!canProductView) return renderProducts();
-      if (state.productLoading) return;
+      if (state.productLoading && !reset) return;
       if (state.productMode === "query" && !reset && !state.productHasMore) return;
+      const loadSeq = ++state.productLoadSeq;
+      const loadAppMode = state.appMode;
+      const loadProductMode = state.productMode;
       if (reset) {
         state.productOffset = 0;
         state.productHasMore = true;
@@ -5307,6 +5317,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       state.productLoading = true;
       $("productLoadMore").textContent = state.productMode === "query" ? "加载中..." : "";
+      if (reset) renderProducts();
       setStatus("加载中...", false);
       const limit = state.productMode === "query" ? state.productLimit : 80;
       if (state.appMode === "mine") {
@@ -5314,22 +5325,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (!tag) {
           state.products = [];
           state.productHasMore = false;
+          if (loadSeq === state.productLoadSeq) state.productLoading = false;
           renderProducts();
           setStatus("", false);
-          state.productLoading = false;
           return;
         }
         try {
           const mineQuery = new URLSearchParams({ limit: String(limit), offset: "0", tags: tag });
           const data = await api("/api/v1/catalog/products?" + mineQuery.toString());
+          if (loadSeq !== state.productLoadSeq || state.appMode !== loadAppMode || state.productMode !== loadProductMode) return;
           state.products = data.products || [];
           state.productHasMore = false;
+          state.productLoading = false;
           renderProducts();
           renderProductFilters();
           setStatus(`已加载 ${state.products.length} 条`, false);
         } finally {
-          state.productLoading = false;
-          $("productLoadMore").textContent = "";
+          if (loadSeq === state.productLoadSeq) {
+            state.productLoading = false;
+            $("productLoadMore").textContent = "";
+          }
         }
         return;
       }
@@ -5347,6 +5362,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       try {
         const data = await api("/api/v1/catalog/products?" + query.toString());
+        if (loadSeq !== state.productLoadSeq || state.appMode !== loadAppMode || state.productMode !== loadProductMode) return;
         const rows = data.products || [];
         if (state.productMode === "query") {
           state.products = reset ? rows : state.products.concat(rows);
@@ -5356,12 +5372,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           state.products = rows;
           state.productHasMore = false;
         }
+        state.productLoading = false;
         renderProducts();
         renderProductFilters();
         setStatus(`已加载 ${state.products.length} 条`, false);
       } finally {
-        state.productLoading = false;
-        if (state.productMode === "query") {
+        if (loadSeq === state.productLoadSeq) {
+          state.productLoading = false;
+        }
+        if (loadSeq === state.productLoadSeq && state.productMode === "query") {
           $("productLoadMore").textContent = state.productHasMore ? "向下滑动加载更多" : (state.products.length ? "已加载全部" : "");
         }
       }
