@@ -27,7 +27,14 @@ const config = {
   recolorAiPath: "/recolor-ai",
   enableExperienceVersion: true,
   catalogH5Path: "/catalog",
-  catalogH5Token: "",
+  // H5 可单独切换，便于内网调测和公网调测分开验证。
+  // 跳转参数支持 env=public/lan，或 h5_base_url=http%3A%2F%2F192.168.0.106%3A8000 临时覆盖。
+  catalogH5BaseUrl: "",
+  catalogH5BaseUrls: {
+    public: "https://api.openfire.cloud",
+    lan: ""
+  },
+  catalogH5Env: "public",
   includeImageBase64: false,
   requestTimeout: 15000,
   uploadTimeout: 300000,

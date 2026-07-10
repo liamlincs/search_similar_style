@@ -121,12 +121,28 @@ Page({
 
   switchMode(e) {
     const mode = e.currentTarget.dataset.mode || "image";
+    if (mode === "catalog") {
+      this.openCatalogH5("product");
+      return;
+    }
     if (mode === this.data.pageMode) return;
     this.setData({ pageMode: mode });
-    if (mode === "catalog" && !this.data.catalogResults.length && !this.data.catalogLoading) {
-      this.loadCatalogFilters();
-      this.searchCatalog(true);
-    }
+  },
+
+  openCatalogH5(type = "product") {
+    const env = config.catalogH5Env || "public";
+    const token = String(
+      wx.getStorageSync("catalogUserToken") ||
+      wx.getStorageSync("userToken") ||
+      wx.getStorageSync("accessToken") ||
+      ""
+    );
+    const query = [
+      `type=${encodeURIComponent(type === "color" ? "color" : "product")}`,
+      `env=${encodeURIComponent(env)}`
+    ];
+    if (token) query.push(`token=${encodeURIComponent(token)}`);
+    wx.navigateTo({ url: `/pages/catalog_webview/index?${query.join("&")}` });
   },
 
   chooseFromAlbum() {

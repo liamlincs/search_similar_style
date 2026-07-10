@@ -23,4 +23,7 @@ ios-garment-measure/server/inputs/
 ios-garment-measure/server/outputs/
 ios-garment-measure/server/__pycache__/
 data/product_catalog.db
+data/product_catalog.db-*
+data/color_cards.db
+data/color_cards.db-*
 .DS_Store

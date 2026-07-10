@@ -35,7 +35,7 @@
     "image_max_edge": 420,
     "image_quality": 68,
     "web_auth": {
-      "enabled": true,
+      "enabled": false,
       "captcha_enabled": true,
       "captcha_timezone": "Asia/Shanghai",
       "users": [
@@ -54,6 +54,10 @@
     },
     "external_token_auth": {
       "enabled": true,
+      "verify_url": "",
+      "verify_timeout_sec": 3,
+      "cache_ttl_sec": 300,
+      "fail_open": false,
       "allow_unverified_tokens": false,
       "allowed_tokens": [],
       "default_permissions": [
@@ -120,9 +124,9 @@
     "region_strip_query_component_views": false,
     "region_strip_query_view_consensus_weight": 0.0,
     "strict_small_query_weights": {
-      "clip": 0.52,
-      "shape": 0.3,
-      "color": 0.06,
+      "clip": 0.56,
+      "shape": 0.32,
+      "color": 0.0,
       "stripe": 0.12
     },
     "strict_small_region_code_prior_min_score": 0.62,
@@ -163,11 +167,11 @@
     "stripe_consistency_weight": 0.08,
     "stripe_consistency_apply_topn": 160,
     "pattern_consistency_enabled": true,
-    "pattern_consistency_weight": 0.28,
-    "pattern_consistency_apply_topn": 160,
+    "pattern_consistency_weight": 0.16,
+    "pattern_consistency_apply_topn": 256,
     "pattern_code_boost_enabled": true,
-    "pattern_code_boost_weight": 0.13,
-    "pattern_code_boost_topn": 24,
+    "pattern_code_boost_weight": 0.08,
+    "pattern_code_boost_topn": 30,
     "checker_consistency_enabled": true,
     "checker_query_threshold": 0.08,
     "checker_boost_weight": 0.22,
@@ -307,6 +311,20 @@
       "shape": 0.16,
       "color": 0.04,
       "stripe": 0.25
-    }
+    },
+    "strict_small_pattern_region_order_enabled": true,
+    "strict_small_pattern_region_order_weight": 0.07,
+    "strict_small_pattern_region_order_min_sim": 0.58,
+    "strict_small_pattern_region_rescue_enabled": true,
+    "strict_small_pattern_region_rescue_scan_images": 180,
+    "strict_small_pattern_region_rescue_max_rows": 6,
+    "strict_small_pattern_region_rescue_min_sim": 0.56,
+    "strict_small_pattern_region_rescue_near_delta": 0.05,
+    "strict_small_dark_motif_rescue_enabled": true,
+    "strict_small_dark_motif_rescue_min_sim": 0.58,
+    "strict_small_dark_motif_full_presence_min_sim": 0.46,
+    "strict_small_dark_motif_full_presence_boost": 0.1,
+    "strict_small_dark_motif_rescue_weight": 0.14,
+    "strict_small_dark_motif_rescue_max_rows": 9
   }
 }

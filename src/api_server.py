@@ -372,6 +372,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     strict_small_region_query_crop_ratio = float(search_cfg.get("strict_small_region_query_crop_ratio", 0.72))
     strict_small_region_query_component_views = bool(search_cfg.get("strict_small_region_query_component_views", True))
     strict_small_disable_consistency = bool(search_cfg.get("strict_small_disable_consistency", True))
+    strict_small_pattern_region_order_enabled = bool(search_cfg.get("strict_small_pattern_region_order_enabled", True))
+    strict_small_pattern_region_order_weight = float(search_cfg.get("strict_small_pattern_region_order_weight", 0.07))
+    strict_small_pattern_region_order_min_sim = float(search_cfg.get("strict_small_pattern_region_order_min_sim", 0.58))
+    strict_small_pattern_region_rescue_enabled = bool(search_cfg.get("strict_small_pattern_region_rescue_enabled", True))
+    strict_small_pattern_region_rescue_scan_images = int(search_cfg.get("strict_small_pattern_region_rescue_scan_images", 180))
+    strict_small_pattern_region_rescue_max_rows = int(search_cfg.get("strict_small_pattern_region_rescue_max_rows", 6))
+    strict_small_pattern_region_rescue_min_sim = float(search_cfg.get("strict_small_pattern_region_rescue_min_sim", 0.56))
+    strict_small_pattern_region_rescue_near_delta = float(search_cfg.get("strict_small_pattern_region_rescue_near_delta", 0.05))
+    strict_small_dark_motif_rescue_enabled = bool(search_cfg.get("strict_small_dark_motif_rescue_enabled", True))
+    strict_small_dark_motif_rescue_min_sim = float(search_cfg.get("strict_small_dark_motif_rescue_min_sim", 0.58))
+    strict_small_dark_motif_full_presence_min_sim = float(search_cfg.get("strict_small_dark_motif_full_presence_min_sim", 0.46))
+    strict_small_dark_motif_full_presence_boost = float(search_cfg.get("strict_small_dark_motif_full_presence_boost", 0.10))
+    strict_small_dark_motif_rescue_weight = float(search_cfg.get("strict_small_dark_motif_rescue_weight", 0.14))
+    strict_small_dark_motif_rescue_max_rows = int(search_cfg.get("strict_small_dark_motif_rescue_max_rows", 9))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
     region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
@@ -669,6 +683,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_web_cookie_name = str(catalog_web_auth_cfg.get("cookie_name", "catalog_session")).strip() or "catalog_session"
     catalog_external_auth_cfg = catalog_cfg.get("external_token_auth", {})
     catalog_external_token_enabled = bool(catalog_external_auth_cfg.get("enabled", True))
+    catalog_external_verify_url = str(catalog_external_auth_cfg.get("verify_url", "")).strip()
+    catalog_external_verify_timeout_sec = float(catalog_external_auth_cfg.get("verify_timeout_sec", 3.0))
+    catalog_external_cache_ttl_sec = int(catalog_external_auth_cfg.get("cache_ttl_sec", 300))
+    catalog_external_fail_open = bool(catalog_external_auth_cfg.get("fail_open", False))
     catalog_external_allow_unverified_env = os.getenv("CATALOG_ALLOW_UNVERIFIED_TOKENS", "").strip().lower()
     catalog_external_allow_unverified_tokens = bool(catalog_external_auth_cfg.get("allow_unverified_tokens", False))
     if catalog_external_allow_unverified_env in {"1", "true", "yes"}:
@@ -691,6 +709,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "default_permissions",
             ["product:view", "product:create", "color:view", "color:create"],
         )
+        if str(item).strip()
+    ]
+    catalog_external_user_fields = [
+        str(item).strip()
+        for item in catalog_external_auth_cfg.get("user_fields", ["user_id", "user", "openid", "sub"])
+        if str(item).strip()
+    ]
+    catalog_external_permission_fields = [
+        str(item).strip()
+        for item in catalog_external_auth_cfg.get("permission_fields", ["permissions", "perms", "scope"])
         if str(item).strip()
     ]
 
@@ -1056,6 +1084,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("catalog sync done: %s", sync_stats)
     catalog_import_jobs: Dict[str, Dict[str, Any]] = {}
     catalog_import_lock = threading.Lock()
+    catalog_external_token_cache: Dict[str, Dict[str, Any]] = {}
+    catalog_external_token_cache_lock = threading.Lock()
     allowed_image_exts = {f".{str(ext).lower().lstrip('.')}" for ext in image_exts}
     tesseract_bin = shutil.which("tesseract")
     debug_cfg = cfg.get("debug", {})
@@ -1459,32 +1489,115 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         sig = _catalog_session_sign(username, exp_ts)
         return f"{username}:{exp_ts}:{sig}", exp_ts
 
-    def _catalog_token_user(token: str) -> str:
+    def _catalog_token_cache_key(token: str) -> str:
         clean = str(token or "").strip()
-        if not catalog_external_token_enabled or len(clean) < 8:
-            return ""
-        if clean not in catalog_external_allowed_tokens and not catalog_external_allow_unverified_tokens:
-            return ""
-        digest = hashlib.sha256(clean.encode("utf-8")).hexdigest()[:16]
-        return f"external_{digest}"
+        return hashlib.sha256(clean.encode("utf-8")).hexdigest()
 
-    def _catalog_token_permissions(token: str) -> List[str]:
-        clean = str(token or "").strip()
+    def _catalog_permissions_from_payload(payload: Dict[str, Any]) -> List[str]:
         permissions: List[str] = []
+        for field in catalog_external_permission_fields:
+            raw_permissions = payload.get(field)
+            if raw_permissions:
+                break
+        else:
+            raw_permissions = []
+        if isinstance(raw_permissions, str):
+            raw_permissions = re.split(r"[\s,]+", raw_permissions)
+        if isinstance(raw_permissions, list):
+            permissions = [str(item).strip() for item in raw_permissions if str(item).strip()]
+        return permissions or list(catalog_external_default_permissions)
+
+    def _catalog_jwt_payload(token: str) -> Dict[str, Any]:
+        clean = str(token or "").strip()
         parts = clean.split(".")
         if len(parts) >= 2:
             payload_raw = parts[1]
             payload_raw += "=" * (-len(payload_raw) % 4)
             try:
                 payload = json.loads(base64.urlsafe_b64decode(payload_raw.encode("utf-8")).decode("utf-8"))
-                raw_permissions = payload.get("permissions") or payload.get("perms") or payload.get("scope") or []
-                if isinstance(raw_permissions, str):
-                    raw_permissions = re.split(r"[\s,]+", raw_permissions)
-                if isinstance(raw_permissions, list):
-                    permissions = [str(item).strip() for item in raw_permissions if str(item).strip()]
+                if isinstance(payload, dict):
+                    return payload
             except Exception:
-                permissions = []
-        return permissions or list(catalog_external_default_permissions)
+                return {}
+        return {}
+
+    def _catalog_token_user_from_payload(payload: Dict[str, Any], token: str) -> str:
+        for field in catalog_external_user_fields:
+            value = str(payload.get(field, "")).strip()
+            if value:
+                return value
+        return f"external_{_catalog_token_cache_key(token)[:16]}"
+
+    def _catalog_verify_token_remote(token: str) -> Dict[str, Any] | None:
+        if not catalog_external_verify_url:
+            return None
+        body = json.dumps({"token": token}, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            catalog_external_verify_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "X-Catalog-Token": token,
+            },
+        )
+        with urllib.request.urlopen(req, timeout=max(0.5, catalog_external_verify_timeout_sec)) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+        if not isinstance(data, dict):
+            return None
+        valid_value = data.get("valid", data.get("active", data.get("ok", data.get("success", True))))
+        if valid_value is False or str(valid_value).strip().lower() in {"0", "false", "no", "invalid", "expired"}:
+            return None
+        user = _catalog_token_user_from_payload(data, token)
+        return {
+            "user": user,
+            "permissions": _catalog_permissions_from_payload(data),
+            "source": "verify_url",
+        }
+
+    def _catalog_verify_token(token: str) -> Dict[str, Any] | None:
+        clean = str(token or "").strip()
+        if not catalog_external_token_enabled or len(clean) < 8:
+            return None
+        cache_key = _catalog_token_cache_key(clean)
+        now = time.time()
+        with catalog_external_token_cache_lock:
+            cached = catalog_external_token_cache.get(cache_key)
+            if cached and float(cached.get("expires_at", 0.0)) > now:
+                return dict(cached.get("result") or {}) or None
+
+        result: Dict[str, Any] | None = None
+        if catalog_external_verify_url:
+            try:
+                result = _catalog_verify_token_remote(clean)
+            except Exception as exc:
+                logging.warning("catalog external token verify failed: %s", exc)
+                if not catalog_external_fail_open:
+                    result = None
+                else:
+                    payload = _catalog_jwt_payload(clean)
+                    result = {
+                        "user": _catalog_token_user_from_payload(payload, clean),
+                        "permissions": _catalog_permissions_from_payload(payload),
+                        "source": "fail_open",
+                    }
+
+        if result is None and (clean in catalog_external_allowed_tokens or catalog_external_allow_unverified_tokens):
+            payload = _catalog_jwt_payload(clean)
+            result = {
+                "user": _catalog_token_user_from_payload(payload, clean),
+                "permissions": _catalog_permissions_from_payload(payload),
+                "source": "local",
+            }
+
+        if result is not None and catalog_external_cache_ttl_sec > 0:
+            with catalog_external_token_cache_lock:
+                catalog_external_token_cache[cache_key] = {
+                    "expires_at": now + max(1, catalog_external_cache_ttl_sec),
+                    "result": dict(result),
+                }
+        return result
 
     def _catalog_read_session_user(request: Request) -> str:
         if not catalog_web_auth_enabled:
@@ -1617,8 +1730,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             key = request.headers.get("X-API-Key", "").strip() if api_key_enabled else ""
             api_user = api_key_map.get(key, "") if key else ""
             catalog_token = _catalog_request_token(request)
-            token_user = _catalog_token_user(catalog_token)
-            web_user = _catalog_read_session_user(request)
+            token_auth = _catalog_verify_token(catalog_token)
             if api_user:
                 request.state.api_user = api_user
                 request.state.catalog_permissions = None
@@ -1635,9 +1747,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ua[:200],
                 )
                 return resp
-            if token_user:
-                request.state.api_user = f"catalog-token:{token_user}"
-                request.state.catalog_permissions = set(_catalog_token_permissions(catalog_token))
+            if token_auth:
+                request.state.catalog_user_id = str(token_auth.get("user", "")).strip()
+                request.state.api_user = f"catalog-token:{token_auth.get('user', 'unknown')}"
+                request.state.catalog_permissions = set(token_auth.get("permissions") or [])
                 resp = await call_next(request)
                 logging.info(
                     'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
@@ -1651,6 +1764,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ua[:200],
                 )
                 return resp
+            if catalog_token and not token_auth:
+                resp = JSONResponse(status_code=401, content={"detail": "invalid catalog token"})
+                logging.info(
+                    'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                    client_ip,
+                    request.method,
+                    request.url.path,
+                    resp.status_code,
+                    (time.perf_counter() - t0) * 1000.0,
+                    req_len,
+                    ua[:200],
+                )
+                return resp
+            web_user = _catalog_read_session_user(request)
             if web_user:
                 request.state.api_user = f"catalog-web:{web_user}"
                 request.state.catalog_permissions = None
@@ -1699,6 +1826,39 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if api_key_enabled:
             key = request.headers.get("X-API-Key", "").strip()
             user = api_key_map.get(key, "")
+            if path == "/search":
+                catalog_token = _catalog_request_token(request)
+                token_auth = _catalog_verify_token(catalog_token)
+                if token_auth:
+                    request.state.catalog_user_id = str(token_auth.get("user", "")).strip()
+                    request.state.api_user = f"catalog-token:{token_auth.get('user', 'unknown')}"
+                    request.state.catalog_permissions = set(token_auth.get("permissions") or [])
+                    resp = await call_next(request)
+                    logging.info(
+                        'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                        client_ip,
+                        getattr(request.state, "api_user", "unknown"),
+                        request.method,
+                        request.url.path,
+                        resp.status_code,
+                        (time.perf_counter() - t0) * 1000.0,
+                        req_len,
+                        ua[:200],
+                    )
+                    return resp
+                if catalog_token and not token_auth:
+                    resp = JSONResponse(status_code=401, content={"detail": "invalid catalog token"})
+                    logging.info(
+                        'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                        client_ip,
+                        request.method,
+                        request.url.path,
+                        resp.status_code,
+                        (time.perf_counter() - t0) * 1000.0,
+                        req_len,
+                        ua[:200],
+                    )
+                    return resp
             if path.startswith("/images/"):
                 if user:
                     request.state.api_user = user
@@ -1745,6 +1905,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             )
                             return resp
             if not user:
+                if path == "/search" and (not catalog_web_auth_enabled) and catalog_public:
+                    request.state.api_user = "catalog-public-search"
+                    resp = await call_next(request)
+                    logging.info(
+                        'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                        client_ip,
+                        getattr(request.state, "api_user", "unknown"),
+                        request.method,
+                        request.url.path,
+                        resp.status_code,
+                        (time.perf_counter() - t0) * 1000.0,
+                        req_len,
+                        ua[:200],
+                    )
+                    return resp
                 resp = JSONResponse(status_code=401, content={"detail": "invalid api key"})
                 logging.info(
                     'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
@@ -2381,6 +2556,116 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
+
+    def _extract_dark_motif_sig(path: Path, size: int = 18) -> np.ndarray | None:
+        try:
+            with Image.open(path) as im0:
+                im = im0.convert("RGB")
+                im.thumbnail((520, 520), Image.Resampling.BILINEAR)
+                rgb = np.asarray(im, dtype=np.uint8)
+        except Exception:
+            return None
+        if rgb.ndim != 3 or rgb.shape[0] < 32 or rgb.shape[1] < 32:
+            return None
+        h, w = rgb.shape[:2]
+        arr = rgb.astype(np.float32)
+        gray = (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2]).astype(np.float32)
+        mx = arr.max(axis=-1)
+        mn = arr.min(axis=-1)
+        sat = (mx - mn) / np.clip(mx, 1.0, None)
+
+        valid = np.ones((h, w), dtype=bool)
+        valid[: int(h * 0.08), :] = False
+        dark = valid & (gray < 95.0) & (sat < 0.75)
+        if cv2 is not None:
+            n, labels, stats, _centers = cv2.connectedComponentsWithStats(dark.astype("uint8"), 8)
+            best: tuple[float, int, int, int, int] | None = None
+            min_area = max(30, int(h * w * 0.002))
+            for idx in range(1, n):
+                area = int(stats[idx, cv2.CC_STAT_AREA])
+                if area < min_area:
+                    continue
+                x = int(stats[idx, cv2.CC_STAT_LEFT])
+                y = int(stats[idx, cv2.CC_STAT_TOP])
+                ww = int(stats[idx, cv2.CC_STAT_WIDTH])
+                hh = int(stats[idx, cv2.CC_STAT_HEIGHT])
+                cx = (x + ww / 2.0) / max(1, w)
+                cy = (y + hh / 2.0) / max(1, h)
+                central = 1.0 - abs(cx - 0.5) * 0.7 - abs(cy * 0.85 - 0.5) * 0.2
+                score = float(area) * max(0.2, float(central))
+                if best is None or score > best[0]:
+                    best = (score, x, y, ww, hh)
+            if best is None:
+                return None
+            _score, x, y, ww, hh = best
+            pad = max(4, int(max(ww, hh) * 0.10))
+            x0 = max(0, x - pad)
+            y0 = max(0, y - pad)
+            x1 = min(w, x + ww + pad)
+            y1 = min(h, y + hh + pad)
+        else:
+            ys, xs = np.where(dark)
+            if ys.size < 30:
+                return None
+            x0, x1 = int(xs.min()), int(xs.max()) + 1
+            y0, y1 = int(ys.min()), int(ys.max()) + 1
+
+        crop = rgb[y0:y1, x0:x1]
+        if crop.shape[0] < 16 or crop.shape[1] < 16:
+            return None
+        ca = crop.astype(np.float32)
+        cgray = (0.299 * ca[..., 0] + 0.587 * ca[..., 1] + 0.114 * ca[..., 2]).astype(np.float32)
+        cmx = ca.max(axis=-1)
+        cmn = ca.min(axis=-1)
+        csat = (cmx - cmn) / np.clip(cmx, 1.0, None)
+        cr, cg, cb = ca[..., 0], ca[..., 1], ca[..., 2]
+        chroma = cmx - cmn
+        motif = ((csat > 0.26) & (cmx > 95.0) & (chroma > 34.0)) | (
+            (csat < 0.24) & (cgray > 138.0) & (cgray < 245.0)
+        )
+        dark_local = cgray < 100.0
+        if cv2 is not None:
+            near_dark = cv2.dilate(dark_local.astype("uint8"), np.ones((5, 5), np.uint8), iterations=2).astype(bool)
+            motif &= near_dark
+            n, labels, stats, _centers = cv2.connectedComponentsWithStats(motif.astype("uint8"), 8)
+            keep = np.zeros_like(motif, dtype=bool)
+            ch, cw = motif.shape
+            for idx in range(1, n):
+                area = int(stats[idx, cv2.CC_STAT_AREA])
+                if area < 4 or area > ch * cw * 0.35:
+                    continue
+                keep[labels == idx] = True
+            motif = keep
+        if int(motif.sum()) < 10:
+            return None
+
+        color_motif = motif & (csat > 0.34) & (chroma > 45.0)
+        cats = [
+            motif & (cgray > 138.0) & (csat < 0.24),
+            color_motif & (cr > 125.0) & (cb > 95.0) & (cg < 175.0) & (np.abs(cr - cb) < 95.0),
+            color_motif & (cr > 135.0) & (cg > 105.0) & (cb < 135.0) & ((cr + cg) > (cb * 2.2)),
+            color_motif & (cb > 115.0) & (cb > cr + 22.0) & (cb > cg + 6.0),
+            color_motif & (cg > 105.0) & (cg > cr + 15.0) & (cg > cb + 2.0),
+        ]
+        vecs: List[np.ndarray] = []
+        for mask in cats + [motif]:
+            img = Image.fromarray((mask.astype(np.uint8) * 255), mode="L").resize((size, size), Image.BILINEAR)
+            v = np.asarray(img, dtype=np.float32).reshape(-1) / 255.0
+            v = v / (float(np.linalg.norm(v)) + 1e-8)
+            vecs.append(v)
+        presence = np.array([float(int(mask.sum()) > 8) for mask in cats], dtype=np.float32)
+        v = np.concatenate(
+            [
+                vecs[0] * 1.6,
+                vecs[1] * 1.4,
+                vecs[2] * 1.4,
+                vecs[3] * 1.0,
+                vecs[4] * 1.0,
+                vecs[5] * 0.8,
+                presence * 1.2,
+            ]
+        ).astype(np.float32)
+        return (v / (float(np.linalg.norm(v)) + 1e-8)).astype(np.float32)
 
     def _merge_accent_pattern_candidates(
         ranked: List[tuple[str, float]],
@@ -3433,6 +3718,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"accent_pattern_cache_{safe}.npz"
 
+    def _dark_motif_cache_path() -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+        return Path("outputs") / f"dark_motif_cache_{safe}.npz"
+
     def _sleeve_pattern_cache_path() -> Path:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"sleeve_pattern_cache_{safe}.npz"
@@ -3507,6 +3796,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             logging.info("accent pattern cache write: %s", cache_path)
         logging.info("accent pattern cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
+        return out
+
+    def _load_or_build_dark_motif_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
+        uniq = sorted({n.split("@", 1)[0] for n in file_names})
+        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        sigs = [_local_file_sig(p) for p in files]
+        cache_key = json.dumps(
+            {
+                "kind": "dark_motif",
+                "version": 3,
+                "size": 18,
+                "pattern": standard_pattern,
+                "exts": list(image_exts),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        cache_path = _dark_motif_cache_path()
+        if feature_cache_enabled and cache_path.exists():
+            try:
+                arr = np.load(cache_path, allow_pickle=True)
+                if str(arr["cache_key"].item()) == cache_key and list(arr["file_sigs"]) == sigs:
+                    cached_names = [str(x) for x in arr["names"]]
+                    feats = arr["feats"].astype(np.float32)
+                    out = {name: feats[i] for i, name in enumerate(cached_names)}
+                    logging.info("dark motif cache hit: %s (%d items)", cache_path, len(out))
+                    return out
+            except Exception:
+                pass
+
+        t0 = time.perf_counter()
+        out: Dict[str, np.ndarray] = {}
+        for fp in files:
+            sig = _extract_dark_motif_sig(fp, size=18)
+            if sig is not None:
+                out[fp.name] = sig.astype(np.float32)
+        if feature_cache_enabled:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            names_arr = np.array(list(out.keys()), dtype=object)
+            feats_arr = np.vstack([out[n] for n in out.keys()]).astype(np.float32) if out else np.zeros((0, 1), dtype=np.float32)
+            np.savez_compressed(
+                cache_path,
+                cache_key=np.array([cache_key], dtype=object),
+                file_sigs=np.array(sigs, dtype=object),
+                names=names_arr,
+                feats=feats_arr,
+            )
+            logging.info("dark motif cache write: %s", cache_path)
+        logging.info("dark motif cache built: %d items in %.2fs", len(out), time.perf_counter() - t0)
         return out
 
     def _load_or_build_sleeve_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
@@ -3996,6 +4334,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
+    dark_motif_cache: Dict[str, np.ndarray] = {}
     collar_contour_cache: Dict[str, np.ndarray] = {}
     collar_chevron_cache: Dict[str, float] = {}
     sleeve_pattern_cache: Dict[str, np.ndarray] = {}
@@ -4043,7 +4382,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if sv is not None:
                 stripe_sig_cache[file_name] = sv
         logging.info("api preloaded stripe cache: %d", len(stripe_sig_cache))
-    if pattern_consistency_enabled:
+    if pattern_consistency_enabled or strict_small_pattern_region_order_enabled or strict_small_pattern_region_rescue_enabled:
         uniq = sorted({n.split("@", 1)[0] for n in names})
         for file_name in uniq:
             fp = standard_dir / file_name
@@ -4066,6 +4405,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     if accent_pattern_enabled:
         accent_pattern_cache = _load_or_build_accent_pattern_cache(names)
         logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
+    if strict_small_dark_motif_rescue_enabled:
+        dark_motif_cache = _load_or_build_dark_motif_cache(names)
+        logging.info("api preloaded dark motif cache: %d", len(dark_motif_cache))
     if collar_contour_enabled:
         collar_contour_cache = _load_or_build_collar_contour_cache(names)
         logging.info("api preloaded collar contour cache: %d", len(collar_contour_cache))
@@ -4108,45 +4450,73 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             content={"status": "not_ready", "detail": str(getattr(app.state, "ready_detail", "initializing"))},
         )
 
-    def _catalog_mobile_page(initial_type: str) -> str:
+    def _catalog_mobile_page(
+        initial_type: str,
+        server_permissions: List[str] | None = None,
+        server_user_id: str = "",
+    ) -> str:
         safe_type = "color" if str(initial_type or "").strip().lower() == "color" else "product"
+        permissions_json = json.dumps(server_permissions or [], ensure_ascii=False)
+        user_id_json = json.dumps(str(server_user_id or "").strip(), ensure_ascii=False)
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>资料库</title>
+  <title>产品库</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; background: #f4f6f8; color: #111827; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    .app { max-width: 720px; margin: 0 auto; min-height: 100vh; background: #f4f6f8; }
-    .top { position: sticky; top: 0; z-index: 20; background: rgba(244,246,248,.96); backdrop-filter: blur(12px); padding: 12px 14px 10px; border-bottom: 1px solid #e5e7eb; }
-    .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    body { margin: 0; background: #f5f6f8; color: #111827; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .app { width: 100%; min-height: 100vh; background: #f5f6f8; }
+    .top { position: sticky; top: 0; z-index: 20; background: rgba(255,255,255,.98); backdrop-filter: blur(12px); padding: max(12px, env(safe-area-inset-top)) 14px 10px; border-bottom: 1px solid #edf0f3; }
+    .head { display: none; }
     h1 { margin: 0; font-size: 20px; line-height: 1.2; }
     .status { color: #64748b; font-size: 12px; min-height: 18px; text-align: right; }
     .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
     .library-tabs { display: none; }
+    .app-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; width: min(540px, 100%); margin: 0 auto 14px; padding: 3px; border-radius: 999px; background: #eef0f4; box-shadow: inset 0 1px 2px rgba(15,23,42,.08); }
+    .app-tab { min-height: 44px; border-radius: 999px; background: transparent; color: #7b8798; border: 0; font-size: 15px; font-weight: 800; }
+    .app-tab.active { background: #fff; color: #1f2937; box-shadow: 0 2px 8px rgba(15,23,42,.14); }
     .tab { min-height: 40px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #334155; font-size: 15px; font-weight: 700; }
     .tab.active { background: #0f172a; color: #fff; border-color: #0f172a; }
-    .search { display: grid; grid-template-columns: 1fr 82px; gap: 8px; }
+    .search { display: grid; grid-template-columns: minmax(0, 1fr) 76px 70px; gap: 8px; align-items: center; }
     input, select, textarea, button { font: inherit; }
-    input, select, textarea { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #111827; padding: 10px 11px; min-height: 40px; }
+    input, select, textarea { width: 100%; border: 1px solid #e5e7eb; border-radius: 6px; background: #f5f7fa; color: #111827; padding: 10px 11px; min-height: 42px; }
     textarea { resize: vertical; min-height: 72px; }
-    button { border: 0; border-radius: 8px; min-height: 40px; padding: 0 12px; background: #0f172a; color: #fff; font-weight: 700; }
-    button.secondary { background: #fff; color: #111827; border: 1px solid #d1d5db; }
+    button { border: 0; border-radius: 6px; min-height: 42px; padding: 0 12px; background: #1677d2; color: #fff; font-weight: 700; }
+    button.secondary { background: #fff; color: #111827; border: 1px solid #e5e7eb; }
     button.danger { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
     button:disabled { opacity: .45; }
-    .body { padding: 12px 14px 28px; }
+    button.loading { position: relative; color: transparent !important; pointer-events: none; }
+    button.loading::after { content: ""; position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; border: 2px solid rgba(255,255,255,.55); border-top-color: #fff; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .body { padding: 12px 14px calc(28px + env(safe-area-inset-bottom)); }
     .panel { display: none; }
     .panel.active { display: block; }
     .list { display: grid; gap: 10px; }
-    .product-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .product-mode-tabs { display: none; }
     .filter-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+    .filter-summary { color: #64748b; font-size: 12px; min-height: 18px; padding: 0 2px; }
     .filter-section { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; width: 100%; }
     .filter-label { min-width: 38px; color: #64748b; font-size: 12px; font-weight: 700; }
     .filter-chip { min-height: 28px; padding: 0 9px; border-radius: 999px; border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; font-size: 12px; }
     .filter-chip.active { background: #3730a3; color: #fff; border-color: #3730a3; }
-    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; box-shadow: 0 2px 10px rgba(15,23,42,.04); }
+    .filter-modal { position: fixed; inset: 0; z-index: 120; display: none; align-items: flex-end; background: rgba(15,23,42,.48); }
+    .filter-modal.open { display: flex; }
+    .filter-sheet { width: 100%; max-height: 78vh; overflow: auto; background: #fff; border-radius: 24px 24px 0 0; padding: 20px 18px calc(18px + env(safe-area-inset-bottom)); box-shadow: 0 -18px 48px rgba(15,23,42,.18); }
+    .filter-sheet-head { position: relative; display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 18px; }
+    .filter-sheet-title { font-size: 22px; font-weight: 900; }
+    .icon-btn { position: absolute; right: 0; width: 40px; min-width: 40px; min-height: 40px; padding: 0; border-radius: 999px; background: transparent; color: #555; font-size: 30px; line-height: 1; }
+    .filter-group { margin-bottom: 18px; }
+    .filter-group-title { font-size: 16px; font-weight: 900; margin-bottom: 10px; }
+    .filter-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .filter-option { min-height: 44px; border-radius: 6px; background: #f4f4f5; color: #666; font-weight: 800; border: 1px solid transparent; }
+    .filter-option.active { background: #e8f3ff; color: #0b77d8; border-color: #bfdbfe; }
+    .filter-actions-bar { position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 14px; background: linear-gradient(180deg, rgba(255,255,255,.72), #fff 30%); }
+    .filter-actions-bar button { min-height: 52px; border-radius: 999px; font-size: 17px; }
+    .filter-actions-bar .reset { background: #f4f4f5; color: #0b77d8; }
+    .filter-actions-bar .apply { background: #1683df; color: #fff; }
+    .card { background: #fff; border: 1px solid #edf0f3; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(15,23,42,.03); }
     .product-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .product-tile { min-width: 0; padding: 0; overflow: hidden; }
     .product-tile .thumb { width: 100%; height: auto; aspect-ratio: 1 / 1; border-radius: 0; }
@@ -4163,8 +4533,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .tag { border-radius: 4px; background: #eef2ff; color: #3730a3; padding: 2px 6px; font-size: 11px; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
     .actions button { min-height: 34px; font-size: 13px; padding: 0 10px; }
-    .form { display: grid; gap: 9px; margin-bottom: 12px; }
-    .form-title { font-weight: 800; margin: 4px 0 0; }
+    .form { display: grid; gap: 10px; margin-bottom: 12px; background: #fff; border-radius: 8px; padding: 12px; border: 1px solid #edf0f3; }
+    .form-title { position: relative; font-weight: 800; margin: 0 0 2px; padding-left: 10px; }
+    .form-title::before { content: ""; position: absolute; left: 0; top: 3px; width: 4px; height: 16px; border-radius: 3px; background: #1677d2; }
     .review { display: grid; gap: 10px; margin: 12px 0; }
     .review-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .review-title { font-weight: 800; font-size: 15px; }
@@ -4177,17 +4548,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .review-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #334155; }
     .review-check input { width: 18px; min-height: 18px; }
     .review-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .bulk-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .bulk-note { color: #64748b; font-size: 12px; line-height: 1.4; }
+    .edit-select-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
     .tag-edit { display: grid; gap: 7px; margin-top: 8px; }
     .tag-edit-row { display: grid; grid-template-columns: 44px minmax(0,1fr); align-items: center; gap: 7px; }
     .tag-edit-row label { color: #64748b; font-size: 12px; font-weight: 700; }
     .tag-edit-row input { min-height: 34px; padding: 6px 9px; font-size: 13px; }
-    .modal { position: fixed; inset: 0; background: rgba(15,23,42,.68); display: none; align-items: center; justify-content: center; padding: 14px; z-index: 99; }
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,.42); display: none; align-items: center; justify-content: center; padding: 14px; z-index: 99; }
     .modal.open { display: flex; }
     .modal-panel { width: min(680px, 100%); max-height: 90vh; overflow: auto; background: #fff; border-radius: 8px; padding: 12px; }
     .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
     .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 8px; background: #e5e7eb; }
+    .gallery-item.preview-full { grid-column: 1 / -1; }
+    .gallery-item.preview-full img { aspect-ratio: auto; max-height: 72vh; object-fit: contain; }
     .gallery-caption { margin-top: 4px; color: #64748b; font-size: 11px; word-break: break-all; }
+    .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
+    .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
+    .personal-btn.remove { background: #fff1f2; color: #be123c; }
+    .float-actions { position: fixed; right: 14px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 70; display: grid; gap: 10px; }
+    .float-action { width: 54px; min-height: 54px; padding: 6px 4px; border-radius: 14px; border: 1px solid #dbeafe; background: #fff; color: #0b77d8; box-shadow: 0 8px 22px rgba(15,23,42,.16); font-size: 22px; line-height: 1; display: grid; place-items: center; }
+    .float-action span { display: block; margin-top: 2px; font-size: 11px; font-weight: 800; color: #334155; }
+    .float-action.active { background: #e8f3ff; color: #0b77d8; border-color: #bfdbfe; }
+    .float-action.return { background: #1677d2; color: #fff; border-color: #1677d2; }
+    .float-action.return span { color: #fff; }
     .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
     .swatch { width: 58px; min-width: 58px; height: 58px; border-radius: 8px; border: 1px solid rgba(15,23,42,.14); }
     .color-row { display: flex; gap: 10px; align-items: center; }
@@ -4199,6 +4584,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-match-list { display: grid; gap: 8px; }
     .color-match-item { border-radius: 8px; padding: 10px; border: 1px solid rgba(15,23,42,.12); }
     .empty { padding: 28px 0; color: #64748b; text-align: center; }
+    .image-search-card { display: grid; gap: 14px; color: #64748b; }
+    .image-search-hint { min-height: 20px; color: #64748b; font-size: 13px; padding: 0 2px; }
+    .image-upload-box { min-height: 260px; position: relative; display: grid; place-items: center; text-align: center; border: 1px dashed #cfd5df; border-radius: 6px; background: #fafafa; color: #777; padding: 18px; overflow: hidden; }
+    .image-upload-box.has-image { border-style: solid; background: #f5f7fa; padding: 8px; }
+    .image-upload-icon { width: 52px; height: 52px; margin: 0 auto 12px; border: 2px solid #777; border-radius: 12px; display: grid; place-items: center; font-size: 26px; color: #777; }
+    .image-preview-stage { position: relative; width: 100%; touch-action: none; }
+    .image-preview { display: block; width: 100%; max-height: 320px; object-fit: contain; border-radius: 6px; background: #eef2f7; user-select: none; -webkit-user-drag: none; }
+    .crop-rect { position: absolute; border: 2px solid #1677d2; background: rgba(22,119,210,.16); box-shadow: 0 0 0 999px rgba(0,0,0,.18); pointer-events: none; }
+    .image-search-run { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .image-search-run button { min-height: 48px; border-radius: 6px; font-size: 16px; }
+    .choice-modal { position: fixed; inset: 0; z-index: 130; display: none; align-items: flex-end; background: rgba(0,0,0,.42); }
+    .choice-modal.open { display: flex; }
+    .choice-sheet { width: 100%; background: #fff; border-radius: 18px 18px 0 0; padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 10px; }
+    .choice-sheet button { min-height: 52px; border-radius: 6px; font-size: 17px; }
+    .image-result-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .image-result-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+    .image-result-card img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; }
+    .image-result-body { padding: 7px; }
+    .image-result-body .title { font-size: 13px; line-height: 1.2; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .image-result-body .muted { font-size: 11px; }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -4206,8 +4611,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   <div class="app">
     <div class="top">
       <div class="head">
-        <h1 id="libraryTitle">资料库</h1>
+        <h1 id="libraryTitle">产品库</h1>
         <div class="status" id="status"></div>
+      </div>
+      <div class="app-tabs" id="appTabs">
+        <button class="app-tab active" id="categoryTab" type="button">产品分类</button>
+        <button class="app-tab" id="imageSearchTab" type="button">图搜</button>
+        <button class="app-tab" id="mineTab" type="button">个人产品</button>
       </div>
       <div class="tabs library-tabs">
         <button class="tab" id="productTab" type="button">产品库</button>
@@ -4223,9 +4633,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       </div>
       <div class="search">
         <input id="keyword" placeholder="输入款号、色号或名称" />
+        <button id="filterBtn" class="secondary" type="button">筛选</button>
         <button id="searchBtn" type="button">搜索</button>
       </div>
-      <div class="filter-tags" id="productFilters"></div>
+      <div class="filter-summary" id="filterSummary"></div>
     </div>
     <div class="body">
       <section class="panel" id="productPanel">
@@ -4246,6 +4657,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             </div>
             <button class="secondary" id="cancelImportBtn" type="button">取消</button>
           </div>
+          <div class="bulk-note">批量标签：类别和细类会统一加到本次勾选导入的图片所属款号，可选择已有标签，也可直接输入新增标签。</div>
+          <div class="bulk-fields">
+            <select id="bulkImportCategorySelect"></select>
+            <select id="bulkImportSubcategorySelect"></select>
+            <input id="bulkImportCategory" placeholder="新增类别" />
+            <input id="bulkImportSubcategory" placeholder="新增细类" />
+          </div>
           <div class="review-list" id="importReviewList"></div>
           <div class="review-actions">
             <button class="secondary" id="selectAllImportBtn" type="button">全选/全不选</button>
@@ -4254,6 +4672,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>
         <div class="list" id="productList"></div>
         <div class="load-more" id="productLoadMore"></div>
+      </section>
+      <section class="panel" id="imageSearchPanel">
+        <div class="image-search-card">
+          <div class="image-search-hint">框选细节后确定搜索</div>
+          <div class="image-upload-box" id="imageUploadBox">
+            <div id="imageUploadEmpty">
+              <div class="image-upload-icon">□</div>
+              <div>点击上传图片</div>
+            </div>
+            <div class="image-preview-stage hidden" id="imagePreviewStage">
+              <img class="image-preview" id="imageSearchPreview" alt="查询图片" />
+              <div class="crop-rect hidden" id="imageCropRect"></div>
+            </div>
+          </div>
+          <input class="hidden" id="imageSearchFile" type="file" accept="image/*" />
+          <input class="hidden" id="imageSearchCamera" type="file" accept="image/*" capture="environment" />
+          <div class="image-search-run">
+            <button class="secondary" id="clearImageSearchBtn" type="button">取消</button>
+            <button id="runImageSearchBtn" type="button">确定</button>
+          </div>
+        </div>
+        <div class="image-result-list" id="imageSearchResults"></div>
       </section>
       <section class="panel" id="colorPanel">
         <div class="form" id="colorMeterBox">
@@ -4290,6 +4730,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="list" id="colorList"></div>
       </section>
     </div>
+    <div class="filter-modal" id="filterModal">
+      <div class="filter-sheet">
+        <div class="filter-sheet-head">
+          <div class="filter-sheet-title">产品筛选</div>
+          <button class="icon-btn" id="closeFilterBtn" type="button">×</button>
+        </div>
+        <div id="filterSheetBody"></div>
+        <div class="filter-actions-bar">
+          <button class="reset" id="resetFilterBtn" type="button">重置</button>
+          <button class="apply" id="applyFilterBtn" type="button">确认</button>
+        </div>
+      </div>
+    </div>
     <div class="modal" id="galleryModal">
       <div class="modal-panel">
         <div class="modal-head">
@@ -4297,24 +4750,48 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="title" id="galleryTitle"></div>
             <div class="muted" id="gallerySubTitle"></div>
           </div>
+          <button class="personal-btn" id="addPersonalBtn" type="button">加入个人产品</button>
           <button class="secondary" id="closeGalleryBtn" type="button">关闭</button>
         </div>
         <div class="gallery-grid" id="galleryGrid"></div>
       </div>
     </div>
+    <div class="float-actions hidden" id="productFloatActions">
+      <button class="float-action" id="editProductsBtn" type="button" aria-label="修改标签">✎<span>修改</span></button>
+      <button class="float-action" id="addProductsBtn" type="button" aria-label="录入产品">＋<span>录入</span></button>
+    </div>
+    <div class="choice-modal" id="imageChoiceModal">
+      <div class="choice-sheet">
+        <button id="choiceAlbumBtn" type="button">从相册上传</button>
+        <button class="secondary" id="choiceCameraBtn" type="button">拍照上传</button>
+        <button class="secondary" id="choiceCancelBtn" type="button">取消</button>
+      </div>
+    </div>
   </div>
   <script>
     const INITIAL_TYPE = "__INITIAL_TYPE__";
+    const SERVER_PERMISSIONS = __SERVER_PERMISSIONS__;
+    const SERVER_USER_ID = __SERVER_USER_ID__;
     const tokenKey = "openfire_catalog_token";
     const params = new URLSearchParams(location.search);
     const urlToken = params.get("token") || "";
     if (urlToken) {
       localStorage.setItem(tokenKey, urlToken);
       params.delete("token");
+    }
+    if (SERVER_USER_ID) {
+      localStorage.setItem("openfire_catalog_user_id", SERVER_USER_ID);
+    }
+    if (urlToken) {
       const next = location.pathname + (params.toString() ? "?" + params.toString() : "");
       history.replaceState(null, "", next);
     }
     const token = localStorage.getItem(tokenKey) || "";
+    let userId = localStorage.getItem("openfire_catalog_user_id") || "";
+    if (!userId) {
+      userId = "web_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem("openfire_catalog_user_id", userId);
+    }
     const state = {
       type: params.get("type") || INITIAL_TYPE,
       products: [],
@@ -4322,14 +4799,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       importJob: null,
       tagGroups: { year: [], category: [], subcategory: [] },
       selectedTags: [],
+      filterDraftTags: [],
+      appMode: params.get("mode") === "mine" ? "mine" : (params.get("mode") === "image" ? "image" : "category"),
       productMode: "query",
+      productTool: "view",
       productLimit: 9,
       productOffset: 0,
       productHasMore: true,
       productLoading: false,
       colorMode: "query",
+      currentGalleryProduct: null,
+      imageSearchFile: null,
+      imageSearchPreviewUrl: "",
+      imageSearchCrop: null,
+      imageSearchDrag: null,
     };
-    const permissions = readPermissions(token);
+    const permissions = SERVER_PERMISSIONS.length ? SERVER_PERMISSIONS : readPermissions(token);
     const canProductView = hasPerm("product:view");
     const canProductCreate = hasPerm("product:create");
     const canColorView = hasPerm("color:view");
@@ -4394,41 +4879,115 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("yearOptions").innerHTML = state.tagGroups.year.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
       $("categoryOptions").innerHTML = state.tagGroups.category.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
       $("subcategoryOptions").innerHTML = state.tagGroups.subcategory.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
+      renderBulkImportSelects();
       renderProductFilters();
     }
+    function renderBulkImportSelects() {
+      if ($("bulkImportCategorySelect")) $("bulkImportCategorySelect").innerHTML = optionList("category", []);
+      if ($("bulkImportSubcategorySelect")) $("bulkImportSubcategorySelect").innerHTML = optionList("subcategory", []);
+    }
     function renderProductFilters() {
-      const box = $("productFilters");
-      if (!box || state.type !== "product" || state.productMode !== "query") {
-        if (box) box.innerHTML = "";
-        return;
-      }
+      renderProductFilterSummary();
+      renderProductFilterSheet();
+    }
+    function selectedFilterNames() {
+      return state.selectedTags.map((tag) => splitTag(tag).name).filter(Boolean);
+    }
+    function renderProductFilterSummary() {
+      const box = $("filterSummary");
+      if (!box) return;
+      box.textContent = "";
+    }
+    function renderProductFilterSheet() {
+      const box = $("filterSheetBody");
+      if (!box) return;
+      const draftTags = state.filterDraftTags || [];
       const rows = [
         ["年份", "year", state.tagGroups.year],
         ["类别", "category", state.tagGroups.category],
         ["细类", "subcategory", state.tagGroups.subcategory],
       ];
       box.innerHTML = rows.map(([label, type, list]) => `
-        <div class="filter-section">
-          <span class="filter-label">${label}</span>
+        <div class="filter-group">
+          <div class="filter-group-title">${label}</div>
+          <div class="filter-options">
+            <button class="filter-option ${!(list || []).some((name) => draftTags.includes(typedTag(type, name))) ? "active" : ""}" type="button" data-clear-type="${type}">全部</button>
           ${(list || []).map((name) => {
             const tag = typedTag(type, name);
-            return `<button class="filter-chip ${state.selectedTags.includes(tag) ? "active" : ""}" type="button" data-tag="${escapeHtml(tag)}">${escapeHtml(name)}</button>`;
+            return `<button class="filter-option ${draftTags.includes(tag) ? "active" : ""}" type="button" data-filter-type="${type}" data-tag="${escapeHtml(tag)}">${escapeHtml(name)}</button>`;
           }).join("")}
+          </div>
         </div>
       `).join("");
       box.querySelectorAll("[data-tag]").forEach((btn) => {
         btn.addEventListener("click", () => {
           const tag = btn.dataset.tag || "";
-          state.selectedTags = state.selectedTags.includes(tag) ? state.selectedTags.filter((x) => x !== tag) : state.selectedTags.concat([tag]);
-          loadProducts(true).catch((err) => setStatus(err.message || "加载失败", true));
+          const type = btn.dataset.filterType || "";
+          state.filterDraftTags = (state.filterDraftTags || []).filter((x) => splitTag(x).type !== type);
+          if (!btn.classList.contains("active")) state.filterDraftTags = state.filterDraftTags.concat([tag]);
+          renderProductFilterSheet();
+        });
+      });
+      box.querySelectorAll("[data-clear-type]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const type = btn.dataset.clearType || "";
+          state.filterDraftTags = (state.filterDraftTags || []).filter((x) => splitTag(x).type !== type);
+          renderProductFilterSheet();
         });
       });
     }
+    function openFilterModal() {
+      state.filterDraftTags = state.selectedTags.slice();
+      renderProductFilters();
+      $("filterModal").classList.add("open");
+    }
+    function closeFilterModal() {
+      $("filterModal").classList.remove("open");
+    }
+    function applyFilterModal() {
+      state.selectedTags = (state.filterDraftTags || []).slice();
+      closeFilterModal();
+      renderProductFilters();
+      loadProducts(true).catch((err) => setStatus(err.message || "加载失败", true));
+    }
+    function resetFilterModal() {
+      state.filterDraftTags = [];
+      renderProductFilterSheet();
+    }
+    function switchAppMode(mode) {
+      state.appMode = mode === "mine" ? "mine" : (mode === "image" ? "image" : "category");
+      state.type = "product";
+      state.productMode = "query";
+      state.productTool = "view";
+      if (state.appMode !== "category") resetImportState(true);
+      state.productOffset = 0;
+      state.productHasMore = true;
+      switchType("product");
+    }
+    function setProductTool(tool) {
+      state.appMode = "category";
+      state.type = "product";
+      state.productTool = tool === "import" || tool === "edit" ? tool : "view";
+      state.productMode = state.productTool === "view" ? "query" : "manage";
+      state.productOffset = 0;
+      state.productHasMore = true;
+      if (state.productTool !== "import") resetImportState(true);
+      switchType("product");
+      if (state.productTool === "import") window.scrollTo({ top: 0, behavior: "smooth" });
+    }
     function switchType(type) {
       state.type = type === "color" ? "color" : "product";
+      if (state.type !== "product") {
+        state.productTool = "view";
+        state.productMode = "query";
+      }
       $("productTab").classList.toggle("active", state.type === "product");
       $("colorTab").classList.toggle("active", state.type === "color");
-      $("productPanel").classList.toggle("active", state.type === "product");
+      $("categoryTab").classList.toggle("active", state.appMode === "category");
+      $("imageSearchTab").classList.toggle("active", state.appMode === "image");
+      $("mineTab").classList.toggle("active", state.appMode === "mine");
+      $("productPanel").classList.toggle("active", state.type === "product" && state.appMode !== "image");
+      $("imageSearchPanel").classList.toggle("active", state.type === "product" && state.appMode === "image");
       $("colorPanel").classList.toggle("active", state.type === "color");
       $("libraryTitle").textContent = state.type === "color" ? "色卡库" : "产品库";
       $("productModeTabs").classList.toggle("hidden", state.type !== "product");
@@ -4437,25 +4996,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productManageTab").classList.toggle("active", state.productMode === "manage");
       $("colorQueryTab").classList.toggle("active", state.colorMode === "query");
       $("colorManageTab").classList.toggle("active", state.colorMode === "manage");
-      $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.productMode === "manage"));
+      const isProductImport = canProductCreate && state.type === "product" && state.appMode === "category" && state.productTool === "import";
+      const isProductEdit = state.type === "product" && state.appMode === "category" && state.productTool === "edit";
+      $("productCreateBox").classList.toggle("hidden", !isProductImport);
+      $("productList").classList.toggle("hidden", isProductImport);
+      $("productLoadMore").classList.toggle("hidden", isProductImport);
+      $("productFloatActions").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.appMode === "category"));
+      $("addProductsBtn").classList.toggle("active", state.productTool === "import");
+      $("addProductsBtn").classList.toggle("return", state.productTool === "import");
+      $("addProductsBtn").innerHTML = state.productTool === "import" ? "↩<span>返回</span>" : "＋<span>录入</span>";
+      $("editProductsBtn").classList.toggle("active", state.productTool === "edit");
+      $("editProductsBtn").classList.toggle("return", state.productTool === "edit");
+      $("editProductsBtn").innerHTML = state.productTool === "edit" ? "↩<span>返回</span>" : "✎<span>修改</span>";
       $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
       $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
       $("colorMeterBox").classList.toggle("hidden", state.type !== "color");
       $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
-      const isManage = (state.type === "product" && state.productMode === "manage") || (state.type === "color" && state.colorMode === "manage");
-      document.querySelector(".search").classList.toggle("hidden", isManage);
+      const isManage = isProductImport || isProductEdit || (state.type === "color" && state.colorMode === "manage");
+      document.querySelector(".search").classList.toggle("hidden", isManage || state.appMode === "image" || state.appMode === "mine");
+      $("filterBtn").classList.toggle("hidden", !(state.type === "product" && state.appMode === "category"));
       renderProductFilters();
-      $("keyword").placeholder = state.type === "product" ? "输入产品款号" : "输入色号、名称或备注";
+      $("keyword").placeholder = state.type === "product" ? "输入款号" : "输入色号、名称或备注";
       const nextParams = new URLSearchParams(location.search);
       nextParams.set("type", state.type);
+      nextParams.set("mode", state.appMode);
       history.replaceState(null, "", location.pathname + "?" + nextParams.toString());
-      loadCurrent();
+      if (state.appMode !== "image") loadCurrent();
     }
     function switchProductMode(mode) {
-      state.productMode = mode === "manage" ? "manage" : "query";
-      state.productOffset = 0;
-      state.productHasMore = true;
-      switchType("product");
+      setProductTool(mode === "manage" ? "edit" : "view");
     }
     function switchColorMode(mode) {
       state.colorMode = mode === "manage" ? "manage" : "query";
@@ -4465,10 +5034,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const groups = item.tag_groups || {};
       return [].concat(groups.year || [], groups.category || [], groups.subcategory || []);
     }
+    function optionList(type, selectedValues) {
+      const selected = new Set(selectedValues || []);
+      const list = (state.tagGroups[type] || []).slice();
+      selected.forEach((name) => {
+        if (name && !list.includes(name)) list.unshift(name);
+      });
+      return `<option value="">请选择</option>` + list.map((name) => `<option value="${escapeHtml(name)}" ${selected.has(name) ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
+    }
     function renderProducts() {
       const box = $("productList");
       if (!canProductView) {
         box.innerHTML = '<div class="empty">当前用户没有产品库查询权限</div>';
+        return;
+      }
+      if (state.appMode === "category" && state.productTool === "import") {
+        box.className = "list hidden";
+        $("productLoadMore").textContent = "";
         return;
       }
       if (!state.products.length) {
@@ -4476,7 +5058,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         $("productLoadMore").textContent = "";
         return;
       }
-      if (state.productMode === "query") {
+      const isEditingTags = state.appMode === "category" && state.productTool === "edit";
+      if (!isEditingTags) {
         box.className = "product-grid";
         box.innerHTML = state.products.map((item) => `
           <div class="card product-tile" data-role="viewProductTile" data-code="${item.style_code || ""}">
@@ -4504,30 +5087,32 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="muted">图片数：${(item.images || []).length}</div>
             <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
             <div class="tag-edit">
-              <div class="tag-edit-row"><label>年份</label><input data-role="yearInput" value="${((item.tag_groups || {}).year || []).join("、")}" list="yearOptions" /></div>
-              <div class="tag-edit-row"><label>类别</label><input data-role="categoryInput" value="${((item.tag_groups || {}).category || []).join("、")}" list="categoryOptions" /></div>
-              <div class="tag-edit-row"><label>细类</label><input data-role="subcategoryInput" value="${((item.tag_groups || {}).subcategory || []).join("、")}" list="subcategoryOptions" /></div>
+              <div class="tag-edit-row"><label>年份</label><input data-role="yearInput" value="${((item.tag_groups || {}).year || []).join("、")}" inputmode="numeric" placeholder="年份" /></div>
+              <div class="tag-edit-row"><label>类别</label><select data-role="categorySelect">${optionList("category", ((item.tag_groups || {}).category || []))}</select></div>
+              <div class="tag-edit-row"><label>细类</label><select data-role="subcategorySelect">${optionList("subcategory", ((item.tag_groups || {}).subcategory || []))}</select></div>
               <button type="button" data-role="saveProductTags" data-code="${item.style_code || ""}">保存标签</button>
             </div>
           </div>
         </div>
       `).join("");
-      box.querySelectorAll("[data-role=viewProduct]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const item = state.products.find((row) => row.style_code === btn.dataset.code);
-          openGallery(item);
-        });
-      });
       box.querySelectorAll("[data-role=saveProductTags]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const card = btn.closest(".card");
           const code = btn.dataset.code || "";
           const split = (role) => String((card.querySelector(`[data-role="${role}"]`) || {}).value || "")
             .split(/[、,，\\s]+/).map((x) => x.trim()).filter(Boolean);
+          const category = String((card.querySelector('[data-role="categorySelect"]') || {}).value || "").trim();
+          const subcategory = String((card.querySelector('[data-role="subcategorySelect"]') || {}).value || "").trim();
+          const preservedTags = (state.products.find((row) => row.style_code === code)?.raw_tags || state.products.find((row) => row.style_code === code)?.tags || [])
+            .filter((tag) => {
+              const parsed = splitTag(tag);
+              return !["year", "category", "subcategory"].includes(parsed.type);
+            });
           const tags = normalizeTags([
+            ...preservedTags,
             ...split("yearInput").map((x) => typedTag("year", x)),
-            ...split("categoryInput").map((x) => typedTag("category", x)),
-            ...split("subcategoryInput").map((x) => typedTag("subcategory", x)),
+            typedTag("category", category),
+            typedTag("subcategory", subcategory),
           ]);
           try {
             await api("/api/v1/catalog/products/" + encodeURIComponent(code) + "/tags", {
@@ -4546,8 +5131,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function openGallery(product) {
       if (!product) return;
+      state.currentGalleryProduct = product;
       $("galleryTitle").textContent = product.style_code || "";
       $("gallerySubTitle").textContent = `共 ${(product.images || []).length} 张图片`;
+      const productTagSet = new Set(product.raw_tags || product.tags || []);
+      const added = productTagSet.has(ownerTag());
+      $("addPersonalBtn").textContent = added ? "取消个人产品" : "加入个人产品";
+      $("addPersonalBtn").classList.toggle("added", added);
+      $("addPersonalBtn").classList.toggle("remove", added);
+      $("addPersonalBtn").classList.remove("hidden");
       $("galleryGrid").innerHTML = (product.images || []).map((img) => `
         <div class="gallery-item">
           <img src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" />
@@ -4557,10 +5149,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("galleryModal").classList.add("open");
     }
     function openImagePreview(title, imageUrl) {
+      state.currentGalleryProduct = null;
       $("galleryTitle").textContent = title || "图片预览";
       $("gallerySubTitle").textContent = "";
+      $("addPersonalBtn").classList.add("hidden");
       $("galleryGrid").innerHTML = `
-        <div class="gallery-item">
+        <div class="gallery-item preview-full">
           <img src="${imageUrl || ""}" alt="${escapeHtml(title || "")}" />
           <div class="gallery-caption">${escapeHtml(title || "")}</div>
         </div>
@@ -4569,6 +5163,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function closeGallery() {
       $("galleryModal").classList.remove("open");
+    }
+    async function addCurrentProductToPersonal() {
+      const product = state.currentGalleryProduct;
+      if (!product || !product.style_code) return;
+      const tag = ownerTag();
+      const currentTags = normalizeTags(product.raw_tags || product.tags || []);
+      const hasPersonal = currentTags.includes(tag);
+      const tags = hasPersonal ? currentTags.filter((item) => item !== tag) : normalizeTags([...currentTags, tag]);
+      await api("/api/v1/catalog/products/" + encodeURIComponent(product.style_code) + "/tags", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tags }),
+      });
+      product.raw_tags = tags;
+      product.tags = tags;
+      $("addPersonalBtn").textContent = hasPersonal ? "加入个人产品" : "取消个人产品";
+      $("addPersonalBtn").classList.toggle("added", !hasPersonal);
+      $("addPersonalBtn").classList.toggle("remove", !hasPersonal);
+      setStatus(hasPersonal ? "已取消个人产品" : "已加入个人产品", false);
+      if (hasPersonal && state.appMode === "mine") {
+        closeGallery();
+        await loadProducts(true);
+      }
     }
     function renderColors() {
       const box = $("colorList");
@@ -4690,6 +5307,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productLoadMore").textContent = state.productMode === "query" ? "加载中..." : "";
       setStatus("加载中...", false);
       const limit = state.productMode === "query" ? state.productLimit : 80;
+      if (state.appMode === "mine") {
+        const tag = ownerTag();
+        if (!tag) {
+          state.products = [];
+          state.productHasMore = false;
+          renderProducts();
+          setStatus("", false);
+          state.productLoading = false;
+          return;
+        }
+        try {
+          const mineQuery = new URLSearchParams({ limit: String(limit), offset: "0", tags: tag });
+          const data = await api("/api/v1/catalog/products?" + mineQuery.toString());
+          state.products = data.products || [];
+          state.productHasMore = false;
+          renderProducts();
+          renderProductFilters();
+          setStatus(`已加载 ${state.products.length} 条`, false);
+        } finally {
+          state.productLoading = false;
+          $("productLoadMore").textContent = "";
+        }
+        return;
+      }
       const query = new URLSearchParams({ limit: String(limit), offset: String(state.productMode === "query" ? state.productOffset : 0) });
       if (state.productMode === "query") query.set("style_code", $("keyword").value.trim());
       const groups = { year: [], category: [], subcategory: [] };
@@ -4741,10 +5382,190 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function loadCurrent() {
       (state.type === "color" ? loadColors() : loadProducts(true)).catch((err) => setStatus(err.message || "加载失败", true));
     }
+    function thumbnailUrl(raw, edge = 360) {
+      const text = String(raw || "").trim();
+      if (!text) return "";
+      try {
+        const url = new URL(text, location.origin);
+        if (url.pathname.startsWith("/images/")) {
+          url.searchParams.set("max_edge", String(edge));
+          url.searchParams.set("q", "72");
+        }
+        return url.pathname + url.search + url.hash;
+      } catch (_) {
+        return text;
+      }
+    }
+    function renderImageSearchResults(rows) {
+      const box = $("imageSearchResults");
+      const list = rows || [];
+      if (!list.length) {
+        box.innerHTML = '<div class="empty">暂无匹配结果</div>';
+        return;
+      }
+      box.innerHTML = list.map((item, index) => `
+        <div class="image-result-card" data-index="${index}">
+          <img src="${thumbnailUrl(item.catalog_cover_image_url || item.best_standard_image_url || "")}" alt="${escapeHtml(item.style_code || "")}" />
+          <div class="image-result-body">
+            <div class="title">${escapeHtml(item.style_code || "")}</div>
+            <div class="muted">相似度 ${Math.round(Number(item.score || 0) * 100)}%</div>
+          </div>
+        </div>
+      `).join("");
+      box.querySelectorAll("[data-index]").forEach((card) => {
+        card.addEventListener("click", async () => {
+          const item = list[Number(card.dataset.index || 0)] || {};
+          const code = String(item.style_code || "").trim();
+          if (!code) return;
+          try {
+            const detail = await api("/api/v1/catalog/products/" + encodeURIComponent(code));
+            openGallery(detail);
+          } catch (err) {
+            setStatus(err.message || "打开产品失败", true);
+          }
+        });
+      });
+    }
+    function setImageSearchFile(file) {
+      state.imageSearchFile = file || null;
+      if (state.imageSearchPreviewUrl) URL.revokeObjectURL(state.imageSearchPreviewUrl);
+      state.imageSearchCrop = null;
+      state.imageSearchDrag = null;
+      renderImageCropRect();
+      if (file) {
+        state.imageSearchPreviewUrl = URL.createObjectURL(file);
+        $("imageSearchPreview").src = state.imageSearchPreviewUrl;
+        $("imagePreviewStage").classList.remove("hidden");
+        $("imageUploadEmpty").classList.add("hidden");
+        $("imageUploadBox").classList.add("has-image");
+      } else {
+        state.imageSearchPreviewUrl = "";
+        $("imageSearchPreview").removeAttribute("src");
+        $("imagePreviewStage").classList.add("hidden");
+        $("imageUploadEmpty").classList.remove("hidden");
+        $("imageUploadBox").classList.remove("has-image");
+      }
+    }
+    function openImageChoice() {
+      $("imageChoiceModal").classList.add("open");
+    }
+    function closeImageChoice() {
+      $("imageChoiceModal").classList.remove("open");
+    }
+    function chooseImageSource(kind) {
+      closeImageChoice();
+      if (kind === "camera") $("imageSearchCamera").click();
+      else $("imageSearchFile").click();
+    }
+    function imagePoint(event) {
+      const rect = $("imageSearchPreview").getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, Number(event.clientX || 0) - rect.left)),
+        y: Math.max(0, Math.min(rect.height, Number(event.clientY || 0) - rect.top)),
+        w: rect.width,
+        h: rect.height,
+      };
+    }
+    function renderImageCropRect() {
+      const rect = $("imageCropRect");
+      if (!rect) return;
+      const crop = state.imageSearchCrop;
+      if (!crop || crop.w <= 0 || crop.h <= 0) {
+        rect.classList.add("hidden");
+        return;
+      }
+      rect.classList.remove("hidden");
+      rect.style.left = `${crop.x * 100}%`;
+      rect.style.top = `${crop.y * 100}%`;
+      rect.style.width = `${crop.w * 100}%`;
+      rect.style.height = `${crop.h * 100}%`;
+    }
+    function startImageCrop(event) {
+      if (!state.imageSearchFile) {
+        openImageChoice();
+        return;
+      }
+      const p = imagePoint(event);
+      state.imageSearchDrag = { x: p.x, y: p.y, w: p.w, h: p.h };
+      state.imageSearchCrop = { x: p.x / p.w, y: p.y / p.h, w: 0.001, h: 0.001 };
+      $("imagePreviewStage").setPointerCapture?.(event.pointerId);
+      renderImageCropRect();
+    }
+    function moveImageCrop(event) {
+      const start = state.imageSearchDrag;
+      if (!start) return;
+      const p = imagePoint(event);
+      const left = Math.min(start.x, p.x);
+      const top = Math.min(start.y, p.y);
+      const width = Math.abs(p.x - start.x);
+      const height = Math.abs(p.y - start.y);
+      state.imageSearchCrop = {
+        x: left / start.w,
+        y: top / start.h,
+        w: width / start.w,
+        h: height / start.h,
+      };
+      renderImageCropRect();
+    }
+    function endImageCrop(event) {
+      if (!state.imageSearchDrag) return;
+      $("imagePreviewStage").releasePointerCapture?.(event.pointerId);
+      state.imageSearchDrag = null;
+      const crop = state.imageSearchCrop;
+      if (!crop || crop.w < 0.04 || crop.h < 0.04) {
+        state.imageSearchCrop = null;
+        renderImageCropRect();
+      }
+    }
+    async function runImageSearch() {
+      const file = state.imageSearchFile || ($("imageSearchFile").files || [])[0];
+      if (!file) {
+        setStatus("请先选择图片", true);
+        return;
+      }
+      const button = $("runImageSearchBtn");
+      setButtonLoading(button, true);
+      try {
+        setStatus("图搜中...", false);
+        const form = new FormData();
+        form.append("file", file);
+        form.append("result_top_k", "30");
+        const crop = state.imageSearchCrop;
+        if (crop && crop.w > 0.04 && crop.h > 0.04) {
+          form.append("crop_x", String(crop.x));
+          form.append("crop_y", String(crop.y));
+          form.append("crop_w", String(crop.w));
+          form.append("crop_h", String(crop.h));
+        }
+        const headers = {};
+        if (token) headers["X-Catalog-Token"] = token;
+        const resp = await fetch("/search", { method: "POST", body: form, headers });
+        if (resp.status === 401) throw new Error("图搜未授权，请检查内网调测配置");
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        renderImageSearchResults(data.topk_style_codes || []);
+        setStatus(`找到 ${(data.topk_style_codes || []).length} 个相似款`, false);
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }
+    function clearImageSearch() {
+      setImageSearchFile(null);
+      $("imageSearchFile").value = "";
+      $("imageSearchCamera").value = "";
+      $("imageSearchResults").innerHTML = "";
+      state.imageSearchCrop = null;
+      state.imageSearchDrag = null;
+      renderImageCropRect();
+      setStatus("", false);
+    }
     function typedTag(kind, value) {
       const clean = String(value || "").trim();
       if (!clean) return "";
       return `${kind}:${clean}`;
+    }
+    function ownerTag() {
+      return typedTag("owner", userId);
     }
     function normalizeTags(tags) {
       const seen = new Set();
@@ -4754,10 +5575,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return true;
       });
     }
-    function sourceImageUrl(jobId, sourceRelPath) {
-      const query = new URLSearchParams({ source_rel_path: sourceRelPath || "", max_edge: "360" });
+    function resetImportState(clearFiles = true) {
+      state.importJob = null;
+      const review = $("importReviewBox");
+      const list = $("importReviewList");
+      if (review) review.classList.add("hidden");
+      if (list) list.innerHTML = "";
+      ["bulkImportCategory", "bulkImportSubcategory", "bulkImportCategorySelect", "bulkImportSubcategorySelect"].forEach((id) => {
+        if ($(id)) $(id).value = "";
+      });
+      if (clearFiles && $("productFiles")) $("productFiles").value = "";
+    }
+    function setButtonLoading(button, loading) {
+      if (!button) return;
+      button.classList.toggle("loading", !!loading);
+      button.disabled = !!loading;
+    }
+    function sourceImageUrl(jobId, sourceRelPath, edge = 360) {
+      const query = new URLSearchParams({ source_rel_path: sourceRelPath || "", max_edge: String(edge) });
       if (token) query.set("token", token);
       return "/api/v1/catalog/imports/" + encodeURIComponent(jobId) + "/source-image?" + query.toString();
+    }
+    function importFilenameFromStyle(styleCode, fallbackName) {
+      const clean = String(styleCode || "").trim();
+      const fallback = String(fallbackName || "").trim();
+      if (!clean) return fallback;
+      const match = fallback.match(/(_\\d+)?(\\.[^.]+)$/);
+      return clean + (match ? match[0] : ".jpg");
     }
     function renderImportReview(job) {
       state.importJob = job;
@@ -4774,10 +5618,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
               <input type="checkbox" data-role="importSelected" ${item.status === "ok" ? "checked" : ""} />
               <span>${item.status === "ok" ? "导入此图" : "需人工确认后导入"}</span>
             </label>
-            <input data-role="importFilename" value="${item.target_filename || item.proposed_filename || ""}" placeholder="导入文件名" />
+            <input data-role="importStyleCode" value="${item.proposed_style_code || ""}" placeholder="识别款号" />
+            <input class="hidden" data-role="importFilename" value="${item.target_filename || item.proposed_filename || ""}" />
             <input data-role="importYear" value="${item.year_tag || item.proposed_year_tag || ""}" placeholder="年份，如 2026" list="yearOptions" />
-            <input data-role="importCategory" placeholder="类别，如 单品" list="categoryOptions" />
-            <input data-role="importSubcategory" placeholder="细类，如 短袖" list="subcategoryOptions" />
             <div class="muted">${item.source_name || item.source_rel_path || ""}${item.error ? " · " + item.error : ""}</div>
           </div>
         </div>
@@ -4786,7 +5629,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         button.addEventListener("click", () => {
           const item = items[Number(button.dataset.index || "-1")];
           if (!item) return;
-          openImagePreview(item.source_name || item.source_rel_path || "导入图片", sourceImageUrl(job.job_id, item.source_rel_path));
+          openImagePreview(item.source_name || item.source_rel_path || "导入图片", sourceImageUrl(job.job_id, item.source_rel_path, 1200));
         });
       });
     }
@@ -4891,28 +5734,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!files.length) return setStatus("请选择产品图片", true);
       const form = new FormData();
       files.forEach((file) => form.append("files", file, file.name));
-      setStatus("上传中...", false);
-      const createdJob = await api("/api/v1/catalog/imports/upload", { method: "POST", body: form });
-      const job = await waitImportJob(createdJob.job_id);
-      renderImportReview(job);
-      setStatus("识别完成，请确认导入信息", false);
+      const button = $("uploadProductsBtn");
+      setButtonLoading(button, true);
+      try {
+        setStatus("上传中...", false);
+        const createdJob = await api("/api/v1/catalog/imports/upload", { method: "POST", body: form });
+        const job = await waitImportJob(createdJob.job_id);
+        renderImportReview(job);
+        setStatus("识别完成，请确认导入信息", false);
+      } finally {
+        setButtonLoading(button, false);
+      }
     }
     function collectImportReviewItems() {
       const job = state.importJob;
       if (!job) return [];
+      const bulkCategory = $("bulkImportCategory").value.trim() || $("bulkImportCategorySelect").value.trim();
+      const bulkSubcategory = $("bulkImportSubcategory").value.trim() || $("bulkImportSubcategorySelect").value.trim();
       return Array.from($("importReviewList").querySelectorAll(".review-card")).map((card) => {
         const index = Number(card.dataset.index || "-1");
         const item = (job.items || [])[index] || {};
-        const category = card.querySelector('[data-role="importCategory"]').value;
-        const subcategory = card.querySelector('[data-role="importSubcategory"]').value;
+        const fallbackName = card.querySelector('[data-role="importFilename"]').value.trim() || item.proposed_filename || "";
+        const styleCode = card.querySelector('[data-role="importStyleCode"]').value.trim() || item.proposed_style_code || "";
         return {
           source_rel_path: item.source_rel_path,
           selected: !!card.querySelector('[data-role="importSelected"]').checked,
-          target_filename: card.querySelector('[data-role="importFilename"]').value.trim(),
+          target_filename: importFilenameFromStyle(styleCode, fallbackName),
           year_tag: card.querySelector('[data-role="importYear"]').value.trim(),
           tags: normalizeTags([
-            typedTag("category", category),
-            typedTag("subcategory", subcategory),
+            typedTag("category", bulkCategory),
+            typedTag("subcategory", bulkSubcategory),
           ]),
         };
       });
@@ -4934,6 +5785,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("importReviewBox").classList.add("hidden");
       $("importReviewList").innerHTML = "";
       $("productFiles").value = "";
+      $("bulkImportCategory").value = "";
+      $("bulkImportSubcategory").value = "";
+      $("bulkImportCategorySelect").value = "";
+      $("bulkImportSubcategorySelect").value = "";
       await loadProducts(true);
       setStatus("产品图片已导入", false);
     }
@@ -4943,9 +5798,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       boxes.forEach((box) => { box.checked = shouldCheck; });
     }
     function cancelImportReview() {
-      state.importJob = null;
-      $("importReviewBox").classList.add("hidden");
-      $("importReviewList").innerHTML = "";
+      resetImportState(false);
       setStatus("已取消本次导入", false);
     }
     async function saveColor() {
@@ -4973,11 +5826,42 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     $("productTab").addEventListener("click", () => switchType("product"));
     $("colorTab").addEventListener("click", () => switchType("color"));
+    $("categoryTab").addEventListener("click", () => switchAppMode("category"));
+    $("imageSearchTab").addEventListener("click", () => switchAppMode("image"));
+    $("mineTab").addEventListener("click", () => switchAppMode("mine"));
     $("productQueryTab").addEventListener("click", () => switchProductMode("query"));
     $("productManageTab").addEventListener("click", () => switchProductMode("manage"));
+    $("addProductsBtn").addEventListener("click", () => setProductTool(state.productTool === "import" ? "view" : "import"));
+    $("editProductsBtn").addEventListener("click", () => setProductTool(state.productTool === "edit" ? "view" : "edit"));
     $("colorQueryTab").addEventListener("click", () => switchColorMode("query"));
     $("colorManageTab").addEventListener("click", () => switchColorMode("manage"));
     $("searchBtn").addEventListener("click", loadCurrent);
+    $("filterBtn").addEventListener("click", openFilterModal);
+    $("closeFilterBtn").addEventListener("click", closeFilterModal);
+    $("resetFilterBtn").addEventListener("click", resetFilterModal);
+    $("applyFilterBtn").addEventListener("click", applyFilterModal);
+    $("filterModal").addEventListener("click", (event) => {
+      if (event.target === $("filterModal")) closeFilterModal();
+    });
+    $("addPersonalBtn").addEventListener("click", () => addCurrentProductToPersonal().catch((err) => setStatus(err.message || "加入失败", true)));
+    $("choiceAlbumBtn").addEventListener("click", () => chooseImageSource("album"));
+    $("choiceCameraBtn").addEventListener("click", () => chooseImageSource("camera"));
+    $("choiceCancelBtn").addEventListener("click", closeImageChoice);
+    $("imageChoiceModal").addEventListener("click", (event) => {
+      if (event.target === $("imageChoiceModal")) closeImageChoice();
+    });
+    $("imageUploadBox").addEventListener("click", () => {
+      if (!state.imageSearchFile) openImageChoice();
+    });
+    $("imagePreviewStage").addEventListener("click", (event) => event.stopPropagation());
+    $("imagePreviewStage").addEventListener("pointerdown", startImageCrop);
+    $("imagePreviewStage").addEventListener("pointermove", moveImageCrop);
+    $("imagePreviewStage").addEventListener("pointerup", endImageCrop);
+    $("imagePreviewStage").addEventListener("pointercancel", endImageCrop);
+    $("imageSearchFile").addEventListener("change", () => setImageSearchFile(($("imageSearchFile").files || [])[0] || null));
+    $("imageSearchCamera").addEventListener("change", () => setImageSearchFile(($("imageSearchCamera").files || [])[0] || null));
+    $("runImageSearchBtn").addEventListener("click", () => runImageSearch().catch((err) => setStatus(err.message || "图搜失败", true)));
+    $("clearImageSearchBtn").addEventListener("click", clearImageSearch);
     $("keyword").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -5021,12 +5905,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160;
       if (nearBottom) loadProducts(false).catch((err) => setStatus(err.message || "加载失败", true));
     }, { passive: true });
-    $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.productMode === "manage"));
+    $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.appMode === "category" && state.productTool === "import"));
     $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
     Promise.all([loadTags(), loadColorLibraries()]).finally(() => switchType(state.type));
   </script>
 </body>
-</html>""".replace("__INITIAL_TYPE__", safe_type)
+</html>""".replace("__INITIAL_TYPE__", safe_type).replace("__SERVER_PERMISSIONS__", permissions_json).replace("__SERVER_USER_ID__", user_id_json)
 
     @app.get("/catalog/login", response_class=HTMLResponse)
     def catalog_login_page(request: Request, error: int = 0) -> HTMLResponse:
@@ -5099,7 +5983,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def catalog_page(request: Request, type: str = "", token: str = ""):
         catalog_type = str(type or "").strip().lower()
         if str(token or "").strip() or catalog_type in {"product", "color"}:
-            return HTMLResponse(_catalog_mobile_page(catalog_type))
+            permissions = getattr(request.state, "catalog_permissions", None)
+            user_id = str(getattr(request.state, "catalog_user_id", "") or "").strip()
+            if str(token or "").strip() and not user_id:
+                token_auth = _catalog_verify_token(str(token or "").strip())
+                if token_auth:
+                    user_id = str(token_auth.get("user", "")).strip()
+                    if permissions is None:
+                        permissions = set(token_auth.get("permissions") or [])
+            return HTMLResponse(
+                _catalog_mobile_page(
+                    catalog_type,
+                    sorted(permissions) if permissions is not None else None,
+                    user_id,
+                )
+            )
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -6925,6 +7823,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             seen_targets: set[str] = set()
             style_year_tags: Dict[str, set[str]] = {}
             style_extra_tags: Dict[str, set[str]] = {}
+            def _next_available_import_target(raw_name: str, suffix: str) -> str:
+                try:
+                    first = _sanitize_import_filename(raw_name, suffix)
+                except ValueError:
+                    raise
+                first_key = first.lower()
+                if first_key not in seen_targets and not (standard_dir / first).exists():
+                    return first
+                first_path = Path(first)
+                stem = re.sub(r"_\d+$", "", first_path.stem).strip() or first_path.stem
+                ext = first_path.suffix or suffix
+                seq = 0
+                while seq < 10000:
+                    candidate = f"{stem}_{seq:03d}{ext}"
+                    key = candidate.lower()
+                    if key not in seen_targets and not (standard_dir / candidate).exists():
+                        return candidate
+                    seq += 1
+                raise ValueError(f"cannot allocate target filename for {raw_name}")
+
             for item in selected_items:
                 prepared = prepared_items.get(item.source_rel_path)
                 if prepared is None:
@@ -6935,13 +7853,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 fallback_name = str(prepared.get("proposed_filename", "")).strip() or src.name
                 raw_target = item.target_filename.strip() or fallback_name
                 try:
-                    target_name = _sanitize_import_filename(raw_target, src.suffix.lower())
+                    target_name = _next_available_import_target(raw_target, src.suffix.lower())
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=f"{item.source_rel_path}: {exc}") from exc
-                if target_name.lower() in seen_targets:
-                    raise HTTPException(status_code=400, detail=f"duplicate target filename: {target_name}")
-                if (standard_dir / target_name).exists():
-                    raise HTTPException(status_code=400, detail=f"target filename already exists: {target_name}")
                 seen_targets.add(target_name.lower())
                 try:
                     year_tag = _sanitize_year_tag(item.year_tag.strip() or str(prepared.get("proposed_year_tag", "")).strip())
@@ -7029,15 +7943,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         crop_w: float = Form(0.0),
         crop_h: float = Form(0.0),
         match_mode: str = Form(""),
+        result_top_k: int = Form(0),
     ) -> Dict[str, Any]:
         t_all = time.perf_counter()
+        top_k = max(1, min(int(result_top_k or int(search_cfg.get("top_k", 5))), 60))
         if not file.filename:
             raise HTTPException(status_code=400, detail="missing file name")
         suffix = Path(file.filename).suffix.lower()
         if suffix.lstrip(".") not in {"png", "jpg", "jpeg"}:
             raise HTTPException(status_code=400, detail="only png/jpg/jpeg supported")
 
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf, tempfile.NamedTemporaryFile(suffix=".tight.jpg", delete=True) as tight_tf:
             upload_bytes = await file.read()
             if not upload_bytes:
                 raise HTTPException(status_code=400, detail="empty file")
@@ -7070,6 +7986,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             crop_norm_y = 0.0
             crop_norm_w = 0.0
             crop_norm_h = 0.0
+            tight_query_path = Path(tight_tf.name)
+            tight_query_available = False
             if crop_w > 0.02 and crop_h > 0.02:
                 try:
                     with Image.open(query_path) as crop_im0:
@@ -7080,6 +7998,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         cw = max(0.02, min(1.0 - x, float(crop_w)))
                         ch = max(0.02, min(1.0 - y, float(crop_h)))
                         crop_orig_area = max(0.0, float(cw) * float(ch))
+                        orig_left = int(round(x * iw))
+                        orig_top = int(round(y * ih))
+                        orig_right = int(round((x + cw) * iw))
+                        orig_bottom = int(round((y + ch) * ih))
+                        if orig_right - orig_left >= 24 and orig_bottom - orig_top >= 24:
+                            crop_im.crop((orig_left, orig_top, orig_right, orig_bottom)).save(
+                                tight_query_path,
+                                format="JPEG",
+                                quality=94,
+                            )
+                            tight_query_available = True
                         expanded = False
                         if region_crop_auto_expand_enabled:
                             min_w = max(0.02, min(1.0, region_crop_auto_expand_min_w))
@@ -7216,6 +8145,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_boost_debug = ""
             region_rescue_debug = ""
             region_order_debug = ""
+            q_pattern_sig: np.ndarray | None = None
+            q_dark_motif_sig: np.ndarray | None = None
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -7544,7 +8475,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return (forced_rows + kept_rows)[:target_n]
 
             def _order_region_primary_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-                nonlocal region_order_debug
+                nonlocal region_order_debug, region_rescue_debug
                 if not (
                     region_probe_active
                     and region_crop_order_by_region_enabled
@@ -7564,6 +8495,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if accessory_hat_query:
                     region_order_debug = "skip-accessory-hat"
                     return rows_in
+
+                def _row_pattern_region_boost(row: Dict[str, Any]) -> tuple[float, float]:
+                    if not (
+                        strict_small_region_crop
+                        and strict_small_pattern_region_order_enabled
+                        and q_pattern_sig is not None
+                    ):
+                        return 0.0, -1.0
+                    code_key = _code_prior_key(str(row.get("style_code", "")))
+                    candidates = [
+                        str(row.get("best_standard_image", "")).split("@", 1)[0],
+                        str(region_code_best_images.get(code_key, "")).split("@", 1)[0],
+                    ]
+                    best_sim = -1.0
+                    for image_name in candidates:
+                        if not image_name:
+                            continue
+                        cs = pattern_sig_cache.get(image_name)
+                        if cs is None:
+                            continue
+                        best_sim = max(best_sim, float(q_pattern_sig @ cs))
+                    min_sim = float(strict_small_pattern_region_order_min_sim)
+                    if best_sim < min_sim:
+                        return 0.0, best_sim
+                    boost = max(0.0, float(strict_small_pattern_region_order_weight)) * max(0.0, best_sim)
+                    return float(boost), best_sim
+
                 def _row_region_score(row: Dict[str, Any]) -> float:
                     code_key = _code_prior_key(str(row.get("style_code", "")))
                     region_score = max(
@@ -7575,7 +8533,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             region_score,
                             float(row.get("rank_score", -1.0)) - max(0.0, float(region_crop_code_prior_boost)),
                         )
-                    return region_score
+                    if row.get("_dark_motif_sim") is not None:
+                        region_score = max(region_score, float(row.get("rank_score", -1.0)))
+                    pattern_boost, _pattern_sim = _row_pattern_region_boost(row)
+                    return float(region_score) + float(pattern_boost)
 
                 rows_for_order = list(rows_in)
                 if collar_candidate_scores:
@@ -7680,11 +8641,232 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             selected_rows.append(row)
                         ordered_all = selected_rows
                 ordered = ordered_all[:top_k]
+                pattern_order_debug = []
+                if strict_small_region_crop and q_pattern_sig is not None:
+                    for row in ordered[: min(top_k, 12)]:
+                        boost, sim = _row_pattern_region_boost(row)
+                        if boost > 0:
+                            pattern_order_debug.append(
+                                f"{row.get('style_code', '')}:{sim:.3f}/{boost:.3f}"
+                            )
+                if pattern_order_debug:
+                    region_rescue_debug = (
+                        f"{region_rescue_debug}|pattern_order={','.join(pattern_order_debug)}"
+                        if region_rescue_debug
+                        else f"pattern_order={','.join(pattern_order_debug)}"
+                    )
                 region_order_debug = ",".join(
-                    f"{row.get('style_code', '')}:{float(region_code_scores.get(str(row.get('style_code', '')), -1.0)):.3f}"
+                    f"{row.get('style_code', '')}:{_row_region_score(row):.3f}"
                     for row in ordered[:top_k]
                 )
                 return ordered[:top_k]
+
+            def _rescue_pattern_region_rows(rows_in: List[Dict[str, Any]], ranked_in: List[tuple[str, float]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    strict_small_region_crop
+                    and strict_small_pattern_region_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and q_pattern_sig is not None
+                    and ranked_in
+                    and rows_in
+                ):
+                    return rows_in
+                existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
+                ordered_region_scores = sorted(
+                    [float(v) for v in region_code_scores.values() if float(v) >= 0.0],
+                    reverse=True,
+                )
+                cutoff_idx = min(len(ordered_region_scores), max(1, top_k)) - 1
+                cutoff_score = ordered_region_scores[cutoff_idx] if ordered_region_scores else 0.0
+                min_region_score = max(0.0, cutoff_score - max(0.0, float(strict_small_pattern_region_rescue_near_delta)))
+                min_sim = float(strict_small_pattern_region_rescue_min_sim)
+                scan_n = max(top_k, min(len(ranked_in), max(1, int(strict_small_pattern_region_rescue_scan_images))))
+                best_by_key: Dict[str, tuple[float, float, float, str]] = {}
+                for image_name, rank_score in ranked_in[:scan_n]:
+                    file_name = image_name.split("@", 1)[0]
+                    cs = pattern_sig_cache.get(file_name)
+                    if cs is None:
+                        continue
+                    sim = float(q_pattern_sig @ cs)
+                    if sim < min_sim:
+                        continue
+                    code = filename_to_style_code(file_name)
+                    key = _code_prior_key(code)
+                    if key in existing_keys:
+                        continue
+                    region_score = max(
+                        float(region_code_scores.get(code, -1.0)),
+                        float(region_code_scores.get(key, -1.0)),
+                        float(rank_score) - max(0.0, float(region_crop_code_prior_boost)),
+                    )
+                    if region_score < min_region_score:
+                        continue
+                    combined = float(region_score) + max(0.0, float(strict_small_pattern_region_order_weight)) * max(0.0, sim)
+                    current = best_by_key.get(key)
+                    if current is None or combined > current[0]:
+                        best_by_key[key] = (combined, sim, region_score, file_name)
+                if not best_by_key:
+                    if pattern_sig_cache:
+                        region_rescue_debug = (
+                            f"{region_rescue_debug}|pattern_rescue=none:{min_region_score:.3f}/{min_sim:.3f}"
+                            if region_rescue_debug
+                            else f"pattern_rescue=none:{min_region_score:.3f}/{min_sim:.3f}"
+                        )
+                    return rows_in
+                rescue_rows: List[Dict[str, Any]] = []
+                for key, (combined, sim, region_score, file_name) in sorted(best_by_key.items(), key=lambda item: item[1][0], reverse=True)[
+                    : max(1, int(strict_small_pattern_region_rescue_max_rows))
+                ]:
+                    z = float(display_score_scale) * (float(combined) - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    rescue_rows.append(
+                        {
+                            "style_code": filename_to_style_code(file_name),
+                            "best_standard_image": file_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(float(combined), 6),
+                            "_region_rescue_keep": True,
+                            "_pattern_rescue_sim": round(float(sim), 6),
+                            "_pattern_rescue_region_score": round(float(region_score), 6),
+                        }
+                    )
+                if not rescue_rows:
+                    return rows_in
+                rescue_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('_pattern_rescue_region_score', 0.0)):.3f}/{float(row.get('_pattern_rescue_sim', 0.0)):.3f}"
+                    for row in rescue_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|pattern_rescue={rescue_debug}"
+                    if region_rescue_debug
+                    else f"pattern_rescue={rescue_debug}"
+                )
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                target_n = max(top_k, len(rows_in))
+                return (rescue_rows + kept_rows)[:target_n]
+
+            def _rescue_dark_motif_region_rows(rows_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    strict_small_region_crop
+                    and strict_small_dark_motif_rescue_enabled
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and q_dark_motif_sig is not None
+                    and dark_motif_cache
+                    and rows_in
+                ):
+                    return rows_in
+                existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
+                ordered_region_scores = sorted(
+                    [float(v) for v in region_code_scores.values() if float(v) >= 0.0],
+                    reverse=True,
+                )
+                cutoff_idx = min(len(ordered_region_scores), max(1, top_k)) - 1
+                cutoff_score = ordered_region_scores[cutoff_idx] if ordered_region_scores else 0.0
+                min_region_score = max(0.0, cutoff_score - max(0.0, float(strict_small_pattern_region_rescue_near_delta)))
+                min_sim = float(strict_small_dark_motif_rescue_min_sim)
+                full_presence_min_sim = min(float(min_sim), float(strict_small_dark_motif_full_presence_min_sim))
+                full_presence_boost = max(0.0, float(strict_small_dark_motif_full_presence_boost))
+                def _dark_motif_presence_count(sig: np.ndarray | None) -> int:
+                    if sig is None or sig.size < 5:
+                        return 0
+                    return int(np.count_nonzero(np.asarray(sig[-5:], dtype=np.float32) > 1e-4))
+
+                query_presence_count = _dark_motif_presence_count(q_dark_motif_sig)
+                min_presence_count = max(0, min(5, query_presence_count - 1)) if query_presence_count >= 4 else 0
+                best_by_key: Dict[str, tuple[float, float, float, float, str]] = {}
+                debug_by_key: Dict[str, tuple[float, float, int, float]] = {}
+                for file_name, sig in dark_motif_cache.items():
+                    presence_count = _dark_motif_presence_count(sig)
+                    sim = float(q_dark_motif_sig @ sig)
+                    full_presence_match = query_presence_count >= 4 and presence_count >= 4
+                    effective_sim = sim + full_presence_boost if full_presence_match else sim
+                    code = filename_to_style_code(file_name)
+                    key = _code_prior_key(code)
+                    region_score_raw = max(
+                        float(region_code_scores.get(code, -1.0)),
+                        float(region_code_scores.get(key, -1.0)),
+                    )
+                    prev_debug = debug_by_key.get(key)
+                    if prev_debug is None or effective_sim > prev_debug[1]:
+                        debug_by_key[key] = (sim, effective_sim, presence_count, region_score_raw)
+                    if min_presence_count and presence_count < min_presence_count:
+                        continue
+                    candidate_min_sim = full_presence_min_sim if full_presence_match else min_sim
+                    if sim < candidate_min_sim:
+                        continue
+                    if key in existing_keys:
+                        continue
+                    region_score = region_score_raw
+                    if region_score < 0.0 and sim >= candidate_min_sim:
+                        region_score = min_region_score
+                    if region_score < min_region_score:
+                        continue
+                    combined = float(region_score) + max(0.0, float(strict_small_dark_motif_rescue_weight)) * max(0.0, effective_sim)
+                    current = best_by_key.get(key)
+                    if current is None or combined > current[0]:
+                        best_by_key[key] = (combined, sim, effective_sim, region_score, file_name)
+                if not best_by_key:
+                    pool_debug = ",".join(
+                        f"{key}:{sim:.3f}>{eff:.3f}/p{presence}/{region_score:.3f}"
+                        for key, (sim, eff, presence, region_score) in sorted(debug_by_key.items(), key=lambda item: item[1][1], reverse=True)[:12]
+                    )
+                    region_rescue_debug = (
+                        f"{region_rescue_debug}|dark_motif=none:{min_region_score:.3f}/{min_sim:.3f}/{full_presence_min_sim:.3f}/p{min_presence_count}|dark_pool={pool_debug}"
+                        if region_rescue_debug
+                        else f"dark_motif=none:{min_region_score:.3f}/{min_sim:.3f}/{full_presence_min_sim:.3f}/p{min_presence_count}|dark_pool={pool_debug}"
+                    )
+                    return rows_in
+                rescue_rows: List[Dict[str, Any]] = []
+                for _key, (combined, sim, effective_sim, region_score, file_name) in sorted(best_by_key.items(), key=lambda item: item[1][2], reverse=True)[
+                    : max(1, int(strict_small_dark_motif_rescue_max_rows))
+                ]:
+                    z = float(display_score_scale) * (float(combined) - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    rescue_rows.append(
+                        {
+                            "style_code": filename_to_style_code(file_name),
+                            "best_standard_image": file_name,
+                            "score": round(disp, 4),
+                            "rank_score": round(float(combined), 6),
+                            "_force_keep": True,
+                            "_region_rescue_keep": True,
+                            "_dark_motif_sim": round(float(sim), 6),
+                            "_dark_motif_effective_sim": round(float(effective_sim), 6),
+                            "_dark_motif_region_score": round(float(region_score), 6),
+                        }
+                    )
+                rescue_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('_dark_motif_region_score', 0.0)):.3f}/{float(row.get('_dark_motif_sim', 0.0)):.3f}>{float(row.get('_dark_motif_effective_sim', 0.0)):.3f}"
+                    for row in rescue_rows
+                )
+                pool_debug = ",".join(
+                    f"{key}:{sim:.3f}>{eff:.3f}/p{presence}/{region_score:.3f}"
+                    for key, (sim, eff, presence, region_score) in sorted(debug_by_key.items(), key=lambda item: item[1][1], reverse=True)[:16]
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|dark_motif={rescue_debug}|dark_pool={pool_debug}"
+                    if region_rescue_debug
+                    else f"dark_motif={rescue_debug}|dark_pool={pool_debug}"
+                )
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                target_n = max(top_k, len(rows_in))
+                return (rescue_rows + kept_rows)[:target_n]
 
             def _merge_rescue_rows_preserving_forced(
                 rescue_rows: List[Dict[str, Any]], rows_in: List[Dict[str, Any]]
@@ -8915,8 +10097,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         display_score_scale=display_score_scale,
                         display_score_bias=display_score_bias,
                     )
+            if (pattern_consistency_enabled or strict_small_pattern_region_order_enabled or strict_small_pattern_region_rescue_enabled) and q_pattern_sig is None:
+                pattern_query_path = tight_query_path if (strict_small_region_crop and tight_query_available) else query_path
+                q_pattern_sig = _extract_pattern_sig(pattern_query_path, size=14)
+            if strict_small_dark_motif_rescue_enabled and q_dark_motif_sig is None:
+                dark_motif_query_path = tight_query_path if (strict_small_region_crop and tight_query_available) else query_path
+                q_dark_motif_sig = _extract_dark_motif_sig(dark_motif_query_path, size=18)
             if pattern_consistency_enabled:
-                q_pattern_sig = _extract_pattern_sig(query_path, size=14)
                 if q_pattern_sig is not None:
                     ranked_images = _apply_pattern_consistency(ranked_images, q_pattern_sig)
                     pattern_code_boost = _build_pattern_code_boost(ranked_images, q_pattern_sig)
@@ -9446,6 +10633,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_sleeve_region_rows(rows, ranked_images)
             rows = _rescue_hat_from_sleeve_region_rows(rows, ranked_images)
             rows = _force_top_region_rows(rows)
+            rows = _rescue_pattern_region_rows(rows, ranked_images)
+            rows = _rescue_dark_motif_region_rows(rows)
             rows = _order_region_primary_rows(rows)
             rows = _rescue_hat_region_rows(rows, ranked_images)
             rows = _rescue_hat_family_region_rows(rows)

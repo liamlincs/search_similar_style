@@ -249,14 +249,60 @@ http://127.0.0.1:8000/catalog/logout
 
 ```text
 https://api.openfire.cloud/catalog?type=product&token=第三方用户token
-https://api.openfire.cloud/catalog?type=color&token=第三方用户token
 ```
 
-- `type=product` 打开产品库，`type=color` 打开色卡库。
-- 页面首次打开会把 `token` 缓存在浏览器本地，并在接口请求中通过 `X-Catalog-Token` 传回后端。
-- 如果 token 是 JWT，后端和前端会读取 payload 中的 `permissions`、`perms` 或 `scope` 字段。
+- `type=product` 打开产品库 H5。
+- 第三方小程序每次打开 H5 时传当前登录用户的 token，不再使用小程序内置固定 `catalogH5Token` 或后端 `apiKey`。
+- 第三方不需要传用户资料；后端会使用 `token` 调第三方验 token / 用户信息接口获取稳定用户 ID，用于“个人产品”隔离。
+- 内网调测和公网调测可以分开切：`miniprogram/utils/config.js` 里 `catalogH5BaseUrls.public` 默认是 `https://api.openfire.cloud`，`catalogH5BaseUrls.lan` 可填内网地址，例如 `http://192.168.0.106:8000`；跳转时带 `env=lan` 使用内网，带 `env=public` 使用公网，也可以临时传 `h5_base_url=` 覆盖。
+- 页面首次打开会把 `token` 缓存在浏览器本地，并在接口请求中通过 `X-Catalog-Token` 透传回后端；直接请求接口时也支持 `X-Catalog-Token` 或 `Authorization: Bearer <token>`。
+- 后端可通过 `catalog.external_token_auth.verify_url` 调用第三方验 token 接口，验 token 结果会按 `cache_ttl_sec` 短期缓存，避免每个列表/图片请求都打到第三方。
+- 验 token 接口返回的 `user_id` / `user` / `openid` / `sub` 会作为当前用户 ID；返回的 `permissions`、`perms` 或 `scope` 会用于后端权限校验，并注入 H5 控制前端入口展示；如果 token 是 JWT，也保留从 payload 读取权限的兼容逻辑。
 - 支持权限值：`product:view`、`product:create`、`color:view`、`color:create`，也支持 `*`。
-- 在接入第三方验 token 接口前，`catalog.external_token_auth.default_permissions` 是默认权限占位配置。
+
+调测建议：
+
+```text
+# 内网，适合微信开发者工具或同局域网真机调试
+/pages/catalog_webview/index?type=product&env=lan&token=<USER_TOKEN>
+
+# 公网，适合真实第三方小程序验收
+/pages/catalog_webview/index?type=product&env=public&token=<USER_TOKEN>
+
+# 临时覆盖，不改 config.js
+/pages/catalog_webview/index?type=product&h5_base_url=http%3A%2F%2F192.168.0.106%3A8000&token=<USER_TOKEN>
+```
+
+注意：
+
+- 真机小程序 `web-view` 受微信业务域名限制，公网调测需要在微信后台配置 `https://api.openfire.cloud`；内网 HTTP 地址通常只适合开发者工具调试。
+- 公网调测时，`api.openfire.cloud` 所在服务器必须能访问 `catalog.external_token_auth.verify_url`。如果第三方验 token 服务只在内网可达，公网环境需要配置公网验 token 地址或打通专线/VPN。
+- 切换用户或切换环境时，H5 会用新 URL 上的 `token` 覆盖本地缓存；没有传 token 时会复用浏览器本地缓存的 token。
+
+第三方验 token 配置示例：
+
+```json
+"external_token_auth": {
+  "enabled": true,
+  "verify_url": "https://third.example.com/api/auth/verify",
+  "verify_timeout_sec": 3,
+  "cache_ttl_sec": 300,
+  "fail_open": false,
+  "allow_unverified_tokens": false,
+  "allowed_tokens": [],
+  "default_permissions": ["product:view"]
+}
+```
+
+后端会向 `verify_url` 发 `POST` JSON：`{"token":"..."}`，同时带 `Authorization: Bearer <token>` 和 `X-Catalog-Token`。验 token 接口建议返回：
+
+```json
+{
+  "valid": true,
+  "user_id": "u_123",
+  "permissions": ["product:view", "product:create"]
+}
+```
 
 目录接口：
 
