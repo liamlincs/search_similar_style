@@ -144,6 +144,17 @@ class ColorCardStore:
 
                 CREATE INDEX IF NOT EXISTS idx_color_cards_library_lab
                 ON color_cards(library_id, l, a, b);
+
+                CREATE TABLE IF NOT EXISTS color_card_favorites (
+                    user_tag TEXT NOT NULL,
+                    card_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(user_tag, card_id),
+                    FOREIGN KEY(card_id) REFERENCES color_cards(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_color_card_favorites_user
+                ON color_card_favorites(user_tag, created_at DESC);
                 """
             )
 
@@ -231,6 +242,136 @@ class ColorCardStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_favorites(self, user_tag: str, keyword: str = "", limit: int = 300, offset: int = 0) -> List[Dict[str, Any]]:
+        clean_user_tag = str(user_tag or "").strip()
+        if not clean_user_tag:
+            return []
+        filters = ["f.user_tag=?"]
+        params: list[Any] = [clean_user_tag]
+        clean_keyword = str(keyword or "").strip()
+        if clean_keyword:
+            filters.append("(c.name LIKE ? OR c.note LIKE ? OR l.name LIKE ?)")
+            like = f"%{clean_keyword}%"
+            params.extend([like, like, like])
+        params.extend([max(1, min(int(limit), 1000)), max(0, int(offset))])
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.id, c.library_id, l.name AS library_name, c.name, c.note,
+                       c.illuminant, c.angle, c.l, c.a, c.b, c.hex, f.created_at
+                FROM color_card_favorites f
+                JOIN color_cards c ON c.id=f.card_id
+                JOIN color_libraries l ON l.id=c.library_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY f.created_at DESC, c.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_favorite(self, user_tag: str, card_id: int) -> Dict[str, Any]:
+        clean_user_tag = str(user_tag or "").strip()
+        if not clean_user_tag:
+            raise ValueError("user_tag is empty")
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT c.id, c.library_id, l.name AS library_name, c.name, c.note,
+                       c.illuminant, c.angle, c.l, c.a, c.b, c.hex
+                FROM color_cards c
+                JOIN color_libraries l ON l.id=c.library_id
+                WHERE c.id=?
+                """,
+                (int(card_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("color card not found")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO color_card_favorites(user_tag, card_id)
+                VALUES (?, ?)
+                """,
+                (clean_user_tag, int(card_id)),
+            )
+            conn.commit()
+        return dict(row)
+
+    def remove_favorite(self, user_tag: str, card_id: int) -> bool:
+        clean_user_tag = str(user_tag or "").strip()
+        if not clean_user_tag:
+            raise ValueError("user_tag is empty")
+        clean_card_id = int(card_id)
+        user_library_id = f"my_color_{clean_library_id(clean_user_tag)[:60]}"
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT library_id FROM color_cards WHERE id=?",
+                (clean_card_id,),
+            ).fetchone()
+            cursor = conn.execute(
+                "DELETE FROM color_card_favorites WHERE user_tag=? AND card_id=?",
+                (clean_user_tag, clean_card_id),
+            )
+            removed = cursor.rowcount > 0
+            if row is not None and str(row["library_id"]) == user_library_id:
+                conn.execute("DELETE FROM color_cards WHERE id=?", (clean_card_id,))
+            conn.commit()
+        return removed
+
+    def remove_user_card(self, user_tag: str, card_id: int) -> bool:
+        clean_card_id = int(card_id)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT library_id FROM color_cards WHERE id=?",
+                (clean_card_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            library_id = str(row["library_id"] or "")
+            if not library_id.startswith("custom_"):
+                raise ValueError("only custom color cards can be deleted")
+            conn.execute("DELETE FROM color_card_favorites WHERE card_id=?", (clean_card_id,))
+            cursor = conn.execute("DELETE FROM color_cards WHERE id=?", (clean_card_id,))
+            conn.commit()
+        return cursor.rowcount > 0
+
+    def add_picked_favorite(
+        self,
+        *,
+        user_tag: str,
+        name: str,
+        l: float,
+        a: float,
+        b: float,
+        hex_value: str = "",
+    ) -> Dict[str, Any]:
+        clean_user_tag = str(user_tag or "").strip()
+        if not clean_user_tag:
+            raise ValueError("user_tag is empty")
+        clean_hex = str(hex_value or "").replace("#", "").strip().upper()
+        library_id = f"my_color_{clean_library_id(clean_user_tag)[:60]}"
+        library_name = "我的收藏"
+        clean_name = str(name or "").strip() or f"取色 #{clean_hex or lab_to_rgb_hex(l, a, b)}"
+        card = self.upsert_card(
+            library_id=library_id,
+            library_name=library_name,
+            name=clean_name,
+            note=clean_name,
+            illuminant="D65",
+            angle=10,
+            l=l,
+            a=a,
+            b=b,
+            spectral=[],
+        )
+        if clean_hex:
+            with self._connect() as conn:
+                conn.execute("UPDATE color_cards SET hex=? WHERE id=?", (clean_hex, int(card["id"])))
+                conn.commit()
+            card["hex"] = clean_hex
+        self.add_favorite(clean_user_tag, int(card["id"]))
+        return card
+
     def upsert_library(self, library_id: str, name: str) -> Dict[str, Any]:
         clean_id = clean_library_id(library_id) or clean_library_id(name)
         clean_name = str(name or "").strip()
@@ -250,6 +391,23 @@ class ColorCardStore:
             )
             conn.commit()
         return {"id": clean_id, "name": clean_name}
+
+    def remove_library(self, library_id: str) -> bool:
+        clean_id = clean_library_id(library_id)
+        if not clean_id:
+            raise ValueError("library_id is empty")
+        if not clean_id.startswith("custom_"):
+            raise ValueError("only custom color libraries can be deleted")
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id FROM color_cards WHERE library_id=?", (clean_id,)).fetchall()
+            card_ids = [int(row["id"]) for row in rows]
+            if card_ids:
+                placeholders = ",".join("?" for _ in card_ids)
+                conn.execute(f"DELETE FROM color_card_favorites WHERE card_id IN ({placeholders})", card_ids)
+                conn.execute(f"DELETE FROM color_cards WHERE id IN ({placeholders})", card_ids)
+            cursor = conn.execute("DELETE FROM color_libraries WHERE id=?", (clean_id,))
+            conn.commit()
+        return cursor.rowcount > 0
 
     def upsert_card(
         self,

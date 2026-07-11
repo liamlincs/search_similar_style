@@ -229,6 +229,35 @@ class ColorCardUpsertRequest(BaseModel):
     spectral: List[Any] = []
 
 
+class ColorCardFavoriteRequest(BaseModel):
+    user_tag: str
+    card_id: int
+
+
+class ColorCardPickedFavoriteRequest(BaseModel):
+    user_tag: str
+    name: str = ""
+    hex: str = ""
+    L: float
+    a: float
+    b: float
+
+
+class ColorMeterNativeReadingRequest(BaseModel):
+    user_tag: str
+    request_id: str = ""
+    L: float | None = None
+    a: float | None = None
+    b: float | None = None
+    sample_count: int = 1
+    progress_count: int = 0
+    total_count: int = 0
+    device_id: str = ""
+    device_name: str = ""
+    event: str = "measure"
+    ts: float | None = None
+
+
 def _load_cfg(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"config not found: {path}")
@@ -1106,6 +1135,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_upload_dir = Path("outputs/catalog_import_uploads")
     catalog_upload_dir.mkdir(parents=True, exist_ok=True)
     wechat_access_token_cache: Dict[str, Any] = {"token": "", "expires_at": 0.0}
+    color_meter_native_readings: Dict[str, Dict[str, Any]] = {}
 
     def _wechat_get_access_token() -> str:
         now = time.time()
@@ -4464,6 +4494,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>产品库</title>
+  <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; background: #f5f6f8; color: #111827; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
@@ -4581,10 +4612,132 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
     .color-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .color-name-builder { display: grid; grid-template-columns: 1fr 86px 1fr; gap: 8px; }
-    .color-status { padding: 8px 10px; border-radius: 8px; background: #eef6ff; color: #1e3a8a; font-size: 12px; }
+    .color-status { padding: 6px 9px; border-radius: 8px; background: #eef6ff; color: #1e3a8a; font-size: 11px; line-height: 1.35; }
+    .color-status.hidden { display: none; }
     .color-status.err { background: #fee2e2; color: #b91c1c; }
-    .color-match-list { display: grid; gap: 8px; }
-    .color-match-item { border-radius: 8px; padding: 10px; border: 1px solid rgba(15,23,42,.12); }
+    .color-match-list { display: grid; gap: 6px; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .color-match-list * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .color-match-item { border-radius: 7px; padding: 7px 10px; border: 1px solid rgba(15,23,42,.12); font-size: 14px; line-height: 1.35; }
+    .color-match-item .title { font-size: 15px; line-height: 1.25; font-weight: 700; margin-bottom: 2px; }
+    .color-match-item.compare-target { outline: 3px solid rgba(95,216,233,.95); outline-offset: 2px; }
+    body.color-h5 { background: #080b16; color: #fff; overscroll-behavior: none; }
+    body.color-h5 .app { background: #080b16; color: #fff; min-height: 100vh; }
+    body.color-h5 .top { display: none; }
+    body.color-h5 .body { padding: 0 0 calc(118px + env(safe-area-inset-bottom)); min-height: 100vh; background: #080b16; }
+    .color-home { display: none; min-height: 100vh; padding: 22px 12px 0; color: #f8fafc; font-family: -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif; font-weight: 400; }
+    body.color-h5 .color-home { display: block; }
+    body.color-h5 #colorPanel { display: block; }
+    body.color-h5 #colorPanel > .form,
+    body.color-h5 #colorPanel > .list { display: none; }
+    .color-screen { display: none; min-height: calc(100vh - 136px); }
+    .color-screen.active { display: block; }
+    .color-screen-title { display: none; }
+    .meter-preview-card { border-radius: 6px; background: #202435; padding: 10px; margin: 0 0 10px; touch-action: none; overscroll-behavior: contain; }
+    .meter-preview-inner { height: 118px; background: #9d9d9b; display: grid; place-items: center; color: #080b16; font-size: 17px; position: relative; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .meter-preview-inner * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .meter-preview-inner.params { background: #202435; color: #f8fafc; }
+    .meter-param-grid { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; gap: 8px; font-size: 18px; line-height: 1.75; }
+    .meter-param-title { font-size: 18px; margin-bottom: 12px; }
+    .color-compare-float { position: fixed; z-index: 130; width: 126px; height: 74px; border-radius: 8px; display: grid; place-items: center; color: #050505; font-size: 16px; font-weight: 700; box-shadow: 0 10px 28px rgba(0,0,0,.34); border: 2px solid rgba(255,255,255,.86); pointer-events: none; transform: translate(-50%, -50%); }
+    .meter-dots { display: flex; justify-content: center; gap: 10px; padding: 8px 0 0; }
+    .meter-dot { width: 10px; min-width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 999px; background: #8b8f98; cursor: pointer; }
+    .meter-dot.active { background: #59d1e9; }
+    .meter-row-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: center; margin: 10px 12px; }
+    .meter-pill { min-height: 32px; border-radius: 999px; background: #3a3f58; color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meter-cyan-btn { min-height: 34px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 15px; font-weight: 500; }
+    .meter-connect-btn { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 80; width: 56px; height: 56px; min-height: 56px; padding: 0; border-radius: 999px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 12px; line-height: 1.1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
+    .color-bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 75; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 8px 8px calc(10px + env(safe-area-inset-bottom)); background: #080b16; }
+    .color-nav-btn { min-height: 58px; padding: 4px 0; border-radius: 0; background: transparent; color: #fff; display: grid; place-items: center; gap: 2px; font-size: 14px; font-weight: 400; }
+    .color-nav-btn.active { color: #35d7e8; }
+    .color-nav-icon { font-size: 25px; line-height: 1; }
+    .color-nav-icon.svg-icon { width: 28px; height: 28px; display: block; }
+    .color-nav-icon.svg-icon svg { width: 100%; height: 100%; display: block; stroke: currentColor; }
+    .library-hero { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 10px; align-items: center; margin: -18px -12px 16px; padding: 24px 14px 18px; background: #202435; }
+    .library-hero-text { font-size: 16px; line-height: 1.5; color: #f8fafc; }
+    .library-device { display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-size: 17px; line-height: 1.25; }
+    .library-device-img { width: 62px; height: 62px; border-radius: 999px; background: #fff; display: grid; place-items: center; font-size: 28px; }
+    .color-screen-back { position: fixed; right: 14px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 82; width: 52px; height: 52px; min-height: 52px; padding: 0; border-radius: 14px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 12px; line-height: 1.05; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
+    .color-screen-back::before { content: "↩"; display: block; font-size: 22px; line-height: 1; }
+    .color-screen-back span { display: none; }
+    .color-screen-add { position: fixed; right: 14px; bottom: calc(144px + env(safe-area-inset-bottom)); z-index: 82; width: 52px; height: 52px; min-height: 52px; padding: 0; border-radius: 14px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 28px; line-height: 1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
+    .library-search { display: grid; grid-template-columns: 42px minmax(0, 1fr) 54px; align-items: center; min-height: 42px; border: 1px solid #8c91a1; border-radius: 999px; margin-bottom: 14px; color: #fff; }
+    .library-search input { min-height: 38px; border: 0; background: transparent; color: #fff; padding: 0; }
+    .library-search button { min-height: 38px; padding: 0; border-radius: 999px; background: transparent; color: #fff; }
+    .library-section-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 0 12px; border-radius: 5px; background: #202435; color: #5fd9e9; }
+    .library-section-title { color: #fff; font-size: 18px; }
+    .library-list { display: grid; gap: 8px; max-height: calc(100vh - 250px); overflow: auto; padding: 0 12px 168px; }
+    .library-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
+    .library-row-actions { position: absolute; right: 0; top: 0; bottom: 0; width: 152px; display: grid; grid-template-columns: 1fr 1fr; z-index: 0; }
+    .library-add-card, .library-delete-card { border-radius: 0; color: #fff; font-size: 16px; }
+    .library-add-card { background: #1987d7; }
+    .library-delete-card { border-radius: 0 5px 5px 0; background: #dc2626; }
+    .library-item { min-height: 62px; border-radius: 5px; background: #373b52; color: #fff; display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: center; gap: 8px; padding: 8px 12px; }
+    .library-item.active { background: linear-gradient(90deg, #5dc8e8, #64ded7); }
+    .library-swipe .library-item { position: relative; z-index: 1; width: 100%; transition: transform .18s ease; }
+    .library-swipe.open .library-item { transform: translateX(-152px); }
+    .library-item-title { font-size: 17px; line-height: 1.25; word-break: break-word; font-weight: 600; }
+    .library-check { width: 24px; height: 24px; border-radius: 999px; border: 2px solid #fff; display: grid; place-items: center; font-weight: 900; }
+    .library-confirm { position: fixed; left: 12px; right: 12px; bottom: calc(18px + env(safe-area-inset-bottom)); min-height: 48px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 17px; }
+    .device-steps { display: grid; grid-template-columns: 96px minmax(0,1fr); gap: 10px; align-items: center; margin: -18px -12px 0; padding: 22px 18px; background: #202435; font-size: 17px; line-height: 1.6; }
+    .device-mode-box { margin: 14px 0 14px; display: grid; gap: 8px; }
+    .device-mode-title { color: #fff; font-size: 16px; }
+    .device-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .device-mode-btn { min-height: 42px; border-radius: 999px; border: 1px solid #5fd9e9; background: transparent; color: #5fd9e9; font-size: 15px; }
+    .device-mode-btn.active { border-color: transparent; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; }
+    .device-mode-note { color: #8b91a3; font-size: 13px; line-height: 1.35; }
+    .device-list-title { margin: 18px 0 12px; font-size: 19px; color: #fff; }
+    #colorScreenDevice { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+    .device-list { display: grid; gap: 12px; }
+    .device-row { min-height: 66px; border-radius: 6px; background: #202435; color: #fff; display: grid; grid-template-columns: 28px minmax(0, 1fr) 88px; align-items: center; gap: 10px; padding: 0 14px; font-size: 16px; }
+    .device-row-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .device-connect-row-btn { min-height: 34px; border-radius: 999px; border: 1px solid #5fd9e9; background: transparent; color: #5fd9e9; font-size: 15px; }
+    .device-empty { color: #8b91a3; font-size: 15px; padding: 16px 2px; }
+    .radar-wrap { position: relative; left: auto; right: auto; bottom: auto; margin: 42px 0 96px; display: grid; place-items: center; pointer-events: none; }
+    .radar { position: relative; width: 118px; height: 118px; border-radius: 999px; background: #37d3df; display: grid; place-items: center; color: #fff; font-size: 42px; box-shadow: 0 0 0 12px rgba(55,211,223,.12), 0 0 0 24px rgba(55,211,223,.07); }
+    .radar::before { content: ""; position: absolute; inset: -16px; border-radius: 999px; border: 2px dotted rgba(95,217,233,.45); animation: radarSpin 3.2s linear infinite; }
+    .radar::after { content: ""; position: absolute; inset: -27px; border-radius: 999px; border-top: 5px solid rgba(95,217,233,.65); border-right: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 5px solid transparent; animation: radarSpin 1.8s linear infinite; }
+    @keyframes radarSpin { to { transform: rotate(360deg); } }
+    .image-pick-tip { margin: 0 -12px; padding: 0 14px 18px; color: #f8fafc; font-size: 18px; display: flex; justify-content: space-between; align-items: center; }
+    .image-menu-btn { min-width: 42px; min-height: 34px; padding: 0; border-radius: 8px; background: transparent; color: #fff; font-size: 26px; }
+    .image-pick-card { margin: 0 -12px; min-height: 360px; display: grid; place-items: center; color: #b8bfce; background: #0f1422; overflow: hidden; }
+    .image-pick-card.empty { border: 1px dashed #30364b; border-radius: 8px; margin: 20px 0; }
+    .image-pick-stage { position: relative; width: 100%; min-height: 360px; display: grid; place-items: center; background: #111827; touch-action: manipulation; }
+    .image-pick-stage img { width: 100%; max-height: 58vh; object-fit: cover; display: block; }
+    .color-pick-cursor { position: absolute; width: 34px; height: 34px; border: 2px solid #fff; border-radius: 999px; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px #0f172a; pointer-events: none; }
+    .color-pick-cursor::before, .color-pick-cursor::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 0 1px #0f172a; }
+    .color-pick-cursor::before { left: 50%; top: -7px; width: 2px; height: 46px; transform: translateX(-50%); }
+    .color-pick-cursor::after { top: 50%; left: -7px; width: 46px; height: 2px; transform: translateY(-50%); }
+    .color-pick-result { position: relative; margin: 0 -12px; min-height: 176px; padding: 34px 18px 30px; text-align: center; color: #090b12; background: #202435; display: grid; place-items: center; font-size: 20px; line-height: 1.45; }
+    .color-pick-result.hidden { display: none; }
+    .color-pick-result.has-color { color: #050505; }
+    .color-pick-actions { position: absolute; right: 18px; top: 18px; display: flex; gap: 18px; font-size: 28px; color: currentColor; }
+    .color-pick-action-btn { min-width: 34px; min-height: 34px; padding: 0; border-radius: 8px; background: transparent; color: currentColor; font-size: 28px; }
+    .my-color-list { display: grid; gap: 10px; padding-bottom: 80px; }
+    .my-color-filter { width: 100%; min-height: 54px; border-radius: 5px; background: #202435; display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 10px; padding: 0 14px; margin: 0 0 12px; color: #fff; font-size: 17px; text-align: left; }
+    .my-color-filter-icon { text-align: right; font-size: 24px; line-height: 1; }
+    .my-color-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
+    .my-color-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 72px; border-radius: 0 5px 5px 0; background: #ef4444; color: #fff; font-size: 16px; z-index: 0; }
+    .my-color-card { position: relative; z-index: 1; min-height: 98px; border-radius: 5px; padding: 14px 18px; display: block; color: #fff; transition: transform .18s ease; }
+    .my-color-swipe.open .my-color-card { transform: translateX(-72px); }
+    .my-color-swatch { display: none; }
+    .my-color-name { font-size: 18px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
+    .my-color-meta { font-size: 14px; line-height: 1.45; color: rgba(255,255,255,.92); font-weight: 500; }
+    .my-color-list .color-match-item, .my-color-list .card { background: #202435; color: #fff; border-color: #30364b; }
+    .selected-library-card { min-height: 62px; border-radius: 5px; background: #202435; color: #fff; display: grid; grid-template-columns: minmax(0,1fr) 32px; align-items: center; gap: 10px; padding: 10px 14px; font-size: 17px; }
+    .selected-library-meta { color: #aab3c5; font-size: 13px; margin-top: 3px; }
+    .color-action-sheet { position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.45); display: grid; align-items: end; }
+    .color-action-sheet.hidden { display: none; }
+    .color-action-panel { background: #fff; color: #111827; border-radius: 16px 16px 0 0; overflow: hidden; text-align: center; font-size: 18px; }
+    .color-action-panel button { min-height: 58px; width: 100%; border-radius: 0; background: #fff; color: #111827; border-bottom: 1px solid #edf0f4; font-size: 18px; font-weight: 500; }
+    .color-action-panel button:last-child { border-bottom: 0; margin-top: 8px; }
+    .color-form-panel { padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); text-align: left; display: grid; gap: 10px; }
+    .color-form-panel .panel-title { text-align: center; font-size: 20px; font-weight: 700; color: #111827; }
+    .color-form-panel input { width: 100%; min-height: 44px; border: 1px solid #d8dde6; border-radius: 8px; padding: 0 12px; font-size: 16px; box-sizing: border-box; }
+    .color-form-panel .row3 { display: grid; grid-template-columns: 1fr 92px 1fr; gap: 8px; }
+    .color-form-panel .lab-status { min-height: 24px; color: #64748b; font-size: 14px; line-height: 1.4; }
+    .color-form-panel button { border-radius: 8px; min-height: 46px; font-size: 16px; border: 0; }
+    .color-form-panel .primary { background: #1987d7; color: #fff; }
+    .color-form-panel .secondary { background: #eef2f7; color: #0f172a; }
     .empty { padding: 28px 0; color: #64748b; text-align: center; }
     .image-search-card { display: grid; gap: 14px; color: #64748b; }
     .image-search-hint { min-height: 20px; color: #64748b; font-size: 13px; padding: 0 2px; }
@@ -4600,6 +4753,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .choice-modal.open { display: flex; }
     .choice-sheet { width: 100%; background: #fff; border-radius: 18px 18px 0 0; padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 10px; }
     .choice-sheet button { min-height: 52px; border-radius: 6px; font-size: 17px; }
+    .app-confirm-modal { position: fixed; inset: 0; z-index: 180; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.52); }
+    .app-confirm-modal.open { display: flex; }
+    .app-confirm-box { width: min(320px, 92vw); border-radius: 14px; background: #fff; color: #111827; overflow: hidden; box-shadow: 0 18px 40px rgba(0,0,0,.28); }
+    .app-confirm-message { padding: 28px 22px; text-align: center; font-size: 17px; line-height: 1.5; color: #475569; white-space: pre-line; }
+    .app-confirm-actions { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #e5e7eb; }
+    .app-confirm-actions button { min-height: 52px; border-radius: 0; background: #fff; color: #0f172a; font-size: 17px; border-right: 1px solid #e5e7eb; }
+    .app-confirm-actions button:last-child { border-right: 0; color: #64748b; }
     .image-result-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
     .image-result-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
     .image-result-card img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; }
@@ -4698,38 +4858,139 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="image-result-list" id="imageSearchResults"></div>
       </section>
       <section class="panel" id="colorPanel">
-        <div class="form" id="colorMeterBox">
-          <div class="color-status" id="colorMeterStatus">正在检查浏览器蓝牙能力...</div>
-          <div class="color-actions">
-            <button id="colorMeterConnectBtn" type="button">连接色差仪</button>
-            <button id="colorMeterMeasureBtn" class="secondary" type="button" disabled>测量</button>
+        <div class="color-home">
+          <section class="color-screen active" id="colorScreenInstrument">
+            <div class="color-screen-title">仪器对色</div>
+            <div class="meter-preview-card">
+              <div class="meter-preview-inner" id="meterPreviewInner"></div>
+              <div class="meter-dots">
+                <button class="meter-dot active" id="meterSwatchDot" type="button" aria-label="颜色"></button>
+                <button class="meter-dot" id="meterParamsDot" type="button" aria-label="参数"></button>
+              </div>
+            </div>
+            <div class="meter-row-actions">
+              <div class="meter-pill" id="selectedColorLibraryName">请选择色彩库</div>
+              <button class="meter-cyan-btn" id="chooseColorLibraryBtn" type="button">选择色彩库</button>
+            </div>
+            <div class="color-status hidden" id="colorMeterStatus"></div>
+            <div class="grid3 hidden">
+              <input id="colorL" type="number" step="0.01" placeholder="L" />
+              <input id="colorA" type="number" step="0.01" placeholder="a" />
+              <input id="colorB" type="number" step="0.01" placeholder="b" />
+            </div>
+            <div class="swatch hidden" id="colorSwatch" style="width:100%;height:64px;background:#f1f5f9;"></div>
+            <div id="colorMatchBox" class="hidden">
+              <button id="matchColorBtn" class="secondary hidden" type="button">匹配近似色号</button>
+              <div class="muted" id="colorMatchStatus">测量/拖动比对或图片取色后可匹配近似色。</div>
+              <div class="color-match-list" id="colorMatchList"></div>
+            </div>
+            <button id="colorMeterConnectBtn" class="meter-connect-btn" type="button">◎<br>测量</button>
+            <button id="colorMeterMeasureBtn" class="hidden" type="button" disabled>测量</button>
+          </section>
+          <section class="color-screen" id="colorScreenLibrary">
+            <div class="color-screen-title">选择色彩库</div>
+            <div class="library-search"><span style="text-align:center;font-size:26px;">⌕</span><input id="colorLibrarySearch" placeholder="" /><button id="colorLibrarySearchBtn" type="button">搜索</button></div>
+            <select id="colorLibrarySelect" class="hidden"></select>
+            <div class="library-list" id="colorLibraryList"></div>
+            <button class="library-confirm" id="confirmColorLibraryBtn" type="button">确认选择</button>
+            <button class="color-screen-add" id="colorLibraryAddBtn" type="button" aria-label="新增色彩库">+</button>
+            <button class="color-screen-back" id="colorLibraryBackBtn" type="button" aria-label="返回"><span>返回</span></button>
+          </section>
+          <section class="color-screen" id="colorScreenImage">
+            <div class="color-screen-title">图片取色</div>
+            <div class="image-pick-tip"><span>请点击需要取色的位置</span><button class="image-menu-btn" id="colorImageMenuBtn" type="button">•••</button></div>
+            <input id="colorImageFile" class="hidden" type="file" accept="image/*" />
+            <div class="image-pick-card" id="colorImageCard">
+              <div class="image-pick-stage" id="colorImageStage">
+                <img id="colorImagePreview" alt="" />
+                <span class="color-pick-cursor hidden" id="colorPickCursor"></span>
+              </div>
+            </div>
+            <div class="color-pick-result" id="colorPickResult">
+              <div>上传图片后点击图片取色</div>
+            </div>
+          </section>
+          <section class="color-screen" id="colorScreenMine">
+            <div class="color-screen-title">我的色彩</div>
+            <button class="my-color-filter" id="colorMineLibraryBtn" type="button"><span>当前色卡库：<span id="colorMineLibraryName">请选择色彩库</span></span><span class="my-color-filter-icon">⌕</span></button>
+            <div class="my-color-list" id="colorList"></div>
+          </section>
+          <div class="color-action-sheet hidden" id="colorImageMenuSheet">
+            <div class="color-action-panel">
+              <button id="chooseColorImageBtn" type="button">选择图片</button>
+              <button id="cancelColorImageMenuBtn" type="button">取消</button>
+            </div>
           </div>
-          <div class="grid3">
-            <input id="colorL" type="number" step="0.01" placeholder="L" />
-            <input id="colorA" type="number" step="0.01" placeholder="a" />
-            <input id="colorB" type="number" step="0.01" placeholder="b" />
+          <div class="color-action-sheet hidden" id="colorPickActionSheet">
+            <div class="color-action-panel">
+              <button id="savePickedColorBtn" type="button">保存到我的色彩</button>
+              <button id="findPickedColorBtn" type="button">找接近色</button>
+              <button id="cancelPickedColorActionBtn" type="button">取消</button>
+            </div>
           </div>
-          <div class="swatch" id="colorSwatch" style="width:100%;height:64px;background:#f1f5f9;"></div>
-          <div class="form" id="colorMatchBox">
-            <button id="matchColorBtn" class="secondary" type="button">匹配近似色号</button>
-            <div class="muted" id="colorMatchStatus">测量或输入 Lab 后可匹配近似色号。</div>
-            <div class="color-match-list" id="colorMatchList"></div>
+          <div class="color-action-sheet hidden" id="colorCompareConfirmSheet">
+            <div class="color-action-panel">
+              <button id="confirmCompareFavoriteBtn" type="button">保存到我的色彩</button>
+              <button id="cancelCompareFavoriteBtn" type="button">取消</button>
+            </div>
           </div>
+          <div class="color-action-sheet hidden" id="colorLibraryAddSheet">
+            <div class="color-action-panel color-form-panel">
+              <div class="panel-title">新增色彩库</div>
+              <input id="newColorLibraryName" placeholder="输入色彩库名称" />
+              <button class="primary" id="confirmAddColorLibraryBtn" type="button">新增</button>
+              <button class="secondary" id="cancelAddColorLibraryBtn" type="button">取消</button>
+            </div>
+          </div>
+          <div class="color-action-sheet hidden" id="colorCardAddSheet">
+            <div class="color-action-panel color-form-panel">
+              <div class="panel-title" id="colorCardAddTitle">新增色卡</div>
+              <div class="row3">
+                <input id="newColorCardPrefix" placeholder="固定前缀" />
+                <input id="newColorCardNumber" inputmode="numeric" placeholder="编号" />
+                <input id="newColorCardSuffix" placeholder="输入色名" />
+              </div>
+              <input id="newColorCardName" placeholder="色号名称" />
+              <button class="secondary" id="measureNewColorCardBtn" type="button">测量 Lab</button>
+              <div class="lab-status" id="newColorCardLabStatus">请先测量 Lab</div>
+              <button class="primary" id="confirmAddColorCardBtn" type="button">保存色卡，继续下一个</button>
+              <button class="secondary" id="cancelAddColorCardBtn" type="button">取消</button>
+            </div>
+          </div>
+          <section class="color-screen" id="colorScreenDevice">
+            <div class="color-screen-title">连接设备</div>
+            <div class="device-steps"><div>连接步骤:</div><div>1.打开手机蓝牙，确保微信有蓝牙和定位权限<br>2.按一下测色仪顶部按钮唤醒设备<br>3.在搜索到的仪器列表中点击连接按钮</div></div>
+            <div class="device-mode-box">
+              <div class="device-mode-title">测量方式</div>
+              <div class="device-mode-tabs">
+                <button class="device-mode-btn" id="colorMeterSingleModeBtn" type="button" data-meter-mode="single">单次测量</button>
+                <button class="device-mode-btn" id="colorMeterAverageModeBtn" type="button" data-meter-mode="average">平均测量</button>
+              </div>
+              <div class="device-mode-note" id="colorMeterModeNote"></div>
+            </div>
+            <div class="device-list-title">连接过的设备</div>
+            <div class="device-list" id="colorDeviceList"></div>
+            <div class="radar-wrap"><div class="radar">◎</div></div>
+          </section>
+          <div class="form hidden" id="colorCreateBox">
+            <input id="colorLibrary" placeholder="新色卡库名称，可选" />
+            <div class="color-name-builder">
+              <input id="colorNamePrefix" placeholder="前缀，如彩龙" />
+              <input id="colorNameNumber" inputmode="numeric" placeholder="编号" />
+              <input id="colorNameSuffix" placeholder="色名，如浅灰" />
+            </div>
+            <input id="colorName" placeholder="色号名称，如 彩龙3351浅灰" />
+            <textarea id="colorNote" placeholder="备注，可选"></textarea>
+            <button id="saveColorBtn" type="button">保存色卡</button>
+          </div>
+          <div class="color-compare-float hidden" id="colorCompareFloat"></div>
+          <nav class="color-bottom-nav">
+            <button class="color-nav-btn active" id="colorNavInstrument" type="button" data-color-view="instrument"><span class="color-nav-icon svg-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 12l3.2-4.2"></path><path d="M8 18.2h8"></path><path d="M7.2 12h2"></path><path d="M14.8 12h2"></path><path d="M12 5.2v2"></path></svg></span><span>仪器对色</span></button>
+            <button class="color-nav-btn" id="colorNavImage" type="button" data-color-view="image"><span class="color-nav-icon svg-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.2"></rect><circle cx="8.2" cy="9.2" r="1.7"></circle><path d="M5.5 17l4.7-4.8 3.1 3.1 2.1-2.2 3.1 3.9"></path></svg></span><span>图片取色</span></button>
+            <button class="color-nav-btn" id="colorNavMine" type="button" data-color-view="mine"><span class="color-nav-icon svg-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4a8 8 0 1 0 8 8h-8z"></path><path d="M12 4v8h8"></path><path d="M16.7 6.1A8 8 0 0 1 20 12"></path></svg></span><span>我的色彩</span></button>
+            <button class="color-nav-btn" id="colorNavDevice" type="button" data-color-view="device"><span class="color-nav-icon svg-icon"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3.5" width="8" height="17" rx="3"></rect><path d="M10 7h4"></path><path d="M10 16h4"></path><circle cx="12" cy="11.5" r="1.7"></circle></svg></span><span>管理仪器</span></button>
+          </nav>
         </div>
-        <div class="form hidden" id="colorCreateBox">
-          <div class="form-title">色卡录入</div>
-          <select id="colorLibrarySelect"></select>
-          <input id="colorLibrary" placeholder="新色卡库名称，可选" />
-          <div class="color-name-builder">
-            <input id="colorNamePrefix" placeholder="前缀，如彩龙" />
-            <input id="colorNameNumber" inputmode="numeric" placeholder="编号" />
-            <input id="colorNameSuffix" placeholder="色名，如浅灰" />
-          </div>
-          <input id="colorName" placeholder="色号名称，如 彩龙3351浅灰" />
-          <textarea id="colorNote" placeholder="备注，可选"></textarea>
-          <button id="saveColorBtn" type="button">保存色卡</button>
-        </div>
-        <div class="list" id="colorList"></div>
       </section>
     </div>
     <div class="filter-modal" id="filterModal">
@@ -4811,6 +5072,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       productLoading: false,
       productLoadSeq: 0,
       colorMode: "query",
+      colorView: "instrument",
+      previousColorView: "instrument",
+      colorLibraries: [],
+      colorLibraryIds: [],
+      colorPickPreviewUrl: "",
+      pickedColorLab: null,
+      pickedColorHex: "",
+      pickedColorRgb: null,
+      meterPreviewMode: "swatch",
+      meterSuppressClick: false,
+      colorCompareDragging: false,
+      colorCompareStartX: null,
+      colorCompareStartY: null,
+      colorCompareTarget: null,
+      colorComparePendingTarget: null,
+      colorFavoriteSwipe: null,
+      colorLibrarySwipe: null,
+      colorCardAddTargetLibraryId: "",
+      colorCardAddMeasuredLab: null,
+      nativeMeterPollTimer: null,
+      nativeMeterPollSeq: 0,
       currentGalleryProduct: null,
       imageSearchFile: null,
       imageSearchPreviewUrl: "",
@@ -4822,6 +5104,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     const canProductCreate = hasPerm("product:create");
     const canColorView = hasPerm("color:view");
     const canColorCreate = hasPerm("color:create");
+    const COLOR_METER_DEVICES_KEY = "openfire_color_meter_devices";
+    const COLOR_METER_MODE_KEY = "openfire_color_meter_measure_mode";
     const $ = (id) => document.getElementById(id);
     const COLOR_SERVICE_UUID = 0xFFE0;
     const COLOR_CHARACTERISTIC_UUID = 0xFFE1;
@@ -4830,6 +5114,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let colorPending = null;
     let colorResponseBytes = [];
     let colorMeasureId = 1;
+
+    function appConfirm(message) {
+      return new Promise((resolve) => {
+        let modal = $("appConfirmModal");
+        if (!modal) {
+          modal = document.createElement("div");
+          modal.id = "appConfirmModal";
+          modal.className = "app-confirm-modal";
+          modal.innerHTML = `
+            <div class="app-confirm-box">
+              <div class="app-confirm-message" id="appConfirmMessage"></div>
+              <div class="app-confirm-actions">
+                <button id="appConfirmOk" type="button">确定</button>
+                <button id="appConfirmCancel" type="button">取消</button>
+              </div>
+            </div>`;
+          document.body.appendChild(modal);
+        }
+        $("appConfirmMessage").textContent = String(message || "");
+        const cleanup = (value) => {
+          modal.classList.remove("open");
+          $("appConfirmOk").onclick = null;
+          $("appConfirmCancel").onclick = null;
+          resolve(value);
+        };
+        $("appConfirmOk").onclick = () => cleanup(true);
+        $("appConfirmCancel").onclick = () => cleanup(false);
+        modal.classList.add("open");
+      });
+    }
 
     function readPermissions(raw) {
       const defaults = ["product:view", "product:create", "color:view", "color:create"];
@@ -5012,9 +5326,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("editProductsBtn").classList.toggle("return", state.productTool === "edit");
       $("editProductsBtn").innerHTML = state.productTool === "edit" ? "↩<span>返回</span>" : "✎<span>修改</span>";
       $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
-      $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
-      $("colorMeterBox").classList.toggle("hidden", state.type !== "color");
-      $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorMode === "query"));
+      if ($("colorList")) $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorView === "mine"));
+      if ($("colorMatchBox")) $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorView === "instrument"));
+      document.body.classList.toggle("color-h5", state.type === "color");
+      if (state.type === "color") syncColorPageTitle();
+      else if ($("libraryTitle")) $("libraryTitle").textContent = "产品库";
       const isManage = isProductImport || isProductEdit || (state.type === "color" && state.colorMode === "manage");
       document.querySelector(".search").classList.toggle("hidden", isManage || state.appMode === "image" || state.appMode === "mine");
       $("filterBtn").classList.toggle("hidden", !(state.type === "product" && state.appMode === "category"));
@@ -5032,6 +5348,124 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function switchColorMode(mode) {
       state.colorMode = mode === "manage" ? "manage" : "query";
       switchType("color");
+    }
+    function colorViewTitle(view) {
+      return {
+        instrument: "仪器对色",
+        image: "图片取色",
+        mine: "我的色彩",
+        device: "管理仪器",
+        library: "选择色彩库",
+      }[view] || "色卡库";
+    }
+    function syncColorPageTitle() {
+      const title = "色卡库";
+      if ($("libraryTitle")) $("libraryTitle").textContent = title;
+      document.title = title;
+      try {
+        window.parent?.postMessage?.({ title, pageTitle: title }, "*");
+        if (window.wx?.miniProgram?.postMessage) {
+          window.wx.miniProgram.postMessage({ data: { title, pageTitle: title } });
+        }
+      } catch (_) {}
+    }
+    function requestNativeColorMeter(action, deviceId = "") {
+      try {
+        if (!window.wx?.miniProgram?.navigateTo) return false;
+        setColorStatus(action === "colorMeterMeasure" ? "请点击测量按钮并按设备按钮测量" : "已请求小程序原生连接...", false);
+        const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        startNativeMeterPolling(requestId, action);
+        const query = new URLSearchParams({
+          action: action === "colorMeterConnect" ? "connect" : "measure",
+          api_base: location.origin,
+          user_tag: ownerTag(),
+          token,
+          request_id: requestId,
+          measure_mode: readColorMeterMode(),
+        });
+        if (deviceId) query.set("device_id", deviceId);
+        window.wx.miniProgram.navigateTo({
+          url: `/pages/catalog_meter_bridge/index?${query.toString()}`,
+        });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    function startNativeMeterPolling(requestId, action) {
+      const tag = ownerTag();
+      if (!tag) return;
+      if (state.nativeMeterPollTimer) clearTimeout(state.nativeMeterPollTimer);
+      const seq = ++state.nativeMeterPollSeq;
+      let attempts = 0;
+      const poll = async () => {
+        if (seq !== state.nativeMeterPollSeq) return;
+        attempts += 1;
+        try {
+          const query = new URLSearchParams({ user_tag: tag, request_id: requestId || "", consume: "true" });
+          const data = await api("/api/v1/color-card/native-meter/reading?" + query.toString());
+          const reading = data.reading;
+          if (reading) {
+            if (reading.device_id || reading.device_name) saveColorDevice({ deviceId: reading.device_id || "", name: reading.device_name || "" });
+            if (reading.event === "connect") {
+              setColorStatus("色差仪已连接", false);
+              return;
+            }
+            if (reading.event === "measure_progress") {
+              const got = Number(reading.progress_count || reading.progressCount || 0);
+              const total = Number(reading.total_count || reading.totalCount || 0);
+              const progressText = got && total ? `已获取 ${got}/${total} 次，请继续按设备按钮测量` : "已获取一次测量，请继续";
+              setColorStatus(progressText, false);
+              setColorCardAddLabStatus(progressText);
+            } else {
+              const sampleText = Number(reading.sample_count || reading.sampleCount) > 1 ? `已获取 ${Number(reading.sample_count || reading.sampleCount)} 次平均 Lab` : "已获取小程序原生测色 Lab";
+              if (applyNativeMeterLab(reading, sampleText)) {
+                if (state.colorCardAddTargetLibraryId) {
+                  const lab = currentLab();
+                  state.colorCardAddMeasuredLab = lab;
+                  if (lab) {
+                    setColorCardAddLabStatus(`已获取 Lab：L ${lab.L.toFixed(2)} / a ${lab.a.toFixed(2)} / b ${lab.b.toFixed(2)}`);
+                    setColorCardMeasureButtonColor(lab);
+                  }
+                  return;
+                }
+                switchColorView("instrument");
+                matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true));
+              }
+              return;
+            }
+          }
+        } catch (err) {
+          if (attempts > 3) setColorStatus(err.message || "读取小程序测色结果失败", true);
+        }
+        if (attempts < 50 && seq === state.nativeMeterPollSeq) {
+          state.nativeMeterPollTimer = setTimeout(poll, 500);
+        } else if (action === "colorMeterMeasure") {
+          setColorStatus("未收到小程序原生测色结果，请重试", true);
+        }
+      };
+      state.nativeMeterPollTimer = setTimeout(poll, 500);
+    }
+    function switchColorView(view) {
+      state.colorView = ["instrument", "image", "mine", "device", "library"].includes(view) ? view : "instrument";
+      const screens = {
+        instrument: "colorScreenInstrument",
+        image: "colorScreenImage",
+        mine: "colorScreenMine",
+        device: "colorScreenDevice",
+        library: "colorScreenLibrary",
+      };
+      Object.values(screens).forEach((id) => $(id)?.classList.toggle("active", id === screens[state.colorView]));
+      syncColorPageTitle();
+      document.querySelectorAll("[data-color-view]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.colorView === state.colorView);
+      });
+      if ($("colorMatchBox")) $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorView === "instrument"));
+      if ($("colorList")) $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorView === "mine"));
+      if (state.colorView === "mine") {
+        loadColors().catch((err) => setStatus(err.message || "加载失败", true));
+      }
+      if (state.colorView === "device") renderColorDevices();
     }
     function productTags(item) {
       const groups = item.tag_groups || {};
@@ -5206,17 +5640,98 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         box.innerHTML = '<div class="empty">暂无色卡数据</div>';
         return;
       }
-      box.innerHTML = state.colors.map((item) => `
-        <div class="card color-row">
-          <div class="swatch" style="background:#${item.hex || "ffffff"}"></div>
-          <div>
-            <div class="title">${item.name || ""}</div>
-            <div class="muted">${item.library_name || item.library_id || ""}</div>
-            <div class="muted">L ${Number(item.l).toFixed(2)} / a ${Number(item.a).toFixed(2)} / b ${Number(item.b).toFixed(2)}</div>
-            ${item.note ? `<div class="muted">${item.note}</div>` : ""}
+      box.innerHTML = state.colors.map((item) => {
+        const canDelete = item.is_favorite || isEditableColorLibraryId(item.library_id);
+        return `
+        <div class="my-color-swipe" data-card-id="${escapeHtml(String(item.id || ""))}" data-favorite="${item.is_favorite ? "1" : "0"}" data-user-card="${(!item.is_favorite && isEditableColorLibraryId(item.library_id)) ? "1" : "0"}">
+          ${canDelete ? '<button class="my-color-delete" type="button">删除</button>' : ""}
+          <div class="my-color-card" style="background:#${normalizeHex(item.hex || labToHex({ L: Number(item.l) || 0, a: Number(item.a) || 0, b: Number(item.b) || 0 }))};">
+            <div class="my-color-swatch" style="background:#${normalizeHex(item.hex || labToHex({ L: Number(item.l) || 0, a: Number(item.a) || 0, b: Number(item.b) || 0 }))};"></div>
+            <div>
+              <div class="my-color-name">名称: ${escapeHtml(item.name || "")}</div>
+              <div class="my-color-meta">色彩库: ${escapeHtml(item.library_name || item.library_id || "")}</div>
+              <div class="my-color-meta">色值: L*: ${Number(item.l).toFixed(2)} a*: ${Number(item.a).toFixed(2)} b*: ${Number(item.b).toFixed(2)}</div>
+              ${item.created_at ? `<div class="my-color-meta">创建时间: ${escapeHtml(item.created_at)}</div>` : ""}
+            </div>
           </div>
         </div>
+      `}).join("");
+    }
+    function renderSelectedColorLibraries() {
+      const box = $("colorList");
+      if (!box) return;
+      const ids = activeColorLibraryIds();
+      const selected = (state.colorLibraries || []).filter((lib) => ids.includes(lib.id));
+      updateColorLibraryLabels();
+      if (!selected.length) {
+        box.innerHTML = '<div class="empty" style="color:#8b91a3;">暂无已选色彩库</div>';
+        return;
+      }
+      box.innerHTML = selected.map((lib) => `
+        <button class="selected-library-card" type="button" data-library-id="${escapeHtml(lib.id || "")}">
+          <span>
+            <strong>${escapeHtml(lib.name || lib.id || "")}</strong>
+            <div class="selected-library-meta">${Number(lib.color_count || 0)} 个色号</div>
+          </span>
+          <span>›</span>
+        </button>
       `).join("");
+      box.querySelectorAll("[data-library-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.colorLibraryIds = [btn.dataset.libraryId].filter(Boolean);
+          updateColorLibraryLabels();
+          switchColorView("instrument");
+        });
+      });
+    }
+    function normalizeHex(raw) {
+      const text = String(raw || "").replace("#", "").trim();
+      return /^[0-9a-fA-F]{6}$/.test(text) ? text.toUpperCase() : "CCCCCC";
+    }
+    function activeColorLibraryIds() {
+      if (state.colorLibraryIds.length) return state.colorLibraryIds.slice();
+      return (state.colorLibraries || []).map((lib) => lib.id).filter(Boolean);
+    }
+    function isVirtualFavoriteLibraryId(id) {
+      return String(id || "") === "__favorites__";
+    }
+    function userLibraryPrefix() {
+      return "custom_";
+    }
+    function isEditableColorLibraryId(id) {
+      return String(id || "").startsWith(userLibraryPrefix());
+    }
+    function normalizeColorLibraries(rawLibraries) {
+      const seen = new Set();
+      const publicLibraries = (rawLibraries || [])
+        .filter((lib) => {
+          const id = String(lib.id || "");
+          const name = String(lib.name || "");
+          if (!id) return false;
+          if (seen.has(id)) return false;
+          seen.add(id);
+          if (/pantone|color-pt|潘通/i.test(`${id} ${name}`)) return false;
+          if (id === "__favorites__" || /^my_color_/i.test(id) || /我的收藏|收藏夹/.test(name)) return false;
+          if (/^user_/i.test(id)) return false;
+          return true;
+        });
+      return [{ id: "__favorites__", name: "我的收藏", color_count: 0 }].concat(publicLibraries);
+    }
+    function colorLibraryLabel() {
+      const ids = activeColorLibraryIds();
+      const libraries = state.colorLibraries || [];
+      if (!ids.length) return "请选择色彩库";
+      if (ids.length === 1) return libraries.find((lib) => lib.id === ids[0])?.name || ids[0];
+      return `已选 ${ids.length} 个色彩库`;
+    }
+    function updateColorLibraryLabels() {
+      const label = colorLibraryLabel();
+      if ($("selectedColorLibraryName")) $("selectedColorLibraryName").textContent = label;
+      if ($("colorMineLibraryName")) $("colorMineLibraryName").textContent = label;
+      if ($("colorLibrarySelect")) {
+        const realId = activeColorLibraryIds().find((id) => !isVirtualFavoriteLibraryId(id)) || "";
+        $("colorLibrarySelect").value = realId;
+      }
     }
     function labToHex(lab) {
       let y = (lab.L + 16) / 116;
@@ -5233,12 +5748,129 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         gamma(0.0557 * x - 0.2040 * y + 1.0570 * z),
       ].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
     }
+    function rgbToLab(r, g, b) {
+      const pivotRgb = (v) => {
+        v = v / 255;
+        return v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92;
+      };
+      let rr = pivotRgb(r);
+      let gg = pivotRgb(g);
+      let bb = pivotRgb(b);
+      let x = (rr * 0.4124 + gg * 0.3576 + bb * 0.1805) / 0.95047;
+      let y = (rr * 0.2126 + gg * 0.7152 + bb * 0.0722) / 1.00000;
+      let z = (rr * 0.0193 + gg * 0.1192 + bb * 0.9505) / 1.08883;
+      const pivotXyz = (v) => v > 0.008856 ? Math.pow(v, 1 / 3) : (7.787 * v) + (16 / 116);
+      x = pivotXyz(x);
+      y = pivotXyz(y);
+      z = pivotXyz(z);
+      return { L: (116 * y) - 16, a: 500 * (x - y), b: 200 * (y - z) };
+    }
     function currentLab() {
       const L = Number($("colorL").value);
       const a = Number($("colorA").value);
       const b = Number($("colorB").value);
       if (!Number.isFinite(L) || !Number.isFinite(a) || !Number.isFinite(b)) return null;
       return { L, a, b };
+    }
+    function readColorDevices() {
+      try {
+        const rows = JSON.parse(localStorage.getItem(COLOR_METER_DEVICES_KEY) || "[]");
+        return Array.isArray(rows) ? rows.filter((item) => item && (item.deviceId || item.name)) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+    function saveColorDevice(device) {
+      const clean = {
+        deviceId: String(device?.deviceId || "").trim(),
+        name: String(device?.name || "").trim(),
+        ts: Date.now(),
+      };
+      if (!clean.deviceId && !clean.name) return;
+      const rows = readColorDevices().filter((item) => item.deviceId !== clean.deviceId && item.name !== clean.name);
+      rows.unshift(clean);
+      localStorage.setItem(COLOR_METER_DEVICES_KEY, JSON.stringify(rows.slice(0, 8)));
+      renderColorDevices();
+    }
+    function readColorMeterMode() {
+      return localStorage.getItem(COLOR_METER_MODE_KEY) === "average" ? "average" : "single";
+    }
+    function setColorMeterMode(mode) {
+      const next = mode === "average" ? "average" : "single";
+      localStorage.setItem(COLOR_METER_MODE_KEY, next);
+      renderColorMeterMode();
+    }
+    function renderColorMeterMode() {
+      const mode = readColorMeterMode();
+      document.querySelectorAll("[data-meter-mode]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.meterMode === mode);
+      });
+      const note = $("colorMeterModeNote");
+      if (note) {
+        note.textContent = mode === "average"
+          ? "平均测量：连续按 3 次设备顶部按钮，取平均 Lab 后匹配近似色。"
+          : "单次测量：按 1 次设备顶部按钮后读取 Lab。";
+      }
+    }
+    function renderColorDevices() {
+      const box = $("colorDeviceList");
+      if (!box) return;
+      renderColorMeterMode();
+      const rows = readColorDevices();
+      if (!rows.length) {
+        box.innerHTML = '<div class="device-empty">暂无连接记录</div><button class="device-connect-row-btn" type="button" data-device-id="">搜索连接</button>';
+      } else {
+        box.innerHTML = rows.map((item, index) => `
+          <div class="device-row">
+            <span>${index + 1}</span>
+            <span class="device-row-name">${escapeHtml(item.name || item.deviceId || "色差仪")}</span>
+            <button class="device-connect-row-btn" type="button" data-device-id="${escapeHtml(item.deviceId || "")}">连接</button>
+          </div>
+        `).join("");
+      }
+      box.querySelectorAll("[data-device-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          requestNativeColorMeter("colorMeterConnect", btn.dataset.deviceId || "");
+        });
+      });
+    }
+    function applyNativeMeterDeviceFromUrl() {
+      const params = new URLSearchParams(window.location.search || "");
+      const deviceId = params.get("meter_device_id") || "";
+      const name = params.get("meter_device_name") || "";
+      if (!deviceId && !name) return false;
+      saveColorDevice({ deviceId, name });
+      return true;
+    }
+    function applyNativeMeterLab(raw, statusText = "已获取小程序原生测色 Lab") {
+      const lab = {
+        L: Number(raw?.L),
+        a: Number(raw?.a),
+        b: Number(raw?.b),
+      };
+      if (!Number.isFinite(lab.L) || !Number.isFinite(lab.a) || !Number.isFinite(lab.b)) return false;
+      saveColorDevice({ deviceId: raw?.device_id || raw?.deviceId || "", name: raw?.device_name || raw?.deviceName || "" });
+      state.pickedColorLab = null;
+      state.pickedColorHex = "";
+      state.pickedColorRgb = null;
+      $("colorL").value = lab.L.toFixed(2);
+      $("colorA").value = lab.a.toFixed(2);
+      $("colorB").value = lab.b.toFixed(2);
+      refreshColorSwatch();
+      setMeterPreviewMode("swatch");
+      setColorStatus(statusText, false);
+      return true;
+    }
+    function applyNativeMeterLabFromUrl() {
+      const params = new URLSearchParams(window.location.search || "");
+      if (!params.has("meter_l") || !params.has("meter_a") || !params.has("meter_b")) return false;
+      return applyNativeMeterLab({
+        L: Number(params.get("meter_l")),
+        a: Number(params.get("meter_a")),
+        b: Number(params.get("meter_b")),
+        device_id: params.get("meter_device_id") || "",
+        device_name: params.get("meter_device_name") || "",
+      });
     }
     function refreshColorSwatch() {
       const lab = currentLab();
@@ -5248,11 +5880,491 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("colorSwatch").textContent = "#" + hex;
       $("colorSwatch").style.color = lab.L < 55 ? "#fff" : "#0f172a";
     }
+    const DEFAULT_COLOR_IMAGE = "/recolor-static/static/low_poly.png";
+    function setColorImageFile(file) {
+      if (state.colorPickPreviewUrl) URL.revokeObjectURL(state.colorPickPreviewUrl);
+      state.colorPickPreviewUrl = file ? URL.createObjectURL(file) : "";
+      $("colorPickCursor").classList.add("hidden");
+      if (file) {
+        $("colorImagePreview").src = state.colorPickPreviewUrl;
+        $("colorPickResult").classList.remove("has-color");
+        $("colorPickResult").classList.remove("hidden");
+        $("colorPickResult").style.background = "#202435";
+        $("colorPickResult").style.color = "#f8fafc";
+        $("colorPickResult").innerHTML = "<div>点击图片中的位置取色</div>";
+      } else {
+        $("colorImagePreview").src = DEFAULT_COLOR_IMAGE;
+        state.pickedColorLab = null;
+        state.pickedColorHex = "";
+        state.pickedColorRgb = null;
+        $("colorL").value = "";
+        $("colorA").value = "";
+        $("colorB").value = "";
+        $("colorPickResult").classList.remove("has-color");
+        $("colorPickResult").classList.add("hidden");
+        $("colorPickResult").style.background = "#202435";
+        $("colorPickResult").style.color = "#f8fafc";
+        $("colorPickResult").innerHTML = "";
+        updateMeterPreview();
+      }
+    }
+    function setPickedColor(r, g, b, point) {
+      const hex = [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase();
+      const lab = rgbToLab(r, g, b);
+      state.pickedColorLab = lab;
+      state.pickedColorHex = hex;
+      state.pickedColorRgb = { r, g, b };
+      if (point) {
+        const cursor = $("colorPickCursor");
+        cursor.style.left = `${point.x}px`;
+        cursor.style.top = `${point.y}px`;
+        cursor.classList.remove("hidden");
+      }
+      const result = $("colorPickResult");
+      result.classList.remove("hidden");
+      result.classList.add("has-color");
+      result.style.background = "#" + hex;
+      result.style.color = lab.L < 55 ? "#fff" : "#050505";
+      result.innerHTML = `<div>RGB [${r},${g},${b}]<br>Hex #${hex}<br>Lab [${lab.L.toFixed(2)},${lab.a.toFixed(2)},${lab.b.toFixed(2)}]</div><div class="color-pick-actions"><button class="color-pick-action-btn" id="colorPickMoreBtn" type="button">•••</button></div>`;
+      $("colorPickMoreBtn")?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openColorPickActions();
+      });
+      $("colorL").value = lab.L.toFixed(2);
+      $("colorA").value = lab.a.toFixed(2);
+      $("colorB").value = lab.b.toFixed(2);
+      refreshColorSwatch();
+      updateMeterPreview();
+    }
+    function openColorImageMenu() {
+      $("colorImageMenuSheet")?.classList.remove("hidden");
+    }
+    function closeColorImageMenu() {
+      $("colorImageMenuSheet")?.classList.add("hidden");
+    }
+    function openColorPickActions() {
+      $("colorPickActionSheet")?.classList.remove("hidden");
+    }
+    function closeColorPickActions() {
+      $("colorPickActionSheet")?.classList.add("hidden");
+    }
+    async function saveLabColorToFavorites(name, lab, hex) {
+      const tag = ownerTag();
+      if (!tag) return setStatus("缺少用户 token，无法保存到我的色彩", true);
+      await api("/api/v1/color-card/favorites/picked", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_tag: tag, name, hex, L: lab.L, a: lab.a, b: lab.b }),
+      });
+      if (state.colorView === "mine") await loadColors();
+    }
+    async function savePickedColorToFavorites() {
+      const lab = state.pickedColorLab;
+      const hex = state.pickedColorHex;
+      if (!lab || !hex) return setStatus("请先取色", true);
+      const name = `取色 #${hex}`;
+      await saveLabColorToFavorites(name, lab, hex);
+      setStatus("已保存到我的色彩", false);
+    }
+    async function deleteColorFavorite(cardId) {
+      const tag = ownerTag();
+      if (!tag) return setStatus("缺少用户 token，无法删除收藏", true);
+      if (!cardId) return;
+      await api("/api/v1/color-card/favorites/" + encodeURIComponent(cardId) + "?" + new URLSearchParams({ user_tag: tag }).toString(), {
+        method: "DELETE",
+      });
+      state.colors = state.colors.filter((item) => String(item.id || "") !== String(cardId));
+      renderColors();
+      setStatus("已删除收藏", false);
+    }
+    async function deleteUserColorCard(cardId) {
+      const tag = ownerTag();
+      if (!tag) return setStatus("缺少用户 token，无法删除色卡", true);
+      if (!cardId) return;
+      await api("/api/v1/color-card/cards/" + encodeURIComponent(cardId) + "?" + new URLSearchParams({ user_tag: tag }).toString(), {
+        method: "DELETE",
+      });
+      state.colors = state.colors.filter((item) => String(item.id || "") !== String(cardId));
+      renderColors();
+      setStatus("已删除色卡", false);
+    }
+    function setMeterPreviewMode(mode) {
+      state.meterPreviewMode = mode === "params" ? "params" : "swatch";
+      updateMeterPreview();
+    }
+    function updateMeterPreview() {
+      const lab = state.pickedColorLab || currentLab();
+      const hex = state.pickedColorHex || (lab ? labToHex(lab) : "");
+      const rgb = state.pickedColorRgb;
+      const box = $("meterPreviewInner");
+      if (!box) return;
+      $("meterSwatchDot")?.classList.toggle("active", state.meterPreviewMode === "swatch");
+      $("meterParamsDot")?.classList.toggle("active", state.meterPreviewMode === "params");
+      if (!hex) {
+        box.classList.toggle("params", state.meterPreviewMode === "params");
+        box.style.background = state.meterPreviewMode === "params" ? "" : "#9d9d9b";
+        box.style.color = "#f8fafc";
+        box.innerHTML = state.meterPreviewMode === "params" ? `<div class="meter-param-grid">
+          <div><div class="meter-param-title">Lab</div><div>L*: --</div><div>a*: --</div><div>b*: --</div></div>
+          <div><div class="meter-param-title">RGB</div><div>R: --</div><div>G: --</div><div>B: --</div></div>
+          <div><div class="meter-param-title">Hex</div><div>--</div></div>
+        </div>` : "";
+        return;
+      }
+      if (state.meterPreviewMode === "params") {
+        box.classList.add("params");
+        box.style.background = "";
+        box.style.color = "";
+        box.innerHTML = `<div class="meter-param-grid">
+          <div><div class="meter-param-title">Lab</div><div>L*: ${lab ? lab.L.toFixed(2) : "--"}</div><div>a*: ${lab ? lab.a.toFixed(2) : "--"}</div><div>b*: ${lab ? lab.b.toFixed(2) : "--"}</div></div>
+          <div><div class="meter-param-title">RGB</div><div>R: ${rgb ? rgb.r : "--"}</div><div>G: ${rgb ? rgb.g : "--"}</div><div>B: ${rgb ? rgb.b : "--"}</div></div>
+          <div><div class="meter-param-title">Hex</div><div>#${escapeHtml(hex)}</div></div>
+        </div>`;
+        return;
+      }
+      box.classList.remove("params");
+      box.style.background = "#" + hex;
+      box.style.color = (lab && lab.L < 55) ? "#fff" : "#050505";
+      box.innerHTML = `<span>#${escapeHtml(hex)}</span>`;
+    }
+    function currentMeterColor() {
+      const lab = state.pickedColorLab || currentLab();
+      const hex = state.pickedColorHex || (lab ? labToHex(lab) : "");
+      if (!lab || !hex) return null;
+      return { lab, hex: normalizeHex(hex) };
+    }
+    function clearCompareTarget() {
+      if (state.colorCompareTarget) state.colorCompareTarget.classList.remove("compare-target");
+      state.colorCompareTarget = null;
+    }
+    function setCompareFloatPosition(event) {
+      const color = currentMeterColor();
+      const floater = $("colorCompareFloat");
+      if (!color || !floater) return;
+      floater.style.left = `${event.clientX}px`;
+      floater.style.top = `${event.clientY}px`;
+      floater.style.background = "#" + color.hex;
+      floater.style.color = color.lab.L < 55 ? "#fff" : "#050505";
+      floater.textContent = "#" + color.hex;
+      floater.classList.remove("hidden");
+    }
+    function updateCompareTarget(event) {
+      clearCompareTarget();
+      const stack = document.elementsFromPoint(event.clientX, event.clientY);
+      const target = stack.find((node) => node?.classList?.contains("color-match-item"));
+      if (!target) return null;
+      target.classList.add("compare-target");
+      state.colorCompareTarget = target;
+      return target;
+    }
+    function startColorCompareDrag(event) {
+      if (state.meterPreviewMode !== "swatch" || !currentMeterColor()) return;
+      event.preventDefault();
+      state.meterSuppressClick = false;
+      state.colorCompareStartX = event.clientX;
+      state.colorCompareStartY = event.clientY;
+      state.colorCompareDragging = false;
+    }
+    function moveColorCompareDrag(event) {
+      if (!Number.isFinite(state.colorCompareStartX) || !Number.isFinite(state.colorCompareStartY)) return;
+      const dx = event.clientX - state.colorCompareStartX;
+      const dy = event.clientY - state.colorCompareStartY;
+      if (!state.colorCompareDragging && Math.hypot(dx, dy) < 18) return;
+      event.preventDefault();
+      if (!state.colorCompareDragging) {
+        state.colorCompareDragging = true;
+        state.meterSuppressClick = true;
+      }
+      setCompareFloatPosition(event);
+      updateCompareTarget(event);
+    }
+    async function finishColorCompareDrag(event) {
+      if (!state.colorCompareDragging) {
+        state.colorCompareStartX = null;
+        state.colorCompareStartY = null;
+        return false;
+      }
+      event.preventDefault();
+      setCompareFloatPosition(event);
+      const target = updateCompareTarget(event);
+      const color = currentMeterColor();
+      $("colorCompareFloat")?.classList.add("hidden");
+      state.colorCompareDragging = false;
+      state.colorCompareStartX = null;
+      state.colorCompareStartY = null;
+      if (!target || !color) {
+        clearCompareTarget();
+        return true;
+      }
+      const targetColor = {
+        name: target.dataset.matchName || target.querySelector(".title")?.textContent || "当前色号",
+        hex: normalizeHex(target.dataset.matchHex || ""),
+        lab: {
+          L: Number(target.dataset.matchL),
+          a: Number(target.dataset.matchA),
+          b: Number(target.dataset.matchB),
+        },
+      };
+      if (!targetColor.hex || !Number.isFinite(targetColor.lab.L) || !Number.isFinite(targetColor.lab.a) || !Number.isFinite(targetColor.lab.b)) {
+        clearCompareTarget();
+        setStatus("目标色号数据不完整，无法收藏", true);
+        return true;
+      }
+      clearCompareTarget();
+      state.colorComparePendingTarget = targetColor;
+      openCompareConfirm();
+      return true;
+    }
+    function cancelColorCompareDrag() {
+      state.colorCompareDragging = false;
+      state.colorCompareStartX = null;
+      state.colorCompareStartY = null;
+      $("colorCompareFloat")?.classList.add("hidden");
+      clearCompareTarget();
+    }
+    function openCompareConfirm() {
+      $("colorCompareConfirmSheet")?.classList.remove("hidden");
+    }
+    function closeCompareConfirm() {
+      $("colorCompareConfirmSheet")?.classList.add("hidden");
+    }
+    async function confirmCompareFavorite() {
+      const target = state.colorComparePendingTarget;
+      closeCompareConfirm();
+      state.colorComparePendingTarget = null;
+      if (!target) return;
+      await saveLabColorToFavorites(`对色 #${target.hex}`, target.lab, target.hex);
+      setStatus("已加入我的色彩", false);
+    }
+    function showInstrumentPickedColor() {
+      setMeterPreviewMode("swatch");
+    }
+    function pickColorFromImage(event) {
+      const img = $("colorImagePreview");
+      if (!img.src || !img.naturalWidth || !img.naturalHeight) return;
+      const rect = img.getBoundingClientRect();
+      const clientX = event.clientX ?? event.touches?.[0]?.clientX;
+      const clientY = event.clientY ?? event.touches?.[0]?.clientY;
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return;
+      const x = Math.max(0, Math.min(img.naturalWidth - 1, Math.round((clientX - rect.left) / rect.width * img.naturalWidth)));
+      const y = Math.max(0, Math.min(img.naturalHeight - 1, Math.round((clientY - rect.top) / rect.height * img.naturalHeight)));
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const pixel = ctx.getImageData(x, y, 1, 1).data;
+      const r = pixel[0], g = pixel[1], b = pixel[2];
+      setPickedColor(r, g, b, {
+        x: clientX - $("colorImageStage").getBoundingClientRect().left,
+        y: clientY - $("colorImageStage").getBoundingClientRect().top,
+      });
+    }
     async function loadColorLibraries(selectedId = "") {
       const data = await api("/api/v1/color-card/libraries");
       const select = $("colorLibrarySelect");
-      select.innerHTML = (data.libraries || []).map((lib) => `<option value="${escapeHtml(lib.id)}" ${selectedId === lib.id ? "selected" : ""}>${escapeHtml(lib.name)} (${lib.color_count || 0})</option>`).join("");
+      const libraries = normalizeColorLibraries(data.libraries || []);
+      state.colorLibraries = libraries;
+      if (!state.colorLibraryIds.length) {
+        state.colorLibraryIds = selectedId ? [selectedId] : libraries.map((lib) => lib.id).filter(Boolean);
+      }
+      state.colorLibraryIds = state.colorLibraryIds.filter((id) => libraries.some((lib) => lib.id === id));
+      select.innerHTML = libraries
+        .filter((lib) => !isVirtualFavoriteLibraryId(lib.id))
+        .map((lib) => `<option value="${escapeHtml(lib.id)}">${escapeHtml(lib.name)} (${lib.color_count || 0})</option>`)
+        .join("");
+      updateColorLibraryLabels();
+      renderColorLibraryList(libraries, state.colorLibraryIds);
       maybeFillColorNamePrefix(select.options[select.selectedIndex]?.textContent || "");
+    }
+    function renderColorLibraryList(libraries, selectedIds = []) {
+      const box = $("colorLibraryList");
+      if (!box) return;
+      const list = (libraries || []).slice().sort((left, right) => {
+        const leftMine = /我的收藏/.test(`${left.id || ""} ${left.name || ""}`) ? 0 : 1;
+        const rightMine = /我的收藏/.test(`${right.id || ""} ${right.name || ""}`) ? 0 : 1;
+        return leftMine - rightMine;
+      });
+      const activeIds = new Set((selectedIds || []).filter(Boolean));
+      if (!list.length) {
+        box.innerHTML = '<div class="empty" style="color:#8b91a3;">暂无色彩库</div>';
+        return;
+      }
+      box.innerHTML = list.map((lib) => {
+        const itemHtml = `
+        <button class="library-item ${activeIds.has(lib.id) ? "active" : ""}" type="button" data-library-id="${escapeHtml(lib.id || "")}">
+          <span class="library-item-title">${escapeHtml(lib.name || lib.id || "")}${lib.year ? `<br>${escapeHtml(lib.year)}` : ""}</span>
+          <span class="library-check">${activeIds.has(lib.id) ? "✓" : "+"}</span>
+        </button>`;
+        return isEditableColorLibraryId(lib.id)
+          ? `<div class="library-swipe" data-library-id="${escapeHtml(lib.id || "")}"><div class="library-row-actions"><button class="library-add-card" type="button">录入</button><button class="library-delete-card" type="button">删除</button></div>${itemHtml}</div>`
+          : itemHtml;
+      }).join("");
+      box.querySelectorAll("[data-library-id]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          if (btn.classList.contains("library-swipe")) return;
+          const id = btn.dataset.libraryId || "";
+          if (!id) return;
+          if (state.colorLibraryIds.includes(id)) {
+            state.colorLibraryIds = state.colorLibraryIds.filter((item) => item !== id);
+          } else {
+            state.colorLibraryIds = state.colorLibraryIds.concat(id);
+          }
+          updateColorLibraryLabels();
+          renderColorLibraryList(list, state.colorLibraryIds);
+        });
+      });
+      box.querySelectorAll(".library-add-card").forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const row = btn.closest(".library-swipe");
+          row?.classList.remove("open");
+          openColorCardAddSheet(row?.dataset.libraryId || "");
+        });
+      });
+      box.querySelectorAll(".library-delete-card").forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const row = btn.closest(".library-swipe");
+          row?.classList.remove("open");
+          deleteColorLibrary(row?.dataset.libraryId || "").catch((err) => setStatus(err.message || "删除色彩库失败", true));
+        });
+      });
+    }
+    function setColorCardAddLabStatus(message) {
+      const box = $("newColorCardLabStatus");
+      if (!box || !state.colorCardAddTargetLibraryId) return;
+      box.textContent = String(message || "");
+    }
+    function resetColorCardMeasureButton() {
+      const btn = $("measureNewColorCardBtn");
+      if (!btn) return;
+      btn.style.background = "";
+      btn.style.color = "";
+    }
+    function setColorCardMeasureButtonColor(lab) {
+      const btn = $("measureNewColorCardBtn");
+      if (!btn || !lab) return;
+      const hex = labToHex(lab);
+      btn.style.background = "#" + hex;
+      btn.style.color = lab.L < 58 ? "#fff" : "#0f172a";
+    }
+    function colorLibraryById(id) {
+      return (state.colorLibraries || []).find((lib) => String(lib.id || "") === String(id || "")) || null;
+    }
+    function colorCardFormKey(libraryId) {
+      return "openfire_color_card_form_" + String(libraryId || "");
+    }
+    function readColorCardFormDefaults(libraryId) {
+      try {
+        const raw = JSON.parse(localStorage.getItem(colorCardFormKey(libraryId)) || "{}");
+        return raw && typeof raw === "object" ? raw : {};
+      } catch (_) {
+        return {};
+      }
+    }
+    function writeColorCardFormDefaults(libraryId, prefix, number) {
+      localStorage.setItem(colorCardFormKey(libraryId), JSON.stringify({ prefix: String(prefix || ""), number: String(number || "") }));
+    }
+    function nextColorCardNumber(raw) {
+      const text = String(raw || "").trim();
+      if (!/^\\d+$/.test(text)) return "001";
+      return String(Number(text) + 1).padStart(text.length, "0");
+    }
+    function updateNewColorCardName() {
+      const name = `${$("newColorCardPrefix").value.trim()}${$("newColorCardNumber").value.trim()}${$("newColorCardSuffix").value.trim()}`.trim();
+      $("newColorCardName").value = name;
+      return name;
+    }
+    function openColorLibraryAddSheet() {
+      $("newColorLibraryName").value = "";
+      $("colorLibraryAddSheet")?.classList.remove("hidden");
+      setTimeout(() => $("newColorLibraryName")?.focus(), 40);
+    }
+    function closeColorLibraryAddSheet() {
+      $("colorLibraryAddSheet")?.classList.add("hidden");
+    }
+    async function addColorLibrary() {
+      const name = $("newColorLibraryName").value.trim();
+      if (!name) return setStatus("请输入色彩库名称", true);
+      const id = userLibraryPrefix() + Date.now().toString(36);
+      const data = await api("/api/v1/color-card/libraries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, name }),
+      });
+      closeColorLibraryAddSheet();
+      state.colorLibraryIds = Array.from(new Set(state.colorLibraryIds.concat([data.library?.id || id])));
+      await loadColorLibraries(data.library?.id || id);
+      setStatus("色彩库已新增", false);
+    }
+    async function deleteColorLibrary(libraryId) {
+      const lib = colorLibraryById(libraryId);
+      if (!lib || !isEditableColorLibraryId(libraryId)) return setStatus("只能删除自建色彩库", true);
+      if (!(await appConfirm(`删除色彩库“${lib.name || libraryId}”及其中色卡？`))) return;
+      await api(`/api/v1/color-card/libraries/${encodeURIComponent(libraryId)}`, { method: "DELETE" });
+      state.colorLibraryIds = state.colorLibraryIds.filter((id) => id !== libraryId);
+      await loadColorLibraries();
+      if (state.colorView === "mine") await loadColors();
+      setStatus("色彩库已删除", false);
+    }
+    function openColorCardAddSheet(libraryId) {
+      const lib = colorLibraryById(libraryId);
+      if (!lib || !isEditableColorLibraryId(lib.id)) {
+        return setStatus("只能在自建色彩库中录入色卡", true);
+      }
+      state.colorCardAddTargetLibraryId = lib.id;
+      state.colorCardAddMeasuredLab = null;
+      $("colorCardAddTitle").textContent = `新增色卡：${lib.name || lib.id}`;
+      const defaults = readColorCardFormDefaults(lib.id);
+      $("newColorCardPrefix").value = String(defaults.prefix || inferColorNamePrefix(lib.name || "") || "");
+      $("newColorCardNumber").value = nextColorCardNumber(defaults.number || "");
+      $("newColorCardSuffix").value = "";
+      updateNewColorCardName();
+      resetColorCardMeasureButton();
+      setColorCardAddLabStatus("请点击测量按钮并按设备按钮测量");
+      $("colorCardAddSheet")?.classList.remove("hidden");
+    }
+    function closeColorCardAddSheet() {
+      $("colorCardAddSheet")?.classList.add("hidden");
+      state.colorCardAddTargetLibraryId = "";
+      state.colorCardAddMeasuredLab = null;
+    }
+    async function saveNewColorCard() {
+      const libraryId = state.colorCardAddTargetLibraryId;
+      const lib = colorLibraryById(libraryId);
+      const lab = state.colorCardAddMeasuredLab || currentLab();
+      const name = $("newColorCardName").value.trim() || updateNewColorCardName();
+      if (!lib || !isEditableColorLibraryId(libraryId)) return setStatus("请选择自建色彩库", true);
+      if (!name) return setStatus("请填写色号名称", true);
+      if (!lab) return setStatus("请先测量 Lab", true);
+      await api("/api/v1/color-card/cards", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          library_id: libraryId,
+          library_name: lib.name || libraryId,
+          name,
+          note: name,
+          L: lab.L,
+          a: lab.a,
+          b: lab.b,
+        }),
+      });
+      const savedNumber = $("newColorCardNumber").value.trim();
+      writeColorCardFormDefaults(libraryId, $("newColorCardPrefix").value.trim(), savedNumber);
+      $("newColorCardNumber").value = nextColorCardNumber(savedNumber);
+      $("newColorCardSuffix").value = "";
+      state.colorCardAddMeasuredLab = null;
+      updateNewColorCardName();
+      resetColorCardMeasureButton();
+      setColorCardAddLabStatus("请点击测量按钮并按设备按钮测量");
+      await loadColorLibraries(libraryId);
+      if (state.colorView === "mine") await loadColors();
+      setStatus("色卡已保存，可继续录入下一张", false);
     }
     function inferColorNamePrefix(raw) {
       const text = String(raw || "");
@@ -5288,15 +6400,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!lab) return setStatus("请先测量或输入 Lab 数值", true);
       refreshColorSwatch();
       $("colorMatchStatus").textContent = "正在匹配近似色号...";
-      const data = await api("/api/v1/color-card/match", {
+      const ids = activeColorLibraryIds().filter((id) => !isVirtualFavoriteLibraryId(id));
+      const batches = await Promise.all((ids.length ? ids : [""]).map((libraryId) => api("/api/v1/color-card/match", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ L: lab.L, a: lab.a, b: lab.b, library_id: $("colorLibrarySelect").value, limit: 12 }),
-      });
-      $("colorMatchStatus").textContent = `找到 ${(data.matches || []).length} 条近似色号`;
-      $("colorMatchList").innerHTML = (data.matches || []).map((item) => {
-        const textColor = Number(item.l) < 55 ? "#fff" : "#0f172a";
-        return `<div class="color-match-item" style="background:#${item.hex || "CCCCCC"};color:${textColor};">
+        body: JSON.stringify({ L: lab.L, a: lab.a, b: lab.b, library_id: libraryId, limit: 12 }),
+      })));
+      const matches = batches.flatMap((data) => data.matches || [])
+        .sort((left, right) => Number(left.delta_e_00 || 999) - Number(right.delta_e_00 || 999))
+        .slice(0, 12);
+      $("colorMatchStatus").textContent = `找到 ${matches.length} 条近似色号`;
+      $("colorMatchList").innerHTML = matches.map((item) => {
+        const hex = normalizeHex(item.hex || "CCCCCC");
+        return `<div class="color-match-item" data-match-name="${escapeHtml(item.name || "")}" data-match-hex="${hex}" data-match-l="${Number(item.l) || 0}" data-match-a="${Number(item.a) || 0}" data-match-b="${Number(item.b) || 0}" style="background:#${hex};color:#fff;">
           <div class="title">${escapeHtml(item.name || "")}</div>
           <div>色卡库：${escapeHtml(item.library_name || "")}</div>
           <div>dE*00：${Number(item.delta_e_00 || 0).toFixed(2)} · L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div>
@@ -5393,10 +6509,46 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         setStatus("", false);
         return;
       }
+      if (state.colorView === "mine" && !state.colorLibraries.length) {
+        await loadColorLibraries();
+      }
       setStatus("加载中...", false);
-      const query = new URLSearchParams({ limit: "100", keyword: $("keyword").value.trim() });
-      const data = await api("/api/v1/color-card/cards?" + query.toString());
-      state.colors = data.cards || [];
+      if (state.colorView === "mine") {
+        const tag = ownerTag();
+        const ids = activeColorLibraryIds();
+        const idsWithoutFavorites = ids.filter((id) => !isVirtualFavoriteLibraryId(id));
+        const favoritePromise = tag && (!ids.length || ids.some((id) => isVirtualFavoriteLibraryId(id)))
+          ? api("/api/v1/color-card/favorites?" + new URLSearchParams({ limit: "1000", user_tag: tag }).toString())
+          : Promise.resolve({ cards: [] });
+        const libraryPromises = (idsWithoutFavorites.length ? idsWithoutFavorites : []).map((libraryId) => {
+          const query = new URLSearchParams({ limit: "1000", keyword: "" });
+          if (libraryId) query.set("library_id", libraryId);
+          return api("/api/v1/color-card/cards?" + query.toString());
+        });
+        const [favoriteData, ...libraryBatches] = await Promise.all([favoritePromise, ...libraryPromises]);
+        const seen = new Set();
+        state.colors = []
+          .concat((favoriteData.cards || []).map((item) => ({ ...item, is_favorite: true })))
+          .concat(libraryBatches.flatMap((data) => data.cards || []))
+          .filter((item) => {
+            const key = String(item.id || `${item.library_id}:${item.name}`);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        renderColors();
+        setStatus(`已加载 ${state.colors.length} 条`, false);
+        return;
+      }
+      const ids = activeColorLibraryIds();
+      const idsWithoutFavorites = ids.filter((id) => !isVirtualFavoriteLibraryId(id));
+      const keyword = $("keyword").value.trim();
+      const batches = await Promise.all((idsWithoutFavorites.length ? idsWithoutFavorites : [""]).map((libraryId) => {
+        const query = new URLSearchParams({ limit: "100", keyword });
+        if (libraryId) query.set("library_id", libraryId);
+        return api("/api/v1/color-card/cards?" + query.toString());
+      }));
+      state.colors = batches.flatMap((data) => data.cards || []);
       renderColors();
       setStatus(`已加载 ${state.colors.length} 条`, false);
     }
@@ -5658,8 +6810,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
     function setColorStatus(message, isError) {
-      $("colorMeterStatus").textContent = message || "";
-      $("colorMeterStatus").className = isError ? "color-status err" : "color-status";
+      const box = $("colorMeterStatus");
+      const text = String(message || "").trim();
+      box.textContent = text;
+      box.className = text ? (isError ? "color-status err" : "color-status") : "color-status hidden";
     }
     function colorChecksum(bytes) {
       let sum = 0;
@@ -5856,6 +7010,75 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("editProductsBtn").addEventListener("click", () => setProductTool(state.productTool === "edit" ? "view" : "edit"));
     $("colorQueryTab").addEventListener("click", () => switchColorMode("query"));
     $("colorManageTab").addEventListener("click", () => switchColorMode("manage"));
+    document.querySelectorAll("[data-color-view]").forEach((btn) => {
+      btn.addEventListener("click", () => switchColorView(btn.dataset.colorView || "instrument"));
+    });
+    function openColorLibraryView() {
+      state.previousColorView = state.colorView === "library" ? (state.previousColorView || "instrument") : state.colorView;
+      switchColorView("library");
+      loadColorLibraries().catch((err) => setStatus(err.message || "加载色彩库失败", true));
+    }
+    $("chooseColorLibraryBtn")?.addEventListener("click", () => {
+      openColorLibraryView();
+    });
+    $("colorMineLibraryBtn")?.addEventListener("click", () => {
+      openColorLibraryView();
+    });
+    $("colorLibraryBackBtn")?.addEventListener("click", () => {
+      switchColorView(state.previousColorView || "instrument");
+    });
+    $("colorLibraryAddBtn")?.addEventListener("click", openColorLibraryAddSheet);
+    $("confirmColorLibraryBtn")?.addEventListener("click", () => {
+      updateColorLibraryLabels();
+      switchColorView(state.previousColorView || "instrument");
+    });
+    $("confirmAddColorLibraryBtn")?.addEventListener("click", () => addColorLibrary().catch((err) => setStatus(err.message || "新增色彩库失败", true)));
+    $("cancelAddColorLibraryBtn")?.addEventListener("click", closeColorLibraryAddSheet);
+    $("colorLibraryAddSheet")?.addEventListener("click", (event) => {
+      if (event.target === $("colorLibraryAddSheet")) closeColorLibraryAddSheet();
+    });
+    ["newColorCardPrefix", "newColorCardNumber", "newColorCardSuffix"].forEach((id) => {
+      $(id)?.addEventListener("input", updateNewColorCardName);
+    });
+    $("measureNewColorCardBtn")?.addEventListener("click", () => {
+      resetColorCardMeasureButton();
+      setColorCardAddLabStatus("请点击测量按钮并按设备按钮测量");
+      if (!requestNativeColorMeter("colorMeterMeasure")) setColorCardAddLabStatus("请在小程序内打开后测量");
+    });
+    $("confirmAddColorCardBtn")?.addEventListener("click", () => saveNewColorCard().catch((err) => setStatus(err.message || "保存色卡失败", true)));
+    $("cancelAddColorCardBtn")?.addEventListener("click", closeColorCardAddSheet);
+    $("colorCardAddSheet")?.addEventListener("click", (event) => {
+      if (event.target === $("colorCardAddSheet")) closeColorCardAddSheet();
+    });
+    function filterColorLibraryList() {
+      const keyword = String($("colorLibrarySearch")?.value || "").trim().toLowerCase();
+      const items = Array.from(document.querySelectorAll(".library-item"));
+      items.forEach((item) => item.classList.toggle("hidden", keyword && !item.textContent.toLowerCase().includes(keyword)));
+    }
+    $("colorLibrarySearchBtn")?.addEventListener("click", filterColorLibraryList);
+    $("colorLibrarySearch")?.addEventListener("input", filterColorLibraryList);
+    $("colorLibraryList")?.addEventListener("pointerdown", (event) => {
+      const row = event.target.closest(".library-swipe");
+      if (!row || event.target.closest(".library-row-actions")) return;
+      state.colorLibrarySwipe = { row, startX: event.clientX, startY: event.clientY };
+    });
+    $("colorLibraryList")?.addEventListener("pointermove", (event) => {
+      const swipe = state.colorLibrarySwipe;
+      if (!swipe || !swipe.row) return;
+      const dx = event.clientX - swipe.startX;
+      const dy = event.clientY - swipe.startY;
+      if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+      event.preventDefault();
+      document.querySelectorAll(".library-swipe.open").forEach((item) => {
+        if (item !== swipe.row) item.classList.remove("open");
+      });
+      swipe.row.classList.toggle("open", dx < -24);
+    });
+    ["pointerup", "pointercancel"].forEach((name) => {
+      $("colorLibraryList")?.addEventListener(name, () => {
+        state.colorLibrarySwipe = null;
+      });
+    });
     $("searchBtn").addEventListener("click", loadCurrent);
     $("filterBtn").addEventListener("click", openFilterModal);
     $("closeFilterBtn").addEventListener("click", closeFilterModal);
@@ -5881,6 +7104,87 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("imagePreviewStage").addEventListener("pointercancel", endImageCrop);
     $("imageSearchFile").addEventListener("change", () => setImageSearchFile(($("imageSearchFile").files || [])[0] || null));
     $("imageSearchCamera").addEventListener("change", () => setImageSearchFile(($("imageSearchCamera").files || [])[0] || null));
+    $("colorImageMenuBtn")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openColorImageMenu();
+    });
+    $("chooseColorImageBtn")?.addEventListener("click", () => {
+      closeColorImageMenu();
+      $("colorImageFile")?.click();
+    });
+    $("cancelColorImageMenuBtn")?.addEventListener("click", closeColorImageMenu);
+    $("colorImageMenuSheet")?.addEventListener("click", (event) => {
+      if (event.target === $("colorImageMenuSheet")) closeColorImageMenu();
+    });
+    $("savePickedColorBtn")?.addEventListener("click", () => {
+      closeColorPickActions();
+      savePickedColorToFavorites().catch((err) => setStatus(err.message || "保存失败", true));
+    });
+    $("findPickedColorBtn")?.addEventListener("click", () => {
+      closeColorPickActions();
+      showInstrumentPickedColor();
+      switchColorView("instrument");
+      matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true));
+    });
+    $("cancelPickedColorActionBtn")?.addEventListener("click", closeColorPickActions);
+    $("colorPickActionSheet")?.addEventListener("click", (event) => {
+      if (event.target === $("colorPickActionSheet")) closeColorPickActions();
+    });
+    $("colorList")?.addEventListener("pointerdown", (event) => {
+      const row = event.target.closest(".my-color-swipe[data-favorite='1'], .my-color-swipe[data-user-card='1']");
+      if (!row) return;
+      state.colorFavoriteSwipe = { row, startX: event.clientX, startY: event.clientY };
+    });
+    $("colorList")?.addEventListener("pointermove", (event) => {
+      const swipe = state.colorFavoriteSwipe;
+      if (!swipe || !swipe.row) return;
+      const dx = event.clientX - swipe.startX;
+      const dy = event.clientY - swipe.startY;
+      if (Math.abs(dx) < 12 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+      event.preventDefault();
+      document.querySelectorAll(".my-color-swipe.open").forEach((item) => {
+        if (item !== swipe.row) item.classList.remove("open");
+      });
+      swipe.row.classList.toggle("open", dx < -24);
+    });
+    ["pointerup", "pointercancel"].forEach((name) => {
+      $("colorList")?.addEventListener(name, () => {
+        state.colorFavoriteSwipe = null;
+      });
+    });
+    $("colorList")?.addEventListener("click", (event) => {
+      const deleteBtn = event.target.closest(".my-color-delete");
+      if (!deleteBtn) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const row = deleteBtn.closest(".my-color-swipe");
+      const cardId = row?.dataset.cardId || "";
+      const task = row?.dataset.userCard === "1" ? deleteUserColorCard(cardId) : deleteColorFavorite(cardId);
+      task.catch((err) => setStatus(err.message || "删除失败", true));
+    });
+    $("confirmCompareFavoriteBtn")?.addEventListener("click", () => {
+      confirmCompareFavorite().catch((err) => setStatus(err.message || "加入收藏失败", true));
+    });
+    document.querySelectorAll(".color-action-panel").forEach((panel) => {
+      panel.addEventListener("click", (event) => event.stopPropagation());
+    });
+    $("cancelCompareFavoriteBtn")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.colorComparePendingTarget = null;
+      closeCompareConfirm();
+    });
+    $("colorCompareConfirmSheet")?.addEventListener("click", (event) => {
+      if (event.target === $("colorCompareConfirmSheet")) {
+        state.colorComparePendingTarget = null;
+        closeCompareConfirm();
+      }
+    });
+    $("colorImageStage")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      pickColorFromImage(event);
+    });
+    $("colorImageFile")?.addEventListener("change", () => setColorImageFile(($("colorImageFile").files || [])[0] || null));
     $("runImageSearchBtn").addEventListener("click", () => runImageSearch().catch((err) => setStatus(err.message || "图搜失败", true)));
     $("clearImageSearchBtn").addEventListener("click", clearImageSearch);
     $("keyword").addEventListener("keydown", (event) => {
@@ -5895,7 +7199,50 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("cancelImportBtn").addEventListener("click", cancelImportReview);
     $("saveColorBtn").addEventListener("click", () => saveColor().catch((err) => setStatus(err.message || "保存失败", true)));
     $("matchColorBtn").addEventListener("click", () => matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true)));
-    $("colorMeterConnectBtn").addEventListener("click", () => connectColorMeter().catch((err) => setColorStatus(err.message || "连接失败", true)));
+    $("colorMeterConnectBtn").addEventListener("click", () => {
+      if (requestNativeColorMeter("colorMeterMeasure")) return;
+      switchColorView("device");
+    });
+    document.querySelectorAll("[data-meter-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => setColorMeterMode(btn.dataset.meterMode || "single"));
+    });
+    $("meterSwatchDot")?.addEventListener("click", () => {
+      setMeterPreviewMode("swatch");
+    });
+    $("meterParamsDot")?.addEventListener("click", () => {
+      setMeterPreviewMode("params");
+    });
+    $("meterPreviewInner")?.addEventListener("click", (event) => {
+      if (state.meterSuppressClick) {
+        state.meterSuppressClick = false;
+        return;
+      }
+      const rect = $("meterPreviewInner").getBoundingClientRect();
+      setMeterPreviewMode(event.clientX - rect.left > rect.width / 2 ? "params" : "swatch");
+    });
+    $("meterPreviewInner")?.addEventListener("pointerdown", (event) => {
+      try { $("meterPreviewInner").setPointerCapture(event.pointerId); } catch (_) {}
+      startColorCompareDrag(event);
+    });
+    $("meterPreviewInner")?.addEventListener("pointermove", (event) => {
+      moveColorCompareDrag(event);
+    });
+    $("meterPreviewInner")?.addEventListener("pointerup", async (event) => {
+      try {
+        if (await finishColorCompareDrag(event)) return;
+      } catch (err) {
+        cancelColorCompareDrag();
+        setStatus(err.message || "加入收藏失败", true);
+        return;
+      }
+    });
+    $("meterPreviewInner")?.addEventListener("pointercancel", () => {
+      cancelColorCompareDrag();
+    });
+    document.addEventListener("touchmove", (event) => {
+      if (!state.colorCompareDragging) return;
+      event.preventDefault();
+    }, { passive: false });
     $("colorMeterMeasureBtn").addEventListener("click", async () => {
       try {
         setColorStatus("正在测量...", false);
@@ -5913,22 +7260,34 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     ["colorL", "colorA", "colorB"].forEach((id) => $(id).addEventListener("input", refreshColorSwatch));
     ["colorNamePrefix", "colorNameNumber", "colorNameSuffix"].forEach((id) => $(id).addEventListener("input", refreshColorName));
     $("colorLibrary").addEventListener("input", () => maybeFillColorNamePrefix($("colorLibrary").value));
-    $("colorLibrarySelect").addEventListener("change", () => maybeFillColorNamePrefix($("colorLibrarySelect").options[$("colorLibrarySelect").selectedIndex]?.textContent || ""));
+    $("colorLibrarySelect").addEventListener("change", () => {
+      const id = $("colorLibrarySelect").value;
+      state.colorLibraryIds = id ? [id] : [];
+      updateColorLibraryLabels();
+      maybeFillColorNamePrefix($("colorLibrarySelect").options[$("colorLibrarySelect").selectedIndex]?.textContent || "");
+    });
     $("closeGalleryBtn").addEventListener("click", closeGallery);
     $("galleryModal").addEventListener("click", (event) => {
       if (event.target === $("galleryModal")) closeGallery();
     });
-    if (!navigator.bluetooth) setColorStatus("当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge", true);
-    else if (!window.isSecureContext) setColorStatus("Web Bluetooth 需要 HTTPS 或 localhost", true);
-    else setColorStatus("浏览器支持 Web Bluetooth，可以连接色差仪", false);
+    setColorStatus("", false);
     window.addEventListener("scroll", () => {
       if (state.type !== "product" || state.productMode !== "query" || state.productLoading || !state.productHasMore) return;
       const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160;
       if (nearBottom) loadProducts(false).catch((err) => setStatus(err.message || "加载失败", true));
     }, { passive: true });
+    setColorImageFile(null);
     $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.appMode === "category" && state.productTool === "import"));
     $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
-    Promise.all([loadTags(), loadColorLibraries()]).finally(() => switchType(state.type));
+    Promise.all([loadTags(), loadColorLibraries()]).finally(() => {
+      switchType(state.type);
+      if (applyNativeMeterLabFromUrl()) {
+        switchColorView("instrument");
+        matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true));
+      } else {
+        applyNativeMeterDeviceFromUrl();
+      }
+    });
   </script>
 </body>
 </html>""".replace("__INITIAL_TYPE__", safe_type).replace("__SERVER_PERMISSIONS__", permissions_json).replace("__SERVER_USER_ID__", user_id_json)
@@ -6612,7 +7971,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           event.stopPropagation();
           const tag = String(button.dataset.tag || '').trim();
           if (!tag) return;
-          const ok = window.confirm(`确认删除标签“${tag}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
+          const ok = await appConfirm(`确认删除标签“${tag}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
           if (!ok) return;
           try {
             await deleteGlobalTag(tag);
@@ -6742,7 +8101,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           event.stopPropagation();
           const tag = button.dataset.tag || '';
           if (!tag) return;
-          const ok = window.confirm(`确认删除${displayTagType(tag)}标签“${displayTag(tag)}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
+          const ok = await appConfirm(`确认删除${displayTagType(tag)}标签“${displayTag(tag)}”吗？\n\n这会同步删除所有产品与该标签的关联，且不可撤销。`);
           if (!ok) return;
           try {
             await deleteGlobalTag(tag);
@@ -7575,6 +8934,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"library": library, "libraries": color_card_store.list_libraries()}
 
+    @app.delete("/api/v1/color-card/libraries/{library_id}")
+    def api_delete_color_card_library(request: Request, library_id: str) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:create")
+        _check_text_content_security(library_id, openid=_wechat_openid_from_request(request))
+        try:
+            removed = color_card_store.remove_library(library_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": bool(removed), "libraries": color_card_store.list_libraries()}
+
     @app.get("/api/v1/color-card/cards")
     def api_list_color_cards(
         request: Request,
@@ -7607,6 +8976,113 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"card": card}
+
+    @app.delete("/api/v1/color-card/cards/{card_id}")
+    def api_delete_user_color_card(request: Request, card_id: int, user_tag: str = "") -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:create")
+        _check_text_content_security(user_tag, openid=_wechat_openid_from_request(request))
+        try:
+            removed = color_card_store.remove_user_card(user_tag=user_tag, card_id=card_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"removed": removed}
+
+    @app.get("/api/v1/color-card/favorites")
+    def api_list_color_card_favorites(
+        request: Request,
+        user_tag: str = "",
+        keyword: str = "",
+        limit: int = 300,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        _check_text_content_security(user_tag, keyword, openid=_wechat_openid_from_request(request))
+        return {"cards": color_card_store.list_favorites(user_tag=user_tag, keyword=keyword, limit=limit, offset=offset)}
+
+    @app.post("/api/v1/color-card/favorites")
+    def api_add_color_card_favorite(request: Request, payload: ColorCardFavoriteRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        _check_text_content_security(payload.user_tag, openid=_wechat_openid_from_request(request))
+        try:
+            card = color_card_store.add_favorite(payload.user_tag, payload.card_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"card": card}
+
+    @app.delete("/api/v1/color-card/favorites/{card_id}")
+    def api_delete_color_card_favorite(request: Request, card_id: int, user_tag: str = "") -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        _check_text_content_security(user_tag, openid=_wechat_openid_from_request(request))
+        try:
+            removed = color_card_store.remove_favorite(user_tag=user_tag, card_id=card_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"removed": removed}
+
+    @app.post("/api/v1/color-card/favorites/picked")
+    def api_add_picked_color_card_favorite(request: Request, payload: ColorCardPickedFavoriteRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        _check_text_content_security(payload.user_tag, payload.name, payload.hex, openid=_wechat_openid_from_request(request))
+        try:
+            card = color_card_store.add_picked_favorite(
+                user_tag=payload.user_tag,
+                name=payload.name,
+                hex_value=payload.hex,
+                l=payload.L,
+                a=payload.a,
+                b=payload.b,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"card": card}
+
+    @app.post("/api/v1/color-card/native-meter/reading")
+    def api_set_color_meter_native_reading(request: Request, payload: ColorMeterNativeReadingRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        user_tag = str(payload.user_tag or "").strip()
+        if not user_tag:
+            raise HTTPException(status_code=400, detail="missing user_tag")
+        _check_text_content_security(user_tag, payload.device_id, payload.device_name, payload.event, openid=_wechat_openid_from_request(request))
+        now_ms = int(time.time() * 1000)
+        reading = {
+            "user_tag": user_tag,
+            "request_id": str(payload.request_id or ""),
+            "event": str(payload.event or "measure"),
+            "L": payload.L,
+            "a": payload.a,
+            "b": payload.b,
+            "sample_count": max(1, int(payload.sample_count or 1)),
+            "progress_count": max(0, int(payload.progress_count or 0)),
+            "total_count": max(0, int(payload.total_count or 0)),
+            "device_id": str(payload.device_id or ""),
+            "device_name": str(payload.device_name or ""),
+            "ts": float(payload.ts or now_ms),
+            "server_ts": now_ms,
+        }
+        color_meter_native_readings[user_tag] = reading
+        return {"ok": True, "reading": reading}
+
+    @app.get("/api/v1/color-card/native-meter/reading")
+    def api_get_color_meter_native_reading(
+        request: Request,
+        user_tag: str = "",
+        request_id: str = "",
+        since: float = 0,
+        consume: bool = True,
+    ) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        clean_user_tag = str(user_tag or "").strip()
+        if not clean_user_tag:
+            raise HTTPException(status_code=400, detail="missing user_tag")
+        _check_text_content_security(clean_user_tag, openid=_wechat_openid_from_request(request))
+        reading = color_meter_native_readings.get(clean_user_tag)
+        if reading and request_id and str(reading.get("request_id") or "") != str(request_id):
+            return {"reading": None}
+        if not reading or float(reading.get("server_ts") or 0) <= float(since or 0):
+            return {"reading": None}
+        if consume:
+            color_meter_native_readings.pop(clean_user_tag, None)
+        return {"reading": reading}
 
     @app.post("/api/v1/color-card/match")
     def api_match_color_cards(request: Request, payload: ColorCardMatchRequest) -> Dict[str, Any]:

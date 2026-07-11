@@ -139,7 +139,8 @@ Page({
     );
     const query = [
       `type=${encodeURIComponent(type === "color" ? "color" : "product")}`,
-      `env=${encodeURIComponent(env)}`
+      `env=${encodeURIComponent(env)}`,
+      `title=${encodeURIComponent(type === "color" ? "色卡库" : "产品库")}`
     ];
     if (token) query.push(`token=${encodeURIComponent(token)}`);
     wx.navigateTo({ url: `/pages/catalog_webview/index?${query.join("&")}` });

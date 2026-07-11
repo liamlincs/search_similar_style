@@ -1,3 +1,5 @@
 {
-  "navigationBarTitleText": "产品库"
+  "navigationBarTitleText": "色卡库",
+  "enablePullDownRefresh": false,
+  "disableScroll": true
 }

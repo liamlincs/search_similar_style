@@ -1,0 +1,24 @@
+<view class="page">
+  <view class="panel">
+    <view wx:if="{{scanning}}" class="spinner"></view>
+    <view class="status">{{status}}</view>
+    <view wx:if="{{showDeviceList}}" class="device-list">
+      <view wx:for="{{devices}}" wx:key="deviceId" class="device-row {{item.preferred ? 'preferred' : ''}}">
+        <view class="device-main">
+          <view class="device-name">{{index + 1}}. {{item.name}}</view>
+          <view class="device-meta">
+            <text wx:if="{{item.RSSI !== ''}}">RSSI {{item.RSSI}}</text>
+            <text wx:if="{{item.preferred}}"> · 上次连接</text>
+          </view>
+        </view>
+        <view
+          class="connect-btn {{connectingDeviceId !== '' ? 'disabled' : ''}}"
+          data-device-id="{{item.deviceId}}"
+          bindtap="chooseDevice"
+        >{{connectingDeviceId === item.deviceId ? '连接中' : '连接'}}</view>
+      </view>
+      <view wx:if="{{!devices.length && !scanning}}" class="empty">没有发现设备</view>
+      <button class="rescan-btn" loading="{{scanning}}" bindtap="rescanDevices">重新扫描</button>
+    </view>
+  </view>
+</view>

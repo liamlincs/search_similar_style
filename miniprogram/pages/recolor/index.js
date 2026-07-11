@@ -303,8 +303,22 @@ Page({
   goRecolorPage() {},
 
   openColorLibraryNative() {
+    const config = require("../../utils/config");
+    const env = config.catalogH5Env || "lan";
+    const token = String(
+      wx.getStorageSync("catalogUserToken") ||
+      wx.getStorageSync("userToken") ||
+      wx.getStorageSync("accessToken") ||
+      ""
+    );
+    const query = [
+      "type=color",
+      `env=${encodeURIComponent(env)}`,
+      "title=%E8%89%B2%E5%8D%A1%E5%BA%93"
+    ];
+    if (token) query.push(`token=${encodeURIComponent(token)}`);
     wx.navigateTo({
-      url: "/pages/color_card/index"
+      url: `/pages/catalog_webview/index?${query.join("&")}`
     });
   },
 
