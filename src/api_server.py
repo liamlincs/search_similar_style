@@ -1559,6 +1559,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         walk_menus(payload.get("menus"))
         known = {"*", "product:view", "product:create", "color:view", "color:create"}
         normalized = [item for item in permissions if item in known]
+        if normalized:
+            for item in inferred:
+                if item not in normalized:
+                    normalized.append(item)
+            return normalized
+        if permissions:
+            return list(catalog_external_default_permissions)
         for item in inferred:
             if item not in normalized:
                 normalized.append(item)

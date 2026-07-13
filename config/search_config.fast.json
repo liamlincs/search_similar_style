@@ -63,7 +63,9 @@
       "allowed_tokens": [],
       "default_permissions": [
         "product:view",
-        "color:view"
+        "product:create",
+        "color:view",
+        "color:create"
       ]
     }
   },
