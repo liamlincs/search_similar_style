@@ -304,12 +304,7 @@ Page({
 
   openColorLibraryNative() {
     const env = config.catalogH5Env || "lan";
-    const token = String(
-      wx.getStorageSync("catalogUserToken") ||
-      wx.getStorageSync("userToken") ||
-      wx.getStorageSync("accessToken") ||
-      ""
-    );
+    const token = String(wx.getStorageSync("catalogUserToken") || "");
     const query = [
       "type=color",
       `env=${encodeURIComponent(env)}`,

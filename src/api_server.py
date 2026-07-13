@@ -1536,7 +1536,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raw_permissions = re.split(r"[\s,]+", raw_permissions)
         if isinstance(raw_permissions, list):
             permissions = [str(item).strip() for item in raw_permissions if str(item).strip()]
-        return permissions or list(catalog_external_default_permissions)
+        inferred: List[str] = []
+
+        def add_perm(value: str) -> None:
+            if value and value not in inferred:
+                inferred.append(value)
+
+        def walk_menus(rows: Any) -> None:
+            if not isinstance(rows, list):
+                return
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", "") or (row.get("data") or {}).get("name", "")).strip()
+                permission = str((row.get("data") or {}).get("permission", "") or row.get("permission", "")).strip()
+                if name == "产品库" or permission in {"product:view", "catalog:product:view"}:
+                    add_perm("product:view")
+                if name == "色卡库" or permission in {"color:view", "color-card:view"}:
+                    add_perm("color:view")
+                walk_menus(row.get("children"))
+
+        walk_menus(payload.get("menus"))
+        known = {"*", "product:view", "product:create", "color:view", "color:create"}
+        normalized = [item for item in permissions if item in known]
+        for item in inferred:
+            if item not in normalized:
+                normalized.append(item)
+        return normalized or list(catalog_external_default_permissions)
 
     def _catalog_jwt_payload(token: str) -> Dict[str, Any]:
         clean = str(token or "").strip()

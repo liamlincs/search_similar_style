@@ -131,12 +131,7 @@ Page({
 
   openCatalogH5(type = "product") {
     const env = config.catalogH5Env || "public";
-    const token = String(
-      wx.getStorageSync("catalogUserToken") ||
-      wx.getStorageSync("userToken") ||
-      wx.getStorageSync("accessToken") ||
-      ""
-    );
+    const token = String(wx.getStorageSync("catalogUserToken") || "");
     const query = [
       `type=${encodeURIComponent(type === "color" ? "color" : "product")}`,
       `env=${encodeURIComponent(env)}`,
