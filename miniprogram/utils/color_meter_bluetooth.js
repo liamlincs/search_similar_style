@@ -30,7 +30,7 @@ function getBluetoothErrorMessage(err) {
   const code = err && err.errCode;
   if (isBluetoothAlreadyOpened(err)) return "";
   const text = getErrorText(err);
-  if (/appid privacy/i.test(text)) {
+  if (/appid privacy|api scope is not declared in the privacy agreement/i.test(text)) {
     return "蓝牙接口未通过正式版隐私校验，请在小程序后台用户隐私保护指引中声明蓝牙用途后重新发布";
   }
   if (code === 10001) return "请打开手机蓝牙，并允许微信使用蓝牙";

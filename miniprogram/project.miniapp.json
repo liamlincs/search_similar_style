@@ -13,7 +13,7 @@
     "toolkitVersion": "0.11.0",
     "useExtendedSdk": {
       "media": false,
-      "bluetooth": false,
+      "bluetooth": true,
       "network": false,
       "scanner": false,
       "xweb": false
@@ -40,7 +40,7 @@
     "useExtendedSdk": {
       "WeAppOpenFuns": true,
       "WeAppNetwork": false,
-      "WeAppBluetooth": false,
+      "WeAppBluetooth": true,
       "WeAppMedia": false,
       "WeAppLBS": false,
       "WeAppOthers": false
@@ -61,7 +61,7 @@
       "customImage": ""
     },
     "privacy": {
-      "enable": false
+      "enable": true
     },
     "enableOpenUrlNavigate": true,
     "privateDescriptions": {

@@ -303,7 +303,6 @@ Page({
   goRecolorPage() {},
 
   openColorLibraryNative() {
-    const config = require("../../utils/config");
     const env = config.catalogH5Env || "lan";
     const token = String(
       wx.getStorageSync("catalogUserToken") ||

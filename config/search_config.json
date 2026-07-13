@@ -54,17 +54,16 @@
     },
     "external_token_auth": {
       "enabled": true,
-      "verify_url": "",
+      "verify_url": "https://yingcaihui.net/api/getUserInfo",
+      "verify_method": "GET",
       "verify_timeout_sec": 3,
       "cache_ttl_sec": 300,
       "fail_open": false,
-      "allow_unverified_tokens": true,
+      "allow_unverified_tokens": false,
       "allowed_tokens": [],
       "default_permissions": [
         "product:view",
-        "product:create",
-        "color:view",
-        "color:create"
+        "color:view"
       ]
     }
   },

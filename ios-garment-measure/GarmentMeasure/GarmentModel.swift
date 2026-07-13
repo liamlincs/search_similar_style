@@ -237,6 +237,30 @@ final class GarmentMeasurementStore: ObservableObject {
         }
     }
 
+    func importObjectCaptureModel(temporaryURL: URL, imagesDirectory: URL) throws -> GarmentModelArchive {
+        let sourcePhoto = firstCaptureImage(in: imagesDirectory)
+        let archive = try persistGeneratedModel(
+            temporaryURL: temporaryURL,
+            sourcePhoto: sourcePhoto,
+            measurements: measurementsSnapshot(),
+            jobId: "local-object-capture",
+            provider: "apple_object_capture"
+        )
+        activeArchiveID = archive.id
+        loadModelArchives()
+        generatedModelURL = archiveModelURL(for: archive)
+        generatedMesh = nil
+        generatedPreview = nil
+        generationStatus = "Object Capture 模型已生成"
+        bumpPreviewRevision()
+
+        if let sourcePhoto {
+            garmentPhoto = sourcePhoto
+            garmentTexture = GarmentTextureProcessor.makeTexture(from: sourcePhoto)
+        }
+        return archive
+    }
+
     private func restoreArchiveInputs(_ archive: GarmentModelArchive) {
         for dimension in GarmentDimension.allCases {
             if let value = archive.measurements[dimension.rawValue] {
@@ -287,7 +311,7 @@ final class GarmentMeasurementStore: ObservableObject {
 
     private func persistGeneratedModel(
         temporaryURL: URL,
-        sourcePhoto: UIImage,
+        sourcePhoto: UIImage?,
         measurements: [GarmentDimension: Double],
         jobId: String,
         provider: String
@@ -307,7 +331,7 @@ final class GarmentMeasurementStore: ObservableObject {
 
         let thumbnailFileName = "thumbnail.jpg"
         let thumbnailURL = directory.appendingPathComponent(thumbnailFileName)
-        if let data = sourcePhoto.resizedForArchiveThumbnail(maxSide: 512).jpegData(compressionQuality: 0.72) {
+        if let data = sourcePhoto?.resizedForArchiveThumbnail(maxSide: 512).jpegData(compressionQuality: 0.72) {
             try data.write(to: thumbnailURL, options: [.atomic])
         }
 
@@ -359,6 +383,21 @@ final class GarmentMeasurementStore: ObservableObject {
         return archiveRootURL
             .appendingPathComponent(archive.id, isDirectory: true)
             .appendingPathComponent(thumbnailFileName)
+    }
+
+    private func firstCaptureImage(in directory: URL) -> UIImage? {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        let imageURL = files.sorted { $0.lastPathComponent < $1.lastPathComponent }.first { url in
+            ["jpg", "jpeg", "heic", "png"].contains(url.pathExtension.lowercased())
+        }
+        guard let imageURL else { return nil }
+        return UIImage(contentsOfFile: imageURL.path)
     }
 
     private var archiveRootURL: URL {

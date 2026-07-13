@@ -14,6 +14,20 @@ function scoreMeterDevice(device) {
   return score + name.length;
 }
 
+function getMeterErrorMessage(err, fallback) {
+  const message = ColorMeter.getErrorMessage ? ColorMeter.getErrorMessage(err) : "";
+  if (message) return message;
+  return (err && (err.message || err.errMsg)) || fallback || "色差仪操作失败";
+}
+
+function openBluetoothSetting() {
+  if (wx.openAppAuthorizeSetting) {
+    wx.openAppAuthorizeSetting({ fail: () => wx.openSetting && wx.openSetting() });
+  } else if (wx.openSetting) {
+    wx.openSetting();
+  }
+}
+
 Page({
   data: {
     status: "正在准备色差仪...",
@@ -29,10 +43,23 @@ Page({
     const action = params.action === "connect" ? "connect" : "measure";
     this.run(action, params.device_id || "").catch((err) => {
       console.error("[catalog-meter-bridge:error]", err);
-      const message = err && err.message ? err.message : "色差仪操作失败";
+      const message = getMeterErrorMessage(err);
       this.setData({ status: message });
-      wx.showToast({ title: message, icon: "none" });
-      setTimeout(() => wx.navigateBack({ delta: 1 }), 1200);
+      if (ColorMeter.shouldOpenSetting && ColorMeter.shouldOpenSetting(err) && (wx.openAppAuthorizeSetting || wx.openSetting)) {
+        wx.showModal({
+          title: "无法使用蓝牙",
+          content: message,
+          confirmText: "去设置",
+          cancelText: "返回",
+          success: (res) => {
+            if (res.confirm) openBluetoothSetting();
+            else wx.navigateBack({ delta: 1 });
+          },
+        });
+      } else {
+        wx.showToast({ title: message, icon: "none" });
+        setTimeout(() => wx.navigateBack({ delta: 1 }), 1800);
+      }
     });
   },
 
@@ -282,6 +309,7 @@ Page({
 
   async ensureMeterConnected(deviceId) {
     if (ColorMeter.connected) return;
+    this.setData({ status: "正在请求蓝牙权限..." });
     await ColorMeter.init();
     let knownDeviceId = this.safeDecode(deviceId || "");
     if (knownDeviceId) {
@@ -299,6 +327,8 @@ Page({
         return;
       } catch (err) {
         console.warn("[catalog-meter-bridge:direct-connect-fallback]", err);
+        await ColorMeter.disconnect().catch(() => null);
+        this.setData({ status: "上次连接设备不可用，正在重新搜索附近设备..." });
       }
     }
     while (!ColorMeter.connected) {
@@ -310,8 +340,10 @@ Page({
         await retry(() => ColorMeter.getDeviceInfo(), 1).catch(() => null);
       } catch (err) {
         console.warn("[catalog-meter-bridge:selected-connect-failed]", picked, err);
+        const message = getMeterErrorMessage(err, "连接失败，请选择其他设备或重新扫描");
+        await ColorMeter.disconnect().catch(() => null);
         this.setData({
-          status: "连接失败，请选择其他设备或重新扫描",
+          status: message,
           connectingDeviceId: "",
           showDeviceList: true,
         });
@@ -355,7 +387,7 @@ Page({
       this.setData({ devices });
     };
     ColorMeter.startScan(this.scanHandler, 0).catch((err) => {
-      const message = err && (err.message || err.errMsg) ? (err.message || err.errMsg) : "扫描蓝牙设备失败";
+      const message = getMeterErrorMessage(err, "扫描蓝牙设备失败");
       this.setData({ status: message, scanning: false });
       if (this.pickReject) {
         this.pickReject(new Error(message));

@@ -713,6 +713,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_external_auth_cfg = catalog_cfg.get("external_token_auth", {})
     catalog_external_token_enabled = bool(catalog_external_auth_cfg.get("enabled", True))
     catalog_external_verify_url = str(catalog_external_auth_cfg.get("verify_url", "")).strip()
+    catalog_external_verify_method = str(catalog_external_auth_cfg.get("verify_method", "POST")).strip().upper() or "POST"
     catalog_external_verify_timeout_sec = float(catalog_external_auth_cfg.get("verify_timeout_sec", 3.0))
     catalog_external_cache_ttl_sec = int(catalog_external_auth_cfg.get("cache_ttl_sec", 300))
     catalog_external_fail_open = bool(catalog_external_auth_cfg.get("fail_open", False))
@@ -742,7 +743,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     ]
     catalog_external_user_fields = [
         str(item).strip()
-        for item in catalog_external_auth_cfg.get("user_fields", ["user_id", "user", "openid", "sub"])
+        for item in catalog_external_auth_cfg.get("user_fields", ["user_id", "userId", "user", "openid", "sub"])
         if str(item).strip()
     ]
     catalog_external_permission_fields = [
@@ -1558,14 +1559,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 return value
         return f"external_{_catalog_token_cache_key(token)[:16]}"
 
+    def _catalog_normalize_verify_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        data = payload.get("data")
+        if isinstance(data, dict):
+            merged = dict(payload)
+            merged.update(data)
+            return merged
+        return payload
+
     def _catalog_verify_token_remote(token: str) -> Dict[str, Any] | None:
         if not catalog_external_verify_url:
             return None
-        body = json.dumps({"token": token}, ensure_ascii=False).encode("utf-8")
+        method = catalog_external_verify_method if catalog_external_verify_method in {"GET", "POST"} else "POST"
+        body = None if method == "GET" else json.dumps({"token": token}, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             catalog_external_verify_url,
             data=body,
-            method="POST",
+            method=method,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
@@ -1576,7 +1588,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             data = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
         if not isinstance(data, dict):
             return None
+        data = _catalog_normalize_verify_payload(data)
         valid_value = data.get("valid", data.get("active", data.get("ok", data.get("success", True))))
+        if "succeed" in data:
+            valid_value = data.get("succeed")
+        if "code" in data and str(data.get("code")) not in {"0", "200"}:
+            return None
         if valid_value is False or str(valid_value).strip().lower() in {"0", "false", "no", "invalid", "expired"}:
             return None
         user = _catalog_token_user_from_payload(data, token)
@@ -1655,6 +1672,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         token = str(request.query_params.get("token", "")).strip()
         if token:
             return token
+        token = str(request.query_params.get("access_token", "")).strip()
+        if token:
+            return token
         token = str(request.headers.get("X-Catalog-Token", "")).strip()
         if token:
             return token
@@ -1719,16 +1739,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         path = request.url.path
         is_catalog_ui = path == "/catalog"
+        is_catalog_mobile_alias = path in {"/product", "/color"}
         is_catalog_login = path == "/catalog/login"
         is_catalog_logout = path == "/catalog/logout"
         is_catalog_api = path.startswith("/api/v1/catalog/")
         is_color_card_api = path.startswith("/api/v1/color-card/")
-        is_catalog_route = is_catalog_ui or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
+        is_catalog_route = is_catalog_ui or is_catalog_mobile_alias or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
         allow_public = (
             path in {"/health", "/ready"}
             or is_catalog_login
             or is_catalog_logout
             or ((not catalog_web_auth_enabled) and is_catalog_ui)
+            or ((not catalog_web_auth_enabled) and is_catalog_mobile_alias)
             or ((not catalog_web_auth_enabled) and catalog_public and (is_catalog_api or is_color_card_api))
             or path.startswith("/print-static/")
             or path.startswith("/print-storage/")
@@ -5037,10 +5059,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     const SERVER_USER_ID = __SERVER_USER_ID__;
     const tokenKey = "openfire_catalog_token";
     const params = new URLSearchParams(location.search);
-    const urlToken = params.get("token") || "";
+    const urlToken = params.get("token") || params.get("access_token") || "";
     if (urlToken) {
       localStorage.setItem(tokenKey, urlToken);
       params.delete("token");
+      params.delete("access_token");
     }
     if (SERVER_USER_ID) {
       localStorage.setItem("openfire_catalog_user_id", SERVER_USER_ID);
@@ -7359,25 +7382,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         resp.delete_cookie(catalog_web_cookie_name)
         return resp
 
-    @app.get("/catalog", response_class=HTMLResponse)
-    def catalog_page(request: Request, type: str = "", token: str = ""):
-        catalog_type = str(type or "").strip().lower()
-        if str(token or "").strip() or catalog_type in {"product", "color"}:
-            permissions = getattr(request.state, "catalog_permissions", None)
-            user_id = str(getattr(request.state, "catalog_user_id", "") or "").strip()
-            if str(token or "").strip() and not user_id:
-                token_auth = _catalog_verify_token(str(token or "").strip())
-                if token_auth:
-                    user_id = str(token_auth.get("user", "")).strip()
-                    if permissions is None:
-                        permissions = set(token_auth.get("permissions") or [])
-            return HTMLResponse(
-                _catalog_mobile_page(
-                    catalog_type,
-                    sorted(permissions) if permissions is not None else None,
-                    user_id,
-                )
+    def _catalog_mobile_response(request: Request, catalog_type: str, token: str = "") -> HTMLResponse:
+        catalog_type = str(catalog_type or "").strip().lower()
+        permissions = getattr(request.state, "catalog_permissions", None)
+        user_id = str(getattr(request.state, "catalog_user_id", "") or "").strip()
+        if str(token or "").strip() and not user_id:
+            token_auth = _catalog_verify_token(str(token or "").strip())
+            if token_auth:
+                user_id = str(token_auth.get("user", "")).strip()
+                if permissions is None:
+                    permissions = set(token_auth.get("permissions") or [])
+        return HTMLResponse(
+            _catalog_mobile_page(
+                catalog_type,
+                sorted(permissions) if permissions is not None else None,
+                user_id,
             )
+        )
+
+    @app.get("/catalog", response_class=HTMLResponse)
+    def catalog_page(request: Request, type: str = "", token: str = "", access_token: str = ""):
+        catalog_type = str(type or "").strip().lower()
+        external_token = str(token or access_token or "").strip()
+        if external_token or catalog_type in {"product", "color"}:
+            return _catalog_mobile_response(request, catalog_type, external_token)
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -8859,6 +8887,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   </script>
 </body>
 </html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True))
+
+    @app.get("/product", response_class=HTMLResponse)
+    def catalog_product_page(request: Request, token: str = "", access_token: str = ""):
+        return _catalog_mobile_response(request, "product", str(token or access_token or "").strip())
+
+    @app.get("/color", response_class=HTMLResponse)
+    def catalog_color_page(request: Request, token: str = "", access_token: str = ""):
+        return _catalog_mobile_response(request, "color", str(token or access_token or "").strip())
 
     @app.get("/api/v1/catalog/products")
     def api_list_catalog_products(
