@@ -227,6 +227,12 @@ server {
         proxy_pass http://100.64.0.2:8000;
     }
 
+    # 微信/第三方域名校验文件，例如 /MP_verify_xxx.txt
+    location ~ ^/[A-Za-z0-9_-]+\.txt$ {
+        root /var/www/openfire.cloud;
+        try_files $uri =404;
+    }
+
     # 其他扫描流量直接丢弃（降噪/降风险）
     location / {
         return 444;
