@@ -169,6 +169,13 @@ class CatalogTagCreateRequest(BaseModel):
     type: str = ""
 
 
+class CatalogPersonalProductRequest(BaseModel):
+    source_style_code: str
+    image_names: List[str]
+    folder_name: str
+    user_tag: str = ""
+
+
 class CatalogImportPrepareRequest(BaseModel):
     source_dir: str
 
@@ -2087,6 +2094,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if s.endswith(".jpg") or s.endswith(".jpeg"):
             return "image/jpeg"
         return "application/octet-stream"
+
+    def _safe_catalog_part(value: str, fallback: str = "item", max_len: int = 36) -> str:
+        clean = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", str(value or "").strip()).strip("-_")
+        return (clean or fallback)[:max_len]
+
+    def _owner_tag_from_request(request: Request, user_tag: str = "") -> str:
+        incoming = str(user_tag or "").strip()
+        if incoming.startswith("owner:") and len(incoming) > len("owner:"):
+            return incoming
+        user_id_local = str(getattr(request.state, "catalog_user_id", "") or "").strip()
+        if user_id_local:
+            return f"owner:{user_id_local}"
+        return ""
+
+    def _personal_folder_tag(owner_tag: str, folder_name: str) -> str:
+        folder = str(folder_name or "").strip()
+        if not owner_tag or not folder:
+            return ""
+        return f"{owner_tag}:folder:{folder}"
 
     def _image_b64(image_name: str) -> tuple[str, str]:
         safe = Path(image_name).name
@@ -8963,6 +8989,83 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not product:
             raise HTTPException(status_code=404, detail="product not found")
         return _serialize_catalog_product(_external_base_url(request), product)
+
+    @app.get("/api/v1/catalog/personal-folders")
+    def api_list_catalog_personal_folders(request: Request, user_tag: str = "") -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:view")
+        _check_text_content_security(user_tag, openid=_wechat_openid_from_request(request))
+        owner_tag = _owner_tag_from_request(request, user_tag)
+        if not owner_tag:
+            return {"folders": []}
+        prefix = f"{owner_tag}:folder:"
+        folders = sorted(
+            {
+                tag[len(prefix):].strip()
+                for tag in catalog_store.list_tags()
+                if str(tag).startswith(prefix) and tag[len(prefix):].strip()
+            },
+            key=lambda item: item.lower(),
+        )
+        return {"folders": folders}
+
+    @app.post("/api/v1/catalog/personal-products")
+    def api_create_catalog_personal_product(request: Request, payload: CatalogPersonalProductRequest) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        _check_text_content_security(
+            payload.source_style_code,
+            payload.folder_name,
+            payload.user_tag,
+            *payload.image_names,
+            openid=_wechat_openid_from_request(request),
+        )
+        owner_tag = _owner_tag_from_request(request, payload.user_tag)
+        folder_name = str(payload.folder_name or "").strip()
+        if not owner_tag:
+            raise HTTPException(status_code=400, detail="missing user tag")
+        if not folder_name:
+            raise HTTPException(status_code=400, detail="missing folder name")
+        source = catalog_store.get_product(str(payload.source_style_code or "").strip())
+        if not source:
+            raise HTTPException(status_code=404, detail="source product not found")
+        allowed = {str(item.get("image_name", "")) for item in source.get("images", [])}
+        selected = []
+        seen = set()
+        for raw in payload.image_names or []:
+            name = Path(str(raw or "")).name
+            if name and name in allowed and name not in seen:
+                selected.append(name)
+                seen.add(name)
+        if not selected:
+            raise HTTPException(status_code=400, detail="no valid image selected")
+        owner_hash = hashlib.sha1(owner_tag.encode("utf-8")).hexdigest()[:8]
+        folder_part = _safe_catalog_part(folder_name, "folder", 24)
+        source_part = _safe_catalog_part(source.get("style_code", ""), "source", 32)
+        unique_part = dt.datetime.now().strftime("%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        personal_code = f"MY-{owner_hash}-{folder_part}-{source_part}-{unique_part}"
+        copied: List[str] = []
+        for index, image_name in enumerate(selected):
+            src_path = standard_dir / Path(image_name).name
+            if not src_path.exists() or not src_path.is_file():
+                raise HTTPException(status_code=404, detail=f"image not found: {image_name}")
+            suffix = src_path.suffix.lower() or ".jpg"
+            digest = hashlib.sha1(f"{owner_tag}:{folder_name}:{image_name}".encode("utf-8")).hexdigest()[:10]
+            target_name = f"{personal_code}_{digest}_{index:03d}{suffix}"
+            target_path = standard_dir / target_name
+            if not target_path.exists():
+                shutil.copyfile(src_path, target_path)
+            copied.append(target_name)
+        tags = [owner_tag, _personal_folder_tag(owner_tag, folder_name)]
+        product = catalog_store.upsert_product(
+            personal_code,
+            copied,
+            tags=tags,
+            note=f"个人产品/{folder_name}，来源：{source.get('style_code', '')}",
+        )
+        return {
+            "product": _serialize_catalog_product(_external_base_url(request), product),
+            "folder": folder_name,
+            "images_added": len(copied),
+        }
 
     @app.put("/api/v1/catalog/products/{style_code}/tags")
     def api_replace_catalog_product_tags(request: Request, style_code: str, payload: CatalogTagUpdateRequest) -> Dict[str, Any]:

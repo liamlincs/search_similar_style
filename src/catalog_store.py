@@ -295,6 +295,80 @@ class CatalogStore:
         merged = self._normalize_tags([*current_tags, *extra_tags])
         return self.replace_product_tags(code, merged)
 
+    def upsert_product(
+        self,
+        style_code: str,
+        image_names: Iterable[str],
+        tags: Iterable[str] | None = None,
+        note: str = "",
+    ) -> Dict[str, Any]:
+        code = style_code.strip()
+        if not code:
+            raise ValueError("style_code is empty")
+        images = [str(name).strip() for name in image_names if str(name).strip()]
+        if not images:
+            raise ValueError("image_names is empty")
+        cleaned_tags = self._normalize_tags(tags or [])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO products(style_code, cover_image, note)
+                VALUES (?, ?, ?)
+                ON CONFLICT(style_code) DO UPDATE SET
+                    note=excluded.note,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (code, images[0], str(note or "")),
+            )
+            existing = conn.execute(
+                """
+                SELECT COALESCE(MAX(sort_order), -1) AS max_sort
+                FROM product_images
+                WHERE style_code=?
+                """,
+                (code,),
+            ).fetchone()
+            next_sort = int(existing["max_sort"] if existing and existing["max_sort"] is not None else -1) + 1
+            for image_name in images:
+                conn.execute(
+                    """
+                    INSERT INTO product_images(style_code, image_name, sort_order)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(image_name) DO UPDATE SET
+                        style_code=excluded.style_code
+                    """,
+                    (code, image_name, next_sort),
+                )
+                next_sort += 1
+            cover = conn.execute(
+                """
+                SELECT image_name
+                FROM product_images
+                WHERE style_code=?
+                ORDER BY sort_order ASC, image_name ASC
+                LIMIT 1
+                """,
+                (code,),
+            ).fetchone()
+            if cover:
+                conn.execute(
+                    "UPDATE products SET cover_image=?, updated_at=CURRENT_TIMESTAMP WHERE style_code=?",
+                    (str(cover["image_name"]), code),
+                )
+            for tag in cleaned_tags:
+                conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (tag,))
+                tag_row = conn.execute("SELECT id FROM tags WHERE name=?", (tag,)).fetchone()
+                if tag_row:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO product_tags(style_code, tag_id) VALUES (?, ?)",
+                        (code, int(tag_row["id"])),
+                    )
+            conn.commit()
+        product = self.get_product(code)
+        if not product:
+            raise ValueError("product upsert failed")
+        return product
+
     def get_product(self, style_code: str) -> Dict[str, Any] | None:
         rows = self.get_products_by_codes([style_code])
         return rows[0] if rows else None
