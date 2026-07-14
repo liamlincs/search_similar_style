@@ -118,7 +118,7 @@ class CatalogStore:
         allow = {f".{str(ext).lower().lstrip('.')}" for ext in image_exts}
         image_files = [
             path for path in sorted(Path(standard_dir).glob("*"))
-            if path.is_file() and path.suffix.lower() in allow
+            if path.is_file() and path.suffix.lower() in allow and not path.name.startswith("MY-")
         ]
 
         added_products = 0
@@ -203,6 +203,18 @@ class CatalogStore:
     def list_tags(self) -> List[str]:
         with self._connect() as conn:
             rows = conn.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE ASC").fetchall()
+        return [str(row["name"]) for row in rows]
+
+    def list_used_tags(self) -> List[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT t.name
+                FROM tags t
+                JOIN product_tags pt ON pt.tag_id = t.id
+                ORDER BY t.name COLLATE NOCASE ASC
+                """
+            ).fetchall()
         return [str(row["name"]) for row in rows]
 
     def list_tag_groups(self) -> Dict[str, List[str]]:
@@ -373,6 +385,60 @@ class CatalogStore:
         rows = self.get_products_by_codes([style_code])
         return rows[0] if rows else None
 
+    def delete_product(self, style_code: str) -> List[str]:
+        code = style_code.strip()
+        if not code:
+            raise ValueError("style_code is empty")
+        with self._connect() as conn:
+            image_rows = conn.execute(
+                "SELECT image_name FROM product_images WHERE style_code=?",
+                (code,),
+            ).fetchall()
+            exists = conn.execute("SELECT 1 FROM products WHERE style_code=? LIMIT 1", (code,)).fetchone()
+            if not exists:
+                raise ValueError("style_code not found")
+            conn.execute("DELETE FROM products WHERE style_code=?", (code,))
+            conn.commit()
+        return [str(row["image_name"]) for row in image_rows]
+
+    def delete_product_image(self, style_code: str, image_name: str) -> Dict[str, Any]:
+        code = style_code.strip()
+        name = image_name.strip()
+        if not code:
+            raise ValueError("style_code is empty")
+        if not name:
+            raise ValueError("image_name is empty")
+        with self._connect() as conn:
+            exists = conn.execute("SELECT 1 FROM products WHERE style_code=? LIMIT 1", (code,)).fetchone()
+            if not exists:
+                raise ValueError("style_code not found")
+            image_row = conn.execute(
+                "SELECT image_name FROM product_images WHERE style_code=? AND image_name=? LIMIT 1",
+                (code, name),
+            ).fetchone()
+            if not image_row:
+                raise ValueError("image_name not found")
+            conn.execute("DELETE FROM product_images WHERE style_code=? AND image_name=?", (code, name))
+            remaining_rows = conn.execute(
+                """
+                SELECT image_name
+                FROM product_images
+                WHERE style_code=?
+                ORDER BY sort_order ASC, image_name ASC
+                """,
+                (code,),
+            ).fetchall()
+            remaining = [str(row["image_name"]) for row in remaining_rows]
+            if remaining:
+                conn.execute(
+                    "UPDATE products SET cover_image=?, updated_at=CURRENT_TIMESTAMP WHERE style_code=?",
+                    (remaining[0], code),
+                )
+            else:
+                conn.execute("DELETE FROM products WHERE style_code=?", (code,))
+            conn.commit()
+        return {"deleted": name, "remaining": remaining}
+
     def get_products_by_codes(self, style_codes: Iterable[str]) -> List[Dict[str, Any]]:
         codes = [str(code).strip() for code in style_codes if str(code).strip()]
         if not codes:
@@ -415,6 +481,7 @@ class CatalogStore:
         tags: Iterable[str] | None = None,
         limit: int = 200,
         offset: int = 0,
+        exclude_owner: bool = False,
     ) -> List[Dict[str, Any]]:
         filters: List[str] = []
         filter_params: List[Any] = []
@@ -434,6 +501,21 @@ class CatalogStore:
                 """
             )
             filter_params.extend([f"%{query_code}%", f"%{query_code}%"])
+        if exclude_owner:
+            filters.append(
+                """
+                (
+                    p.style_code NOT LIKE 'MY-%'
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM product_tags opt
+                        JOIN tags ot ON ot.id = opt.tag_id
+                        WHERE opt.style_code = p.style_code
+                          AND ot.name LIKE 'owner:%'
+                    )
+                )
+                """
+            )
 
         from_clause = "FROM products p"
         tag_match_groups = self._tag_match_groups(normalized_tags)

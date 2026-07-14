@@ -4589,6 +4589,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .app-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; width: min(540px, 100%); margin: 0 auto 14px; padding: 3px; border-radius: 999px; background: #eef0f4; box-shadow: inset 0 1px 2px rgba(15,23,42,.08); }
     .app-tab { min-height: 44px; border-radius: 999px; background: transparent; color: #7b8798; border: 0; font-size: 15px; font-weight: 800; }
     .app-tab.active { background: #fff; color: #1f2937; box-shadow: 0 2px 8px rgba(15,23,42,.14); }
+    body.product-image-mode .top { padding-bottom: 0; }
+    body.product-image-mode .app-tabs { margin-bottom: 0; }
+    body.product-image-mode .body { padding-top: 0; }
+    body.product-image-mode .image-search-card { margin-top: 0; }
     .tab { min-height: 40px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #334155; font-size: 15px; font-weight: 700; }
     .tab.active { background: #0f172a; color: #fff; border-color: #0f172a; }
     .search { display: grid; grid-template-columns: minmax(0, 1fr) 76px 70px; gap: 8px; align-items: center; }
@@ -4613,6 +4617,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .filter-label { min-width: 38px; color: #64748b; font-size: 12px; font-weight: 700; }
     .filter-chip { min-height: 28px; padding: 0 9px; border-radius: 999px; border: 1px solid #c7d2fe; background: #eef2ff; color: #3730a3; font-size: 12px; }
     .filter-chip.active { background: #3730a3; color: #fff; border-color: #3730a3; }
+    .personal-folder-bar { display: flex; gap: 6px; overflow-x: auto; padding: 8px 0 0; }
+    .personal-folder-chip { flex: none; min-height: 30px; border-radius: 999px; padding: 0 11px; background: #eef2ff; color: #3730a3; border: 1px solid #c7d2fe; font-size: 12px; }
+    .personal-folder-chip.active { background: #0f172a; color: #fff; border-color: #0f172a; }
     .filter-modal { position: fixed; inset: 0; z-index: 120; display: none; align-items: flex-end; background: rgba(15,23,42,.48); }
     .filter-modal.open { display: flex; }
     .filter-sheet { width: 100%; max-height: 78vh; overflow: auto; background: #fff; border-radius: 24px 24px 0 0; padding: 20px 18px calc(18px + env(safe-area-inset-bottom)); box-shadow: 0 -18px 48px rgba(15,23,42,.18); }
@@ -4629,13 +4636,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .filter-actions-bar .reset { background: #f4f4f5; color: #0b77d8; }
     .filter-actions-bar .apply { background: #1683df; color: #fff; }
     .card { background: #fff; border: 1px solid #edf0f3; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(15,23,42,.03); }
-    .product-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .product-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
     .product-tile { min-width: 0; padding: 0; overflow: hidden; }
     .product-tile .thumb { width: 100%; height: auto; aspect-ratio: 1 / 1; border-radius: 0; }
-    .product-tile-body { padding: 8px; }
-    .product-tile .title { font-size: 13px; line-height: 1.25; margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .product-tile-body { padding: 5px 6px 6px; }
+    .product-tile .title { font-size: 12px; line-height: 1.2; margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .product-tile .muted { font-size: 11px; }
-    .product-tile .tags { margin: 5px 0 0; max-height: 42px; overflow: hidden; }
+    .product-tile .tags { display: none; }
     .load-more { padding: 12px 0; color: #64748b; font-size: 12px; text-align: center; }
     .product { display: grid; grid-template-columns: 92px minmax(0,1fr); gap: 10px; }
     .thumb { width: 92px; height: 92px; border-radius: 8px; object-fit: cover; background: #e5e7eb; }
@@ -4678,9 +4685,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .gallery-item.preview-full { grid-column: 1 / -1; }
     .gallery-item.preview-full img { aspect-ratio: auto; max-height: 72vh; object-fit: contain; }
     .gallery-caption { margin-top: 4px; color: #64748b; font-size: 11px; word-break: break-all; }
+    .gallery-item.selectable { position: relative; border: 2px solid transparent; border-radius: 10px; padding: 2px; }
+    .gallery-item.selectable.selected { border-color: #1677d2; background: #e8f3ff; }
+    .gallery-check { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border-radius: 999px; display: grid; place-items: center; background: rgba(15,23,42,.72); color: #fff; font-size: 16px; font-weight: 900; }
+    .gallery-item.selected .gallery-check { background: #1677d2; }
+    .gallery-delete { position: absolute; right: 8px; top: 8px; width: 28px; height: 28px; min-height: 28px; padding: 0; border-radius: 999px; background: rgba(190,18,60,.92); color: #fff; font-size: 20px; line-height: 1; display: grid; place-items: center; }
+    .zoom-modal { position: fixed; inset: 0; z-index: 180; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.88); padding: 16px; }
+    .zoom-modal.open { display: flex; }
+    .zoom-img { max-width: 100%; max-height: 88vh; object-fit: contain; border-radius: 8px; background: #111827; }
+    .zoom-close { position: fixed; right: 14px; top: max(14px, env(safe-area-inset-top)); width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: #111827; font-size: 30px; line-height: 1; }
     .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
     .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
     .personal-btn.remove { background: #fff1f2; color: #be123c; }
+    .personal-sheet-row { display: grid; gap: 8px; margin-bottom: 10px; }
+    .personal-sheet-label { color: #64748b; font-size: 12px; font-weight: 800; }
     .float-actions { position: fixed; right: 14px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 70; display: grid; gap: 10px; }
     .float-action { width: 54px; min-height: 54px; padding: 6px 4px; border-radius: 14px; border: 1px solid #dbeafe; background: #fff; color: #0b77d8; box-shadow: 0 8px 22px rgba(15,23,42,.16); font-size: 22px; line-height: 1; display: grid; place-items: center; }
     .float-action span { display: block; margin-top: 2px; font-size: 11px; font-weight: 800; color: #334155; }
@@ -4820,16 +4838,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-form-panel .primary { background: #1987d7; color: #fff; }
     .color-form-panel .secondary { background: #eef2f7; color: #0f172a; }
     .empty { padding: 28px 0; color: #64748b; text-align: center; }
-    .image-search-card { display: grid; gap: 14px; color: #64748b; }
-    .image-search-hint { min-height: 20px; color: #64748b; font-size: 13px; padding: 0 2px; }
+    .image-search-card { position: sticky; top: 0; z-index: 15; display: grid; gap: 10px; margin: -12px -14px 8px; padding: 0 14px 9px; color: #64748b; background: rgba(245,246,248,.98); border-bottom: 1px solid #e5e7eb; backdrop-filter: blur(10px); }
+    .image-search-hint { display: none; }
     .image-upload-box { min-height: 260px; position: relative; display: grid; place-items: center; text-align: center; border: 1px dashed #cfd5df; border-radius: 6px; background: #fafafa; color: #777; padding: 18px; overflow: hidden; }
-    .image-upload-box.has-image { border-style: solid; background: #f5f7fa; padding: 8px; }
+    .image-upload-box.has-image { min-height: 260px; border-style: solid; background: #f5f7fa; padding: 8px; }
     .image-upload-icon { width: 52px; height: 52px; margin: 0 auto 12px; border: 2px solid #777; border-radius: 12px; display: grid; place-items: center; font-size: 26px; color: #777; }
     .image-preview-stage { position: relative; width: 100%; touch-action: none; }
     .image-preview { display: block; width: 100%; max-height: 320px; object-fit: contain; border-radius: 6px; background: #eef2f7; user-select: none; -webkit-user-drag: none; }
     .crop-rect { position: absolute; border: 2px solid #1677d2; background: rgba(22,119,210,.16); box-shadow: 0 0 0 999px rgba(0,0,0,.18); pointer-events: none; }
-    .image-search-run { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .image-search-run button { min-height: 48px; border-radius: 6px; font-size: 16px; }
+    .image-search-run { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .image-search-run button { min-height: 38px; border-radius: 6px; font-size: 14px; }
     .choice-modal { position: fixed; inset: 0; z-index: 130; display: none; align-items: flex-end; background: rgba(0,0,0,.42); }
     .choice-modal.open { display: flex; }
     .choice-sheet { width: 100%; background: #fff; border-radius: 18px 18px 0 0; padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 10px; }
@@ -4841,11 +4859,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .app-confirm-actions { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #e5e7eb; }
     .app-confirm-actions button { min-height: 52px; border-radius: 0; background: #fff; color: #0f172a; font-size: 17px; border-right: 1px solid #e5e7eb; }
     .app-confirm-actions button:last-child { border-right: 0; color: #64748b; }
-    .image-result-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+    .image-result-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
     .image-result-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
     .image-result-card img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; }
-    .image-result-body { padding: 7px; }
-    .image-result-body .title { font-size: 13px; line-height: 1.2; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .image-result-body { padding: 5px 6px 6px; }
+    .image-result-body .title { font-size: 12px; line-height: 1.2; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .image-result-body .muted { font-size: 11px; }
     .hidden { display: none !important; }
   </style>
@@ -4880,6 +4898,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <button id="searchBtn" type="button">搜索</button>
       </div>
       <div class="filter-summary" id="filterSummary"></div>
+      <div class="personal-folder-bar hidden" id="personalFolderBar"></div>
     </div>
     <div class="body">
       <section class="panel" id="productPanel">
@@ -4918,7 +4937,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       </section>
       <section class="panel" id="imageSearchPanel">
         <div class="image-search-card">
-          <div class="image-search-hint">框选细节后确定搜索</div>
           <div class="image-upload-box" id="imageUploadBox">
             <div id="imageUploadEmpty">
               <div class="image-upload-icon">□</div>
@@ -5061,7 +5079,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
               <input id="colorNameSuffix" placeholder="色名，如浅灰" />
             </div>
             <input id="colorName" placeholder="色号名称，如 彩龙3351浅灰" />
-            <textarea id="colorNote" placeholder="备注，可选"></textarea>
             <button id="saveColorBtn" type="button">保存色卡</button>
           </div>
           <div class="color-compare-float hidden" id="colorCompareFloat"></div>
@@ -5098,6 +5115,34 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <button class="modal-close-btn" id="closeGalleryBtn" type="button" aria-label="关闭" title="关闭">×</button>
         </div>
         <div class="gallery-grid" id="galleryGrid"></div>
+      </div>
+    </div>
+    <div class="zoom-modal" id="zoomModal">
+      <button class="zoom-close" id="zoomCloseBtn" type="button">×</button>
+      <img class="zoom-img" id="zoomImage" alt="图片预览" />
+    </div>
+    <div class="filter-modal" id="personalProductModal">
+      <div class="filter-sheet">
+        <div class="filter-sheet-head">
+          <div class="filter-sheet-title">加入个人产品</div>
+          <button class="icon-btn" id="closePersonalProductBtn" type="button">×</button>
+        </div>
+        <div class="personal-sheet-row">
+          <div class="personal-sheet-label">已选图片</div>
+          <div class="muted" id="personalProductSelectedText">0 张</div>
+        </div>
+        <div class="personal-sheet-row">
+          <div class="personal-sheet-label">选择已有子目录</div>
+          <select id="personalFolderSelect"></select>
+        </div>
+        <div class="personal-sheet-row">
+          <div class="personal-sheet-label">或新建子目录</div>
+          <input id="personalFolderInput" placeholder="例如：客户A、客户B" />
+        </div>
+        <div class="filter-actions-bar">
+          <button class="reset" id="cancelPersonalProductBtn" type="button">取消</button>
+          <button class="apply" id="confirmPersonalProductBtn" type="button">确认加入</button>
+        </div>
       </div>
     </div>
     <div class="float-actions hidden" id="productFloatActions">
@@ -5176,6 +5221,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       nativeMeterPollTimer: null,
       nativeMeterPollSeq: 0,
       currentGalleryProduct: null,
+      selectedGalleryImages: [],
+      personalFolders: [],
+      selectedPersonalFolder: "",
+      personalDeletePending: false,
       imageSearchFile: null,
       imageSearchPreviewUrl: "",
       imageSearchCrop: null,
@@ -5288,6 +5337,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function renderProductFilters() {
       renderProductFilterSummary();
       renderProductFilterSheet();
+      renderPersonalFolders();
     }
     function selectedFilterNames() {
       return state.selectedTags.map((tag) => splitTag(tag).name).filter(Boolean);
@@ -5353,11 +5403,34 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       state.filterDraftTags = [];
       renderProductFilterSheet();
     }
+    function renderPersonalFolders() {
+      const box = $("personalFolderBar");
+      if (!box) return;
+      if (state.appMode !== "mine") {
+        box.classList.add("hidden");
+        box.innerHTML = "";
+        return;
+      }
+      const folders = state.personalFolders || [];
+      box.classList.remove("hidden");
+      box.innerHTML = [
+        `<button class="personal-folder-chip ${!state.selectedPersonalFolder ? "active" : ""}" type="button" data-folder="">全部</button>`,
+        ...folders.map((name) => `<button class="personal-folder-chip ${state.selectedPersonalFolder === name ? "active" : ""}" type="button" data-folder="${escapeHtml(name)}">${escapeHtml(name)}</button>`),
+      ].join("");
+      box.querySelectorAll("[data-folder]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.selectedPersonalFolder = btn.dataset.folder || "";
+          renderPersonalFolders();
+          loadProducts(true).catch((err) => setStatus(err.message || "加载失败", true));
+        });
+      });
+    }
     function switchAppMode(mode) {
       state.appMode = mode === "mine" ? "mine" : (mode === "image" ? "image" : "category");
       state.type = "product";
       state.productMode = "query";
       state.productTool = "view";
+      if (state.appMode !== "mine") state.selectedPersonalFolder = "";
       if (state.appMode !== "category") resetImportState(true);
       state.productOffset = 0;
       state.productHasMore = true;
@@ -5411,13 +5484,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if ($("colorList")) $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorView === "mine"));
       if ($("colorMatchBox")) $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorView === "instrument"));
       document.body.classList.toggle("color-h5", state.type === "color");
+      document.body.classList.toggle("product-image-mode", state.type === "product" && state.appMode === "image");
       if (state.type === "color") syncColorPageTitle();
       else if ($("libraryTitle")) $("libraryTitle").textContent = "产品库";
       const isManage = isProductImport || isProductEdit || (state.type === "color" && state.colorMode === "manage");
       document.querySelector(".search").classList.toggle("hidden", isManage || state.appMode === "image" || state.appMode === "mine");
       $("filterBtn").classList.toggle("hidden", !(state.type === "product" && state.appMode === "category"));
       renderProductFilters();
-      $("keyword").placeholder = state.type === "product" ? "输入款号" : "输入色号、名称或备注";
+      $("filterSummary").classList.toggle("hidden", state.appMode === "image");
+      $("keyword").placeholder = state.type === "product" ? "输入款号" : "输入色号或名称";
       const nextParams = new URLSearchParams(location.search);
       nextParams.set("type", state.type);
       nextParams.set("mode", state.appMode);
@@ -5553,6 +5628,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const groups = item.tag_groups || {};
       return [].concat(groups.year || [], groups.category || [], groups.subcategory || []);
     }
+    function isPersonalProduct(item) {
+      return (item && item.style_code && String(item.style_code).startsWith("MY-")) || (item && (item.raw_tags || []).some((tag) => String(tag).startsWith("owner:")));
+    }
+    function personalFolderName(item) {
+      const owner = ownerTag();
+      const prefix = owner ? `${owner}:folder:` : ":folder:";
+      const tag = (item && item.raw_tags || []).find((x) => String(x).startsWith(prefix));
+      return tag ? String(tag).slice(prefix.length) : "";
+    }
+    function productDisplayTitle(item) {
+      if (!isPersonalProduct(item)) return item && item.style_code || "";
+      const folder = personalFolderName(item);
+      return folder || "个人产品";
+    }
+    function imageDisplayName(name) {
+      const text = String(name || "");
+      if (!text.startsWith("MY-")) return text;
+      const match = text.match(/_([0-9a-f]{10})_(\d{3})(\.[^.]+)$/i);
+      return match ? `图片 ${Number(match[2]) + 1}${match[3]}` : text;
+    }
     function optionList(type, selectedValues) {
       const selected = new Set(selectedValues || []);
       const list = (state.tagGroups[type] || []).slice();
@@ -5588,9 +5683,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         box.className = "product-grid";
         box.innerHTML = state.products.map((item) => `
           <div class="card product-tile" data-role="viewProductTile" data-code="${item.style_code || ""}">
-            <img class="thumb" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
+            <img class="thumb" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" />
             <div class="product-tile-body">
-              <div class="title">${item.style_code || ""}</div>
+              <div class="title">${escapeHtml(productDisplayTitle(item))}</div>
               <div class="muted">${(item.images || []).length} 张</div>
               <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
             </div>
@@ -5606,9 +5701,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productLoadMore").textContent = "";
       box.innerHTML = state.products.map((item) => `
         <div class="card product">
-          <img class="thumb" data-role="viewProduct" data-code="${item.style_code || ""}" src="${item.cover_image_url || ""}" alt="${item.style_code || ""}" />
+          <img class="thumb" data-role="viewProduct" data-code="${item.style_code || ""}" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" />
           <div>
-            <div class="title">${item.style_code || ""}</div>
+            <div class="title">${escapeHtml(productDisplayTitle(item))}</div>
             <div class="muted">图片数：${(item.images || []).length}</div>
             <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
             <div class="tag-edit">
@@ -5657,21 +5752,61 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function openGallery(product) {
       if (!product) return;
       state.currentGalleryProduct = product;
-      $("galleryTitle").textContent = product.style_code || "";
-      $("gallerySubTitle").textContent = `共 ${(product.images || []).length} 张图片`;
-      const productTagSet = new Set(product.raw_tags || product.tags || []);
-      const added = productTagSet.has(ownerTag());
-      $("addPersonalBtn").textContent = added ? "取消个人产品" : "加入个人产品";
-      $("addPersonalBtn").classList.toggle("added", added);
-      $("addPersonalBtn").classList.toggle("remove", added);
+      state.selectedGalleryImages = [];
+      const isPersonal = isPersonalProduct(product);
+      $("galleryTitle").textContent = productDisplayTitle(product);
+      $("gallerySubTitle").textContent = isPersonal ? `共 ${(product.images || []).length} 张图片` : `共 ${(product.images || []).length} 张图片，点击图片多选`;
+      $("addPersonalBtn").textContent = isPersonal ? "取消个人产品" : "加入个人产品";
+      $("addPersonalBtn").classList.toggle("remove", isPersonal);
+      $("addPersonalBtn").classList.toggle("added", false);
       $("addPersonalBtn").classList.remove("hidden");
-      $("galleryGrid").innerHTML = (product.images || []).map((img) => `
-        <div class="gallery-item">
-          <img src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" />
-          <div class="gallery-caption">${escapeHtml(img.image_name || "")}</div>
+      $("galleryGrid").innerHTML = (product.images || []).map((img) => isPersonal ? `
+        <div class="gallery-item selectable" data-image-name="${escapeHtml(img.image_name || "")}">
+          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(imageDisplayName(img.image_name || ""))}" />
+          <button class="gallery-delete" data-role="deletePersonalImage" data-image-name="${escapeHtml(img.image_name || "")}" type="button">×</button>
+          <div class="gallery-caption">${escapeHtml(imageDisplayName(img.image_name || ""))}</div>
+        </div>
+      ` : `
+        <div class="gallery-item selectable" data-image-name="${escapeHtml(img.image_name || "")}">
+          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" />
+          <span class="gallery-check" data-role="toggleGalleryImage">＋</span>
+          <div class="gallery-caption">${escapeHtml(imageDisplayName(img.image_name || ""))}</div>
         </div>
       `).join("");
+      $("galleryGrid").querySelectorAll('[data-role="zoomGalleryImage"]').forEach((img) => {
+        img.addEventListener("click", (event) => {
+          event.stopPropagation();
+          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "");
+        });
+      });
+      if (!isPersonal) {
+        $("galleryGrid").querySelectorAll('[data-role="toggleGalleryImage"]').forEach((btn) => {
+          btn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const item = btn.closest(".gallery-item");
+            toggleGalleryImageSelection((item && item.dataset.imageName) || "");
+          });
+        });
+        updateGallerySelectionUi();
+      } else {
+        $("galleryGrid").querySelectorAll('[data-role="deletePersonalImage"]').forEach((btn) => {
+          btn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            deleteCurrentPersonalProductImage(btn.dataset.imageName || "").catch((err) => setStatus(err.message || "删除失败", true));
+          });
+        });
+      }
       $("galleryModal").classList.add("open");
+    }
+    function openZoomImage(imageUrl, title) {
+      if (!imageUrl) return;
+      $("zoomImage").src = imageUrl;
+      $("zoomImage").alt = title || "图片预览";
+      $("zoomModal").classList.add("open");
+    }
+    function closeZoomImage() {
+      $("zoomModal").classList.remove("open");
+      $("zoomImage").removeAttribute("src");
     }
     function openImagePreview(title, imageUrl) {
       state.currentGalleryProduct = null;
@@ -5689,27 +5824,146 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function closeGallery() {
       $("galleryModal").classList.remove("open");
     }
-    async function addCurrentProductToPersonal() {
+    function updateGallerySelectionUi() {
+      const product = state.currentGalleryProduct;
+      if (isPersonalProduct(product)) {
+        $("gallerySubTitle").textContent = `共 ${(product && product.images || []).length} 张图片`;
+        $("addPersonalBtn").textContent = "取消个人产品";
+        $("addPersonalBtn").classList.add("remove");
+        return;
+      }
+      const selected = new Set(state.selectedGalleryImages || []);
+      $("galleryGrid").querySelectorAll(".gallery-item.selectable").forEach((item) => {
+        const active = selected.has(item.dataset.imageName || "");
+        item.classList.toggle("selected", active);
+        const mark = item.querySelector(".gallery-check");
+        if (mark) mark.textContent = active ? "✓" : "＋";
+      });
+      const total = (product && product.images || []).length;
+      const count = selected.size;
+      $("gallerySubTitle").textContent = `共 ${total} 张图片，已选 ${count} 张`;
+      $("addPersonalBtn").textContent = count ? `加入个人产品 (${count})` : "加入个人产品";
+    }
+    function toggleGalleryImageSelection(imageName) {
+      const name = String(imageName || "").trim();
+      if (!name) return;
+      const selected = new Set(state.selectedGalleryImages || []);
+      if (selected.has(name)) selected.delete(name);
+      else selected.add(name);
+      state.selectedGalleryImages = Array.from(selected);
+      updateGallerySelectionUi();
+    }
+    async function loadPersonalFolders() {
+      const tag = ownerTag();
+      if (!tag) return [];
+      const data = await api("/api/v1/catalog/personal-folders?" + new URLSearchParams({ user_tag: tag }).toString());
+      state.personalFolders = data.folders || [];
+      if (state.selectedPersonalFolder && !state.personalFolders.includes(state.selectedPersonalFolder)) {
+        state.selectedPersonalFolder = "";
+      }
+      return state.personalFolders;
+    }
+    function renderPersonalFolderOptions() {
+      const select = $("personalFolderSelect");
+      const folders = state.personalFolders || [];
+      select.innerHTML = '<option value="">请选择已有子目录</option>' + folders.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("");
+    }
+    async function openPersonalProductModal() {
+      const count = (state.selectedGalleryImages || []).length;
+      if (!count) {
+        setStatus("请先点击选择要加入的图片", true);
+        return;
+      }
+      $("personalProductSelectedText").textContent = `${count} 张`;
+      $("personalFolderInput").value = "";
+      await loadPersonalFolders().catch(() => []);
+      renderPersonalFolderOptions();
+      $("personalProductModal").classList.add("open");
+    }
+    function closePersonalProductModal() {
+      $("personalProductModal").classList.remove("open");
+    }
+    async function confirmAddPersonalProduct() {
       const product = state.currentGalleryProduct;
       if (!product || !product.style_code) return;
-      const tag = ownerTag();
-      const currentTags = normalizeTags(product.raw_tags || product.tags || []);
-      const hasPersonal = currentTags.includes(tag);
-      const tags = hasPersonal ? currentTags.filter((item) => item !== tag) : normalizeTags([...currentTags, tag]);
-      await api("/api/v1/catalog/products/" + encodeURIComponent(product.style_code) + "/tags", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tags }),
-      });
-      product.raw_tags = tags;
-      product.tags = tags;
-      $("addPersonalBtn").textContent = hasPersonal ? "加入个人产品" : "取消个人产品";
-      $("addPersonalBtn").classList.toggle("added", !hasPersonal);
-      $("addPersonalBtn").classList.toggle("remove", !hasPersonal);
-      setStatus(hasPersonal ? "已取消个人产品" : "已加入个人产品", false);
-      if (hasPersonal && state.appMode === "mine") {
+      if (isPersonalProduct(product)) return;
+      const selected = state.selectedGalleryImages || [];
+      if (!selected.length) return setStatus("请先选择图片", true);
+      const folder = ($("personalFolderInput").value.trim() || $("personalFolderSelect").value.trim());
+      if (!folder) return setStatus("请选择或新建子目录", true);
+      const button = $("confirmPersonalProductBtn");
+      setButtonLoading(button, true);
+      try {
+        await api("/api/v1/catalog/personal-products", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_style_code: product.style_code,
+            image_names: selected,
+            folder_name: folder,
+            user_tag: ownerTag(),
+          }),
+        });
+        closePersonalProductModal();
         closeGallery();
-        await loadProducts(true);
+        state.selectedPersonalFolder = folder;
+        await loadPersonalFolders().catch(() => []);
+        renderPersonalFolders();
+        setStatus(`已加入个人产品：${folder}`, false);
+        if (state.appMode === "mine") await loadProducts(true);
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }
+    async function deleteCurrentPersonalProduct() {
+      const product = state.currentGalleryProduct;
+      if (!product || !product.style_code || !isPersonalProduct(product) || state.personalDeletePending) return;
+      const ok = await appConfirm("确定取消这个个人产品？");
+      if (!ok) return;
+      state.personalDeletePending = true;
+      const button = $("addPersonalBtn");
+      setButtonLoading(button, true);
+      try {
+        const query = new URLSearchParams({ user_tag: ownerTag() });
+        await api("/api/v1/catalog/personal-products/" + encodeURIComponent(product.style_code) + "?" + query.toString(), { method: "DELETE" });
+        closeGallery();
+        await loadPersonalFolders().catch(() => []);
+        renderPersonalFolders();
+        if (state.appMode === "mine") await loadProducts(true);
+        setStatus("已取消个人产品", false);
+      } finally {
+        state.personalDeletePending = false;
+        setButtonLoading(button, false);
+      }
+    }
+    async function deleteCurrentPersonalProductImage(imageName) {
+      const product = state.currentGalleryProduct;
+      const name = String(imageName || "").trim();
+      if (!product || !product.style_code || !isPersonalProduct(product) || !name || state.personalDeletePending) return;
+      const ok = await appConfirm("确定删除这张图片？");
+      if (!ok) return;
+      state.personalDeletePending = true;
+      try {
+        const query = new URLSearchParams({ user_tag: ownerTag() });
+        const data = await api(
+          "/api/v1/catalog/personal-products/" + encodeURIComponent(product.style_code) +
+          "/images/" + encodeURIComponent(name) + "?" + query.toString(),
+          { method: "DELETE" },
+        );
+        if (data.product) {
+          state.currentGalleryProduct = data.product;
+          state.products = state.products.map((item) => item.style_code === product.style_code ? data.product : item);
+          openGallery(data.product);
+          setStatus("已删除图片", false);
+        } else {
+          closeGallery();
+          await loadPersonalFolders().catch(() => []);
+          renderPersonalFolders();
+          if (state.appMode === "mine") await loadProducts(true);
+          setStatus("已删除个人产品", false);
+        }
+      } finally {
+        state.personalDeletePending = false;
       }
     }
     function renderColors() {
@@ -6430,7 +6684,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           library_id: libraryId,
           library_name: lib.name || libraryId,
           name,
-          note: name,
+          note: "",
           L: lab.L,
           a: lab.a,
           b: lab.b,
@@ -6529,7 +6783,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           return;
         }
         try {
-          const mineQuery = new URLSearchParams({ limit: String(limit), offset: "0", tags: tag });
+          await loadPersonalFolders().catch(() => []);
+          const activeTag = state.selectedPersonalFolder ? `${tag}:folder:${state.selectedPersonalFolder}` : tag;
+          const mineQuery = new URLSearchParams({ limit: String(limit), offset: "0", tags: activeTag, exclude_personal: "0" });
           const data = await api("/api/v1/catalog/products?" + mineQuery.toString());
           if (loadSeq !== state.productLoadSeq || state.appMode !== loadAppMode || state.productMode !== loadProductMode) return;
           state.products = data.products || [];
@@ -6547,6 +6803,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return;
       }
       const query = new URLSearchParams({ limit: String(limit), offset: String(state.productMode === "query" ? state.productOffset : 0) });
+      query.set("exclude_personal", "1");
       if (state.productMode === "query") query.set("style_code", $("keyword").value.trim());
       const groups = { year: [], category: [], subcategory: [] };
       if (state.productMode === "query") {
@@ -6637,14 +6894,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function loadCurrent() {
       (state.type === "color" ? loadColors() : loadProducts(true)).catch((err) => setStatus(err.message || "加载失败", true));
     }
-    function thumbnailUrl(raw, edge = 360) {
+    function thumbnailUrl(raw, edge = 260) {
       const text = String(raw || "").trim();
       if (!text) return "";
       try {
         const url = new URL(text, location.origin);
         if (url.pathname.startsWith("/images/")) {
           url.searchParams.set("max_edge", String(edge));
-          url.searchParams.set("q", "72");
+          url.searchParams.set("q", "68");
         }
         return url.pathname + url.search + url.hash;
       } catch (_) {
@@ -6660,7 +6917,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       box.innerHTML = list.map((item, index) => `
         <div class="image-result-card" data-index="${index}">
-          <img src="${thumbnailUrl(item.catalog_cover_image_url || item.best_standard_image_url || "")}" alt="${escapeHtml(item.style_code || "")}" />
+          <img src="${thumbnailUrl(item.catalog_cover_image_url || item.best_standard_image_url || "", 210)}" alt="${escapeHtml(item.style_code || "")}" loading="lazy" />
           <div class="image-result-body">
             <div class="title">${escapeHtml(item.style_code || "")}</div>
             <div class="muted">相似度 ${Math.round(Number(item.score || 0) * 100)}%</div>
@@ -7073,10 +7330,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       await api("/api/v1/color-card/cards", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ library_id: library, library_name: libraryName, name, note: $("colorNote").value.trim(), L, a, b }),
+        body: JSON.stringify({ library_id: library, library_name: libraryName, name, note: "", L, a, b }),
       });
       await loadColorLibraries(library);
-      $("colorNote").value = "";
       incrementColorNameNumber();
       await loadColors();
       setStatus("色卡已保存", false);
@@ -7169,7 +7425,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("filterModal").addEventListener("click", (event) => {
       if (event.target === $("filterModal")) closeFilterModal();
     });
-    $("addPersonalBtn").addEventListener("click", () => addCurrentProductToPersonal().catch((err) => setStatus(err.message || "加入失败", true)));
+    $("zoomCloseBtn").addEventListener("click", closeZoomImage);
+    $("zoomModal").addEventListener("click", (event) => {
+      if (event.target === $("zoomModal")) closeZoomImage();
+    });
+    $("addPersonalBtn").addEventListener("click", () => {
+      const product = state.currentGalleryProduct;
+      const action = isPersonalProduct(product) ? deleteCurrentPersonalProduct() : openPersonalProductModal();
+      action.catch((err) => setStatus(err.message || "操作失败", true));
+    });
+    $("closePersonalProductBtn").addEventListener("click", closePersonalProductModal);
+    $("cancelPersonalProductBtn").addEventListener("click", closePersonalProductModal);
+    $("confirmPersonalProductBtn").addEventListener("click", () => confirmAddPersonalProduct().catch((err) => setStatus(err.message || "加入失败", true)));
+    $("personalProductModal").addEventListener("click", (event) => {
+      if (event.target === $("personalProductModal")) closePersonalProductModal();
+    });
     $("choiceAlbumBtn").addEventListener("click", () => chooseImageSource("album"));
     $("choiceCameraBtn").addEventListener("click", () => chooseImageSource("camera"));
     $("choiceCancelBtn").addEventListener("click", closeImageChoice);
@@ -7799,7 +8069,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             </div>
           </div>
           <div class="color-meter-row"><label>色号名称</label><input id="colorNameInput" placeholder="例如 彩龙3351浅灰" /></div>
-          <div class="color-meter-row"><label>备注</label><textarea id="colorNoteInput" placeholder="可选"></textarea></div>
           <div class="color-meter-actions end">
             <button id="colorMeterMeasureBtn" class="secondary" disabled>测量</button>
             <button id="colorSaveBtn" disabled>保存到色卡库</button>
@@ -7882,7 +8151,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorNameNumber: document.getElementById('colorNameNumber'),
       colorNameSuffix: document.getElementById('colorNameSuffix'),
       colorNameInput: document.getElementById('colorNameInput'),
-      colorNoteInput: document.getElementById('colorNoteInput'),
       colorSaveBtn: document.getElementById('colorSaveBtn'),
       colorMatchStatus: document.getElementById('colorMatchStatus'),
       colorMatchList: document.getElementById('colorMatchList'),
@@ -8111,6 +8379,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     function buildProductQueryParams() {
       const params = new URLSearchParams();
+      params.set('exclude_personal', '1');
       if (els.styleCodeQuery.value.trim()) params.set('style_code', els.styleCodeQuery.value.trim());
       const groups = splitTagsByType(selectedFilterTags);
       if (groups.year.length) params.set('year_tags', groups.year.join(','));
@@ -8446,7 +8715,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
       els.colorLibrarySelect.innerHTML = '';
-      (data.libraries || []).forEach((library) => {
+      (data.libraries || [])
+        .filter((library) => {
+          const id = String(library.id || '');
+          const name = String(library.name || '');
+          return !(/^my_color_/i.test(id) || /我的收藏|收藏夹/.test(name));
+        })
+        .forEach((library) => {
         const option = document.createElement('option');
         option.value = library.id;
         option.textContent = `${library.name} (${library.color_count || 0})`;
@@ -8501,7 +8776,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           library_id: libraryId,
           library_name: libraryName,
           name: colorName,
-          note: els.colorNoteInput.value,
+          note: '',
           L: colorLastLab.L,
           a: colorLastLab.a,
           b: colorLastLab.b,
@@ -8963,6 +9238,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         year_tags: str = "",
         category_tags: str = "",
         subcategory_tags: str = "",
+        exclude_personal: int = 1,
         limit: int = 200,
         offset: int = 0,
     ) -> Dict[str, Any]:
@@ -8979,7 +9255,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 typed = make_typed_tag(kind, item)
                 if typed:
                     tag_list.append(typed)
-        products = catalog_store.list_products(style_code=style_code, tags=tag_list, limit=limit, offset=offset)
+        products = catalog_store.list_products(
+            style_code=style_code,
+            tags=tag_list,
+            limit=limit,
+            offset=offset,
+            exclude_owner=bool(exclude_personal),
+        )
         return {"products": [_serialize_catalog_product(base_url, item) for item in products]}
 
     @app.get("/api/v1/catalog/products/{style_code}")
@@ -9001,7 +9283,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         folders = sorted(
             {
                 tag[len(prefix):].strip()
-                for tag in catalog_store.list_tags()
+                for tag in catalog_store.list_used_tags()
                 if str(tag).startswith(prefix) and tag[len(prefix):].strip()
             },
             key=lambda item: item.lower(),
@@ -9048,7 +9330,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not src_path.exists() or not src_path.is_file():
                 raise HTTPException(status_code=404, detail=f"image not found: {image_name}")
             suffix = src_path.suffix.lower() or ".jpg"
-            digest = hashlib.sha1(f"{owner_tag}:{folder_name}:{image_name}".encode("utf-8")).hexdigest()[:10]
+            digest = hashlib.sha1(f"{personal_code}:{image_name}".encode("utf-8")).hexdigest()[:10]
             target_name = f"{personal_code}_{digest}_{index:03d}{suffix}"
             target_path = standard_dir / target_name
             if not target_path.exists():
@@ -9065,6 +9347,68 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "product": _serialize_catalog_product(_external_base_url(request), product),
             "folder": folder_name,
             "images_added": len(copied),
+        }
+
+    @app.delete("/api/v1/catalog/personal-products/{style_code}")
+    def api_delete_catalog_personal_product(request: Request, style_code: str, user_tag: str = "") -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        _check_text_content_security(style_code, user_tag, openid=_wechat_openid_from_request(request))
+        owner_tag = _owner_tag_from_request(request, user_tag)
+        product = catalog_store.get_product(style_code)
+        if not product:
+            raise HTTPException(status_code=404, detail="personal product not found")
+        raw_tags = set(str(tag) for tag in product.get("raw_tags", []))
+        if not owner_tag or owner_tag not in raw_tags:
+            raise HTTPException(status_code=403, detail="not your personal product")
+        try:
+            image_names = catalog_store.delete_product(style_code)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        for image_name in image_names:
+            safe = Path(image_name).name
+            if safe.startswith("MY-"):
+                try:
+                    (standard_dir / safe).unlink(missing_ok=True)
+                except Exception:
+                    logging.warning("failed to remove personal product image: %s", safe)
+        return {"ok": True, "style_code": style_code}
+
+    @app.delete("/api/v1/catalog/personal-products/{style_code}/images/{image_name}")
+    def api_delete_catalog_personal_product_image(
+        request: Request,
+        style_code: str,
+        image_name: str,
+        user_tag: str = "",
+    ) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        _check_text_content_security(style_code, image_name, user_tag, openid=_wechat_openid_from_request(request))
+        owner_tag = _owner_tag_from_request(request, user_tag)
+        product = catalog_store.get_product(style_code)
+        if not product:
+            raise HTTPException(status_code=404, detail="personal product not found")
+        raw_tags = set(str(tag) for tag in product.get("raw_tags", []))
+        if not owner_tag or owner_tag not in raw_tags:
+            raise HTTPException(status_code=403, detail="not your personal product")
+        safe_image_name = Path(image_name).name
+        image_names = {str(item.get("image_name", "")) for item in product.get("images", [])}
+        if safe_image_name not in image_names:
+            raise HTTPException(status_code=404, detail="image not found")
+        try:
+            result = catalog_store.delete_product_image(style_code, safe_image_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if safe_image_name.startswith("MY-"):
+            try:
+                (standard_dir / safe_image_name).unlink(missing_ok=True)
+            except Exception:
+                logging.warning("failed to remove personal product image: %s", safe_image_name)
+        remaining_product = catalog_store.get_product(style_code)
+        return {
+            "ok": True,
+            "style_code": style_code,
+            "deleted": result.get("deleted", safe_image_name),
+            "remaining": result.get("remaining", []),
+            "product": _serialize_catalog_product(_external_base_url(request), remaining_product) if remaining_product else None,
         }
 
     @app.put("/api/v1/catalog/products/{style_code}/tags")
