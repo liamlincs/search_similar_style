@@ -332,6 +332,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     standard_dir = Path(path_cfg.get("standard_dir", "data/standard_samples"))
     standard_pattern = str(path_cfg.get("standard_pattern", "*"))
     image_exts = list(path_cfg.get("image_exts", ["png", "jpg", "jpeg"]))
+    search_feature_dir = Path("outputs/search_feature_samples")
 
     top_k = int(search_cfg.get("top_k", 5))
     candidate_multiplier = int(search_cfg.get("candidate_multiplier", 10))
@@ -759,8 +760,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if str(item).strip()
     ]
 
-    def _region_feature_cache_path(backend: str) -> Path:
-        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
+    def _region_feature_cache_path(backend: str, feature_dir: Path) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(feature_dir))
         return Path("outputs") / f"region_feature_cache_{backend}_{safe}.npz"
 
     def _region_standard_views(img: Image.Image, max_component_views: int = 3) -> List[tuple[str, Image.Image]]:
@@ -915,8 +916,39 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 views.append((f"top_comp{idx}", img.crop(key)))
         return views
 
-    def _build_region_feature_db_with_cache() -> tuple[List[str], np.ndarray]:
-        files = collect_images(standard_dir, standard_pattern, image_exts)
+    def _sync_search_feature_dir() -> Path:
+        src_files = [
+            fp
+            for fp in collect_images(standard_dir, standard_pattern, image_exts)
+            if not fp.name.upper().startswith("MY-")
+        ]
+        search_feature_dir.mkdir(parents=True, exist_ok=True)
+        wanted = {fp.name for fp in src_files}
+        for stale in search_feature_dir.iterdir():
+            if stale.is_file() and stale.name not in wanted:
+                try:
+                    stale.unlink()
+                except Exception:
+                    logging.warning("failed to remove stale search feature file: %s", stale)
+        for src in src_files:
+            dst = search_feature_dir / src.name
+            try:
+                src_stat = src.stat()
+                if dst.exists():
+                    dst_stat = dst.stat()
+                    if dst_stat.st_size == src_stat.st_size and int(dst_stat.st_mtime) == int(src_stat.st_mtime):
+                        continue
+                    dst.unlink()
+                try:
+                    os.link(src, dst)
+                except OSError:
+                    shutil.copy2(src, dst)
+            except Exception:
+                logging.warning("failed to sync search feature file: %s", src)
+        return search_feature_dir
+
+    def _build_region_feature_db_with_cache(feature_dir: Path) -> tuple[List[str], np.ndarray]:
+        files = collect_images(feature_dir, standard_pattern, image_exts)
         sigs = []
         for fp in files:
             st = fp.stat()
@@ -936,7 +968,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             ensure_ascii=False,
             sort_keys=True,
         )
-        cache_path = _region_feature_cache_path(region_crop_recall_backend)
+        cache_path = _region_feature_cache_path(region_crop_recall_backend, feature_dir)
         if feature_cache_enabled and cache_path.exists():
             try:
                 arr = np.load(cache_path, allow_pickle=True)
@@ -1007,8 +1039,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         nonlocal rerank_candidate_cache, label_memory_refs, scene_text_index
         nonlocal standard_image_by_code_key
         t_reload = time.perf_counter()
+        feature_dir = _sync_search_feature_dir()
         next_names, next_feats = build_feature_db_with_cache(
-            standard_dir,
+            feature_dir,
             standard_pattern,
             feature_backend,
             image_exts,
@@ -1027,7 +1060,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         next_secondary_feats: np.ndarray | None = None
         if secondary_feature_backend and secondary_feature_backend != feature_backend:
             next_secondary_names, next_secondary_feats = build_feature_db_with_cache(
-                standard_dir,
+                feature_dir,
                 standard_pattern,
                 secondary_feature_backend,
                 image_exts,
@@ -1049,7 +1082,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         next_region_names: List[str] = []
         next_region_feats: np.ndarray | None = None
         if region_crop_recall_enabled:
-            next_region_names, next_region_feats = _build_region_feature_db_with_cache()
+            next_region_names, next_region_feats = _build_region_feature_db_with_cache(feature_dir)
             logging.info(
                 "api loaded region crop db: backend=%s items=%d",
                 region_crop_recall_backend,
@@ -1968,6 +2001,53 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     return resp
 
+                catalog_token = _catalog_request_token(request)
+                token_auth = _catalog_verify_token(catalog_token)
+                if token_auth:
+                    permissions = set(token_auth.get("permissions") or [])
+                    if "*" in permissions or "product:view" in permissions:
+                        request.state.catalog_user_id = str(token_auth.get("user", "")).strip()
+                        request.state.api_user = f"catalog-token:{token_auth.get('user', 'unknown')}"
+                        request.state.catalog_permissions = permissions
+                        resp = await call_next(request)
+                        logging.info(
+                            'access ip=%s user=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                            client_ip,
+                            getattr(request.state, "api_user", "unknown"),
+                            request.method,
+                            request.url.path,
+                            resp.status_code,
+                            (time.perf_counter() - t0) * 1000.0,
+                            req_len,
+                            ua[:200],
+                        )
+                        return resp
+                    resp = JSONResponse(status_code=403, content={"detail": "missing permission: product:view"})
+                    logging.info(
+                        'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                        client_ip,
+                        request.method,
+                        request.url.path,
+                        resp.status_code,
+                        (time.perf_counter() - t0) * 1000.0,
+                        req_len,
+                        ua[:200],
+                    )
+                    return resp
+                if catalog_token and not token_auth:
+                    resp = JSONResponse(status_code=401, content={"detail": "invalid catalog token"})
+                    logging.info(
+                        'access ip=%s method=%s path=%s status=%s ms=%.1f len=%s ua="%s"',
+                        client_ip,
+                        request.method,
+                        request.url.path,
+                        resp.status_code,
+                        (time.perf_counter() - t0) * 1000.0,
+                        req_len,
+                        ua[:200],
+                    )
+                    return resp
+
                 exp = request.query_params.get("exp", "").strip()
                 sig = request.query_params.get("sig", "").strip()
                 image_name = Path(path.split("/images/", 1)[-1]).name
@@ -2183,6 +2263,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             code = str(row.get("style_code", "")).strip().upper()
             if code.endswith("#"):
                 code = code[:-1]
+            image_name = str(row.get("best_standard_image", "")).strip()
+            if code.startswith("MY-") or Path(image_name).name.upper().startswith("MY-"):
+                continue
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
@@ -4693,6 +4776,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .zoom-modal { position: fixed; inset: 0; z-index: 180; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.88); padding: 16px; }
     .zoom-modal.open { display: flex; }
     .zoom-img { max-width: 100%; max-height: 88vh; object-fit: contain; border-radius: 8px; background: #111827; }
+    .zoom-original { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); min-height: 38px; padding: 0 14px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.92); color: #0f172a; font-size: 14px; font-weight: 800; text-decoration: none; }
     .zoom-close { position: fixed; right: 14px; top: max(14px, env(safe-area-inset-top)); width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: #111827; font-size: 30px; line-height: 1; }
     .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
     .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
@@ -5120,6 +5204,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="zoom-modal" id="zoomModal">
       <button class="zoom-close" id="zoomCloseBtn" type="button">×</button>
       <img class="zoom-img" id="zoomImage" alt="图片预览" />
+      <a class="zoom-original" id="zoomOriginalLink" href="#" target="_blank" rel="noopener">查看原图</a>
     </div>
     <div class="filter-modal" id="personalProductModal">
       <div class="filter-sheet">
@@ -5304,7 +5389,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const resp = await fetch(path, Object.assign({}, options, { headers }));
       if (resp.status === 401) throw new Error("登录已失效，请从小程序入口重新打开");
       if (resp.status === 403) throw new Error("当前用户没有此操作权限");
-      if (!resp.ok) throw new Error(await resp.text());
+      if (!resp.ok) {
+        const text = await resp.text();
+        let message = text || "请求失败";
+        try {
+          const data = JSON.parse(text);
+          message = data.detail || data.msg || data.message || message;
+        } catch (_) {}
+        throw new Error(message);
+      }
       return resp.json();
     }
     function splitTag(raw) {
@@ -5322,7 +5415,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       state.tagGroups = {
         year: groups.year || [],
         category: groups.category || ["单品", "罗纹", "毛织配件", "布匹"],
-        subcategory: groups.subcategory || ["暂无"],
+        subcategory: (groups.subcategory || []).filter((name) => String(name || "").trim() !== "暂无"),
       };
       $("yearOptions").innerHTML = state.tagGroups.year.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
       $("categoryOptions").innerHTML = state.tagGroups.category.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
@@ -5626,7 +5719,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function productTags(item) {
       const groups = item.tag_groups || {};
-      return [].concat(groups.year || [], groups.category || [], groups.subcategory || []);
+      return [].concat(groups.year || [], groups.category || [], (groups.subcategory || []).filter((name) => String(name || "").trim() !== "暂无"));
     }
     function isPersonalProduct(item) {
       return (item && item.style_code && String(item.style_code).startsWith("MY-")) || (item && (item.raw_tags || []).some((tag) => String(tag).startsWith("owner:")));
@@ -5650,11 +5743,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function optionList(type, selectedValues) {
       const selected = new Set(selectedValues || []);
-      const list = (state.tagGroups[type] || []).slice();
+      const list = (state.tagGroups[type] || []).filter((name) => type !== "subcategory" || String(name || "").trim() !== "暂无");
       selected.forEach((name) => {
-        if (name && !list.includes(name)) list.unshift(name);
+        if (name && (type !== "subcategory" || String(name).trim() !== "暂无") && !list.includes(name)) list.unshift(name);
       });
-      return `<option value="">请选择</option>` + list.map((name) => `<option value="${escapeHtml(name)}" ${selected.has(name) ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
+      return `<option value="">${type === "subcategory" ? "可留空（暂无）" : "请选择"}</option>` + list.map((name) => `<option value="${escapeHtml(name)}" ${selected.has(name) ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
+    }
+    function productOriginalImageUrl(imageName, fallbackUrl = "") {
+      const name = String(imageName || "").trim();
+      if (!name) return fallbackUrl || "";
+      const query = new URLSearchParams();
+      if (token) query.set("token", token);
+      if (!token && fallbackUrl) {
+        try {
+          const sourceUrl = new URL(fallbackUrl, window.location.origin);
+          const exp = sourceUrl.searchParams.get("exp") || "";
+          const sig = sourceUrl.searchParams.get("sig") || "";
+          if (exp && sig) {
+            query.set("exp", exp);
+            query.set("sig", sig);
+          }
+        } catch (_) {}
+      }
+      return "/images/" + encodeURIComponent(name) + (query.toString() ? "?" + query.toString() : "");
     }
     function renderProducts() {
       const box = $("productList");
@@ -5776,7 +5887,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("galleryGrid").querySelectorAll('[data-role="zoomGalleryImage"]').forEach((img) => {
         img.addEventListener("click", (event) => {
           event.stopPropagation();
-          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "");
+          const item = img.closest(".gallery-item");
+          const imageName = (item && item.dataset.imageName) || "";
+          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "", productOriginalImageUrl(imageName, img.getAttribute("src") || ""));
         });
       });
       if (!isPersonal) {
@@ -5798,15 +5911,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       $("galleryModal").classList.add("open");
     }
-    function openZoomImage(imageUrl, title) {
+    function openZoomImage(imageUrl, title, originalUrl = "") {
       if (!imageUrl) return;
       $("zoomImage").src = imageUrl;
       $("zoomImage").alt = title || "图片预览";
+      const link = $("zoomOriginalLink");
+      if (link) link.href = originalUrl || imageUrl;
       $("zoomModal").classList.add("open");
     }
     function closeZoomImage() {
       $("zoomModal").classList.remove("open");
       $("zoomImage").removeAttribute("src");
+      const link = $("zoomOriginalLink");
+      if (link) link.href = "#";
     }
     function openImagePreview(title, imageUrl) {
       state.currentGalleryProduct = null;
@@ -7289,22 +7406,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!rows.some((item) => item.selected)) {
         return setStatus("请至少选择一张要导入的图片", true);
       }
+      const button = $("commitImportBtn");
+      setButtonLoading(button, true);
       setStatus("正在写入产品库...", false);
-      await api("/api/v1/catalog/imports/commit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: job.job_id, items: rows }),
-      });
-      state.importJob = null;
-      $("importReviewBox").classList.add("hidden");
-      $("importReviewList").innerHTML = "";
-      $("productFiles").value = "";
-      $("bulkImportCategory").value = "";
-      $("bulkImportSubcategory").value = "";
-      $("bulkImportCategorySelect").value = "";
-      $("bulkImportSubcategorySelect").value = "";
-      await loadProducts(true);
-      setStatus("产品图片已导入", false);
+      await sleep(50);
+      try {
+        const result = await api("/api/v1/catalog/imports/commit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_id: job.job_id, items: rows }),
+        });
+        state.importJob = null;
+        $("importReviewBox").classList.add("hidden");
+        $("importReviewList").innerHTML = "";
+        $("productFiles").value = "";
+        $("bulkImportCategory").value = "";
+        $("bulkImportSubcategory").value = "";
+        $("bulkImportCategorySelect").value = "";
+        $("bulkImportSubcategorySelect").value = "";
+        setProductTool("view");
+        await loadProducts(true);
+        setStatus(`产品图片已导入 ${result.imported || 0} 张`, false);
+      } finally {
+        setButtonLoading(button, false);
+      }
     }
     function toggleImportSelection() {
       const boxes = Array.from($("importReviewList").querySelectorAll('[data-role="importSelected"]'));
@@ -7801,9 +7926,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .modal-head > div:first-child { min-width: 0; flex: 1; }
     .modal-close-btn { flex: none; width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; color: #111827; font-size: 30px; line-height: 1; font-weight: 700; display: inline-grid; place-items: center; }
     .modal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
-    .gallery-item { background: #f9fafb; border-radius: 12px; padding: 10px; }
+    .gallery-item { position: relative; background: #f9fafb; border-radius: 12px; padding: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; background: #e5e7eb; }
     .gallery-caption { margin-top: 8px; font-size: 12px; color: #4b5563; word-break: break-all; }
+    .gallery-delete-btn { position: absolute; right: 18px; top: 18px; width: 32px; min-width: 32px; min-height: 32px; padding: 0; border-radius: 999px; background: rgba(190,18,60,.92); color: #fff; font-size: 22px; line-height: 1; display: grid; place-items: center; }
     .import-panel { width: min(1120px, 100%); }
     .import-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-bottom: 12px; }
     .import-source-block { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin-bottom: 12px; background: #fafbfc; }
@@ -8228,12 +8354,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return {
         year: uniqTags(groups.year || []),
         category: uniqTags(groups.category || ['单品', '罗纹', '毛织配件', '布匹']),
-        subcategory: uniqTags(groups.subcategory || ['暂无']),
+        subcategory: uniqTags(groups.subcategory || []).filter(name => String(name || '').trim() !== '暂无'),
       };
     }
 
     function quickPickHtml(type) {
-      const list = (globalTagGroups && globalTagGroups[type]) || [];
+      const list = ((globalTagGroups && globalTagGroups[type]) || []).filter(name => type !== 'subcategory' || String(name || '').trim() !== '暂无');
       if (!list.length) return '';
       return `<div class="quick-picks">${list.map(name => `
         <button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>
@@ -8276,13 +8402,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         els.categoryTagsList.innerHTML = (globalTagGroups.category || []).map(tag => `<option value="${tag}"></option>`).join('');
       }
       if (els.subcategoryTagsList) {
-        els.subcategoryTagsList.innerHTML = (globalTagGroups.subcategory || []).map(tag => `<option value="${tag}"></option>`).join('');
+        els.subcategoryTagsList.innerHTML = (globalTagGroups.subcategory || []).filter(tag => String(tag || '').trim() !== '暂无').map(tag => `<option value="${tag}"></option>`).join('');
       }
       if (els.importBatchCategoryPicks) {
         els.importBatchCategoryPicks.innerHTML = (globalTagGroups.category || []).map(name => `<button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>`).join('');
       }
       if (els.importBatchSubcategoryPicks) {
-        els.importBatchSubcategoryPicks.innerHTML = (globalTagGroups.subcategory || []).map(name => `<button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>`).join('');
+        els.importBatchSubcategoryPicks.innerHTML = (globalTagGroups.subcategory || []).filter(name => String(name || '').trim() !== '暂无').map(name => `<button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>`).join('');
       }
       bindQuickPicks(els.importModal);
     }
@@ -8514,15 +8640,45 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       document.querySelectorAll('[data-role="pickerPop"]').forEach((el) => el.classList.remove('open'));
     }
 
+    async function deleteProductImage(styleCode, imageName) {
+      const resp = await fetch('/api/v1/catalog/products/' + encodeURIComponent(styleCode) + '/images/' + encodeURIComponent(imageName), { method: 'DELETE' });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    }
+
     function openGallery(product) {
       els.galleryTitle.textContent = product.style_code || '';
       els.gallerySubTitle.textContent = `共 ${(product.images || []).length} 张图片`;
       els.galleryGrid.innerHTML = (product.images || []).map(item => `
-        <div class="gallery-item">
-          <img src="${item.image_url || ''}" loading="lazy" alt="${item.image_name || ''}" />
-          <div class="gallery-caption">${item.image_name || ''}</div>
+        <div class="gallery-item" data-image-name="${escapeHtml(item.image_name || '')}">
+          <button type="button" class="gallery-delete-btn" data-role="deleteGalleryImage" data-image-name="${escapeHtml(item.image_name || '')}" title="删除图片">×</button>
+          <img src="${item.image_url || ''}" loading="lazy" alt="${escapeHtml(item.image_name || '')}" />
+          <div class="gallery-caption">${escapeHtml(item.image_name || '')}</div>
         </div>
       `).join('');
+      els.galleryGrid.querySelectorAll('[data-role="deleteGalleryImage"]').forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          const imageName = button.dataset.imageName || '';
+          if (!imageName || !product.style_code) return;
+          const ok = window.confirm(`确认删除图片“${imageName}”吗？\n\n会同时删除本地图片文件，且不可撤销。`);
+          if (!ok) return;
+          try {
+            const data = await deleteProductImage(product.style_code, imageName);
+            if (data.product) {
+              currentProducts = currentProducts.map(item => item.style_code === product.style_code ? data.product : item);
+              openGallery(data.product);
+            } else {
+              currentProducts = currentProducts.filter(item => item.style_code !== product.style_code);
+              closeGallery();
+            }
+            renderCards(currentProducts, true);
+            setStatus('图片已删除', false);
+          } catch (err) {
+            setStatus(err.message || '删除图片失败', true);
+          }
+        });
+      });
       els.galleryModal.classList.add('open');
     }
 
@@ -8532,7 +8688,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     function openImportModal() {
       if (els.importBatchCategoryInput) els.importBatchCategoryInput.value = '';
-      if (els.importBatchSubcategoryInput) els.importBatchSubcategoryInput.value = '暂无';
+      if (els.importBatchSubcategoryInput) els.importBatchSubcategoryInput.value = '';
       els.importModal.classList.add('open');
     }
 
@@ -8974,7 +9130,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const groups = item.tag_groups || splitTagsByType(item.raw_tags || item.tags || []);
         const yearValue = (groups.year || []).join('、');
         const categoryValue = (groups.category || []).join('、');
-        const subcategoryValue = (groups.subcategory || []).join('、');
+        const subcategoryList = (groups.subcategory || []).filter(tag => String(tag || '').trim() !== '暂无');
+        const subcategoryValue = subcategoryList.join('、');
         card.innerHTML = `
           <img class="thumb" src="${item.cover_image_url || ''}" loading="lazy" alt="${item.style_code}" title="点击查看该款全部图片" />
           <div class="code">${item.style_code}</div>
@@ -8983,25 +9140,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <div class="tags">
             ${(groups.year || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('year', tag)}">年份：${tag}</button></span>`).join('')}
             ${(groups.category || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('category', tag)}">类别：${tag}</button></span>`).join('')}
-            ${(groups.subcategory || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('subcategory', tag)}">细类：${tag}</button></span>`).join('')}
+            ${subcategoryList.map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('subcategory', tag)}">细类：${tag}</button></span>`).join('')}
           </div>
           <div class="tag-edit">
             <div class="card-section-title" style="margin:0;">标签修改</div>
             <div class="tag-edit-grid">
               <div class="tag-edit-field">
                 <label>年份</label>
-                <input type="text" data-role="yearInput" value="${yearValue}" placeholder="如 2026" />
-                ${quickPickHtml('year')}
+                <input type="text" data-role="yearInput" value="${yearValue}" placeholder="如 2026" list="yearTagsList" />
               </div>
               <div class="tag-edit-field">
                 <label>类别</label>
-                <input type="text" data-role="categoryInput" value="${categoryValue}" placeholder="如 单品" />
-                ${quickPickHtml('category')}
+                <input type="text" data-role="categoryInput" value="${categoryValue}" placeholder="如 单品" list="categoryTagsList" />
               </div>
               <div class="tag-edit-field">
                 <label>细类</label>
-                <input type="text" data-role="subcategoryInput" value="${subcategoryValue}" placeholder="如 暂无" />
-                ${quickPickHtml('subcategory')}
+                <input type="text" data-role="subcategoryInput" value="${subcategoryValue}" placeholder="如 暂无" list="subcategoryTagsList" />
               </div>
             </div>
             <button type="button" class="picker-add-btn" data-role="saveBtn">保存标签修改</button>
@@ -9403,6 +9557,40 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             except Exception:
                 logging.warning("failed to remove personal product image: %s", safe_image_name)
         remaining_product = catalog_store.get_product(style_code)
+        return {
+            "ok": True,
+            "style_code": style_code,
+            "deleted": result.get("deleted", safe_image_name),
+            "remaining": result.get("remaining", []),
+            "product": _serialize_catalog_product(_external_base_url(request), remaining_product) if remaining_product else None,
+        }
+
+    @app.delete("/api/v1/catalog/products/{style_code}/images/{image_name}")
+    def api_delete_catalog_product_image(request: Request, style_code: str, image_name: str) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        _check_text_content_security(style_code, image_name, openid=_wechat_openid_from_request(request))
+        product = catalog_store.get_product(style_code)
+        if not product:
+            raise HTTPException(status_code=404, detail="product not found")
+        safe_image_name = Path(image_name).name
+        image_names = {str(item.get("image_name", "")) for item in product.get("images", [])}
+        if safe_image_name not in image_names:
+            raise HTTPException(status_code=404, detail="image not found")
+        try:
+            with catalog_write_lock:
+                result = catalog_store.delete_product_image(style_code, safe_image_name)
+                try:
+                    (standard_dir / safe_image_name).unlink(missing_ok=True)
+                except Exception:
+                    logging.warning("failed to remove product image: %s", safe_image_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        remaining_product = catalog_store.get_product(style_code)
+        threading.Thread(
+            target=_reload_search_assets,
+            args=("catalog_product_image_delete",),
+            daemon=True,
+        ).start()
         return {
             "ok": True,
             "style_code": style_code,
@@ -9898,12 +10086,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             for style_code, import_tags in style_extra_tags.items():
                 if import_tags:
                     catalog_store.add_product_tags(style_code, sorted(import_tags))
-            _reload_search_assets("catalog_import_commit")
             with catalog_import_lock:
                 job = catalog_import_jobs.get(payload.job_id)
                 if job is not None:
                     job["committed"] = True
                     job["message"] = f"已导入 {imported} 张图片"
+            threading.Thread(
+                target=_reload_search_assets,
+                args=("catalog_import_commit",),
+                daemon=True,
+            ).start()
         return {
             "job_id": payload.job_id,
             "imported": imported,
@@ -12697,6 +12889,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             file_name = image_name.split("@", 1)[0]
             code = style_code or filename_to_style_code(file_name)
             seen_key = str(code).strip().upper()
+            if seen_key.startswith("MY-") or Path(file_name).name.upper().startswith("MY-"):
+                return
             if not file_name or seen_key in seen:
                 return
             seen.add(seen_key)
