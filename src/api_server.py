@@ -4871,11 +4871,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .device-list-title { margin: 18px 0 12px; font-size: 19px; color: #fff; }
     #colorScreenDevice { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
     .device-list { display: grid; gap: 12px; }
-    .device-row { min-height: 66px; border-radius: 6px; background: #202435; color: #fff; display: grid; grid-template-columns: 28px minmax(0, 1fr) 88px; align-items: center; gap: 10px; padding: 0 14px; font-size: 16px; }
-    .device-row-name { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    .device-connect-row-btn { min-height: 34px; border-radius: 999px; border: 1px solid #5fd9e9; background: transparent; color: #5fd9e9; font-size: 15px; }
+    .device-row { min-height: 72px; border-radius: 6px; background: #202435; color: #fff; display: grid; grid-template-columns: 28px minmax(0, 1fr) 44px 44px; align-items: center; gap: 10px; padding: 10px 12px; font-size: 16px; }
+    .device-row.connected { box-shadow: inset 0 0 0 1px rgba(95,217,233,.75); }
+    .device-row-main { min-width: 0; display: grid; gap: 4px; }
+    .device-row-name { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 18px; line-height: 1.15; }
+    .device-row-status { margin-top: 3px; color: #8b91a3; font-size: 12px; line-height: 1.2; }
+    .device-row.connected .device-row-status { color: #5fd9e9; }
+    .device-icon-btn { width: 42px; height: 42px; min-height: 42px; padding: 0; border-radius: 999px; display: grid; place-items: center; line-height: 1; }
+    .device-icon-btn svg { width: 22px; height: 22px; display: block; stroke: currentColor; }
+    .device-connect-row-btn { border: 1px solid #5fd9e9; background: transparent; color: #5fd9e9; }
+    .device-connect-row-btn:disabled { opacity: .38; border-color: #6b7280; color: #8b91a3; background: transparent; }
+    .device-disconnect-row-btn { border: 1px solid #ff8fa3; background: transparent; color: #ff8fa3; }
+    .device-disconnect-row-btn:disabled { opacity: .38; border-color: #6b7280; color: #8b91a3; }
     .device-empty { color: #8b91a3; font-size: 15px; padding: 16px 2px; }
-    .radar-wrap { position: relative; left: auto; right: auto; bottom: auto; margin: 42px 0 96px; display: grid; place-items: center; pointer-events: none; }
+    .radar-wrap { display: none; }
     .radar { position: relative; width: 118px; height: 118px; border-radius: 999px; background: #37d3df; display: grid; place-items: center; color: #fff; font-size: 42px; box-shadow: 0 0 0 12px rgba(55,211,223,.12), 0 0 0 24px rgba(55,211,223,.07); }
     .radar::before { content: ""; position: absolute; inset: -16px; border-radius: 999px; border: 2px dotted rgba(95,217,233,.45); animation: radarSpin 3.2s linear infinite; }
     .radar::after { content: ""; position: absolute; inset: -27px; border-radius: 999px; border-top: 5px solid rgba(95,217,233,.65); border-right: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 5px solid transparent; animation: radarSpin 1.8s linear infinite; }
@@ -5322,6 +5331,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     const canColorCreate = hasPerm("color:create");
     const COLOR_METER_DEVICES_KEY = "openfire_color_meter_devices";
     const COLOR_METER_MODE_KEY = "openfire_color_meter_measure_mode";
+    const COLOR_METER_CONNECTED_KEY = "openfire_color_meter_connected_device";
     const $ = (id) => document.getElementById(id);
     const COLOR_SERVICE_UUID = 0xFFE0;
     const COLOR_CHARACTERISTIC_UUID = 0xFFE1;
@@ -5622,11 +5632,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function requestNativeColorMeter(action, deviceId = "") {
       try {
         if (!window.wx?.miniProgram?.navigateTo) return false;
-        setColorStatus(action === "colorMeterMeasure" ? "请点击测量按钮并按设备按钮测量" : "已请求小程序原生连接...", false);
+        const nativeAction = action === "colorMeterConnect" ? "connect" : (action === "colorMeterDisconnect" ? "disconnect" : "measure");
+        const actionText = nativeAction === "measure" ? "请点击测量按钮并按设备按钮测量" : (nativeAction === "disconnect" ? "已请求小程序原生断开..." : "已请求小程序原生连接...");
+        setColorStatus(actionText, false);
         const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
         startNativeMeterPolling(requestId, action);
         const query = new URLSearchParams({
-          action: action === "colorMeterConnect" ? "connect" : "measure",
+          action: nativeAction,
           api_base: location.origin,
           user_tag: ownerTag(),
           token,
@@ -5655,11 +5667,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           const query = new URLSearchParams({ user_tag: tag, request_id: requestId || "", consume: "true" });
           const data = await api("/api/v1/color-card/native-meter/reading?" + query.toString());
           const reading = data.reading;
-          if (reading) {
-            if (reading.device_id || reading.device_name) saveColorDevice({ deviceId: reading.device_id || "", name: reading.device_name || "" });
-            if (reading.event === "connect") {
-              setColorStatus("色差仪已连接", false);
-              return;
+            if (reading) {
+              if (reading.device_id || reading.device_name) saveColorDevice({ deviceId: reading.device_id || "", name: reading.device_name || "" });
+              if (reading.event === "connect") {
+                setConnectedColorDevice({ deviceId: reading.device_id || "", name: reading.device_name || "" });
+                setColorStatus("色差仪已连接", false);
+                return;
+              }
+              if (reading.event === "disconnect") {
+                clearConnectedColorDevice({ deviceId: reading.device_id || "", name: reading.device_name || "" });
+                setColorStatus("色差仪已断开", false);
+                setColorCardAddLabStatus("色差仪已断开");
+                return;
             }
             if (reading.event === "measure_progress") {
               const got = Number(reading.progress_count || reading.progressCount || 0);
@@ -6245,6 +6264,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       localStorage.setItem(COLOR_METER_DEVICES_KEY, JSON.stringify(rows.slice(0, 8)));
       renderColorDevices();
     }
+    function readConnectedColorDevice() {
+      try {
+        const data = JSON.parse(localStorage.getItem(COLOR_METER_CONNECTED_KEY) || "{}");
+        return data && typeof data === "object" ? data : {};
+      } catch (_) {
+        return {};
+      }
+    }
+    function setConnectedColorDevice(device) {
+      const clean = {
+        deviceId: String(device?.deviceId || device?.device_id || "").trim(),
+        name: String(device?.name || device?.deviceName || device?.device_name || "").trim(),
+        ts: Date.now(),
+      };
+      if (!clean.deviceId && !clean.name) return;
+      localStorage.setItem(COLOR_METER_CONNECTED_KEY, JSON.stringify(clean));
+      saveColorDevice(clean);
+      renderColorDevices();
+    }
+    function clearConnectedColorDevice(device) {
+      const current = readConnectedColorDevice();
+      const targetId = String(device?.deviceId || device?.device_id || "").trim();
+      const targetName = String(device?.name || device?.deviceName || device?.device_name || "").trim();
+      if (!targetId && !targetName) {
+        localStorage.removeItem(COLOR_METER_CONNECTED_KEY);
+      } else if (!current.deviceId || current.deviceId === targetId || current.name === targetName) {
+        localStorage.removeItem(COLOR_METER_CONNECTED_KEY);
+      }
+      renderColorDevices();
+    }
     function readColorMeterMode() {
       return localStorage.getItem(COLOR_METER_MODE_KEY) === "average" ? "average" : "single";
     }
@@ -6270,21 +6319,37 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!box) return;
       renderColorMeterMode();
       const rows = readColorDevices();
+      const connected = readConnectedColorDevice();
       if (!rows.length) {
         box.innerHTML = '<div class="device-empty">暂无连接记录</div><button class="device-connect-row-btn" type="button" data-device-id="">搜索连接</button>';
       } else {
-        box.innerHTML = rows.map((item, index) => `
-          <div class="device-row">
+        box.innerHTML = rows.map((item, index) => {
+          const isConnected = (connected.deviceId && item.deviceId && connected.deviceId === item.deviceId) || (!connected.deviceId && connected.name && connected.name === item.name);
+          return `
+          <div class="device-row ${isConnected ? "connected" : ""}">
             <span>${index + 1}</span>
-            <span class="device-row-name">${escapeHtml(item.name || item.deviceId || "色差仪")}</span>
-            <button class="device-connect-row-btn" type="button" data-device-id="${escapeHtml(item.deviceId || "")}">连接</button>
+            <span class="device-row-main">
+              <span class="device-row-name">${escapeHtml(item.name || item.deviceId || "色差仪")}</span>
+              <span class="device-row-status">${isConnected ? "● 已连接" : "○ 未连接"}</span>
+            </span>
+            <button class="device-icon-btn device-connect-row-btn" type="button" data-meter-action="connect" data-device-id="${escapeHtml(item.deviceId || "")}" aria-label="连接" title="连接" ${isConnected ? "disabled" : ""}>
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10-5 5V2l5 5L7 17"></path><path d="M5 12h14"></path></svg>
+            </button>
+            <button class="device-icon-btn device-disconnect-row-btn" type="button" data-meter-action="disconnect" data-device-id="${escapeHtml(item.deviceId || "")}" aria-label="断开" title="断开" ${isConnected ? "" : "disabled"}>
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v9"></path><path d="M6.4 6.8a8 8 0 1 0 11.2 0"></path></svg>
+            </button>
           </div>
-        `).join("");
+        `}).join("");
       }
-      box.querySelectorAll("[data-device-id]").forEach((btn) => {
+      box.querySelectorAll("[data-meter-action]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          requestNativeColorMeter("colorMeterConnect", btn.dataset.deviceId || "");
+          if (btn.disabled) return;
+          const action = btn.dataset.meterAction === "disconnect" ? "colorMeterDisconnect" : "colorMeterConnect";
+          requestNativeColorMeter(action, btn.dataset.deviceId || "");
         });
+      });
+      box.querySelectorAll(".device-connect-row-btn:not([data-meter-action])").forEach((btn) => {
+        btn.addEventListener("click", () => requestNativeColorMeter("colorMeterConnect", btn.dataset.deviceId || ""));
       });
     }
     function applyNativeMeterDeviceFromUrl() {
@@ -6303,6 +6368,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       };
       if (!Number.isFinite(lab.L) || !Number.isFinite(lab.a) || !Number.isFinite(lab.b)) return false;
       saveColorDevice({ deviceId: raw?.device_id || raw?.deviceId || "", name: raw?.device_name || raw?.deviceName || "" });
+      setConnectedColorDevice({ deviceId: raw?.device_id || raw?.deviceId || "", name: raw?.device_name || raw?.deviceName || "" });
       state.pickedColorLab = null;
       state.pickedColorHex = "";
       state.pickedColorRgb = null;
@@ -7971,8 +8037,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-meter-row input, .color-meter-row select, .color-meter-row textarea { width: 100%; min-height: 38px; box-sizing: border-box; }
     .color-meter-row textarea { min-height: 72px; resize: vertical; }
     .color-name-builder { display: grid; grid-template-columns: 1fr 96px 1fr; gap: 8px; }
+    .color-meter-mode { margin-top: 12px; display: grid; gap: 8px; }
+    .color-meter-mode-title { color: #475569; font-size: 13px; font-weight: 700; }
+    .color-meter-mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .color-meter-mode-btn { min-height: 42px; border-radius: 10px; border: 1px solid #111827; background: #fff; color: #111827; font-weight: 700; }
+    .color-meter-mode-btn.active { background: #111827; color: #fff; }
+    .color-meter-mode-note { color: #64748b; font-size: 12px; line-height: 1.45; }
     .color-meter-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .color-meter-actions.end { justify-content: flex-end; }
+    .color-meter-connect-actions { gap: 10px; }
+    .color-meter-connect-actions button { min-height: 42px; border-radius: 10px; padding: 0 20px; font-weight: 700; }
+    .color-meter-connect-primary { background: #111827; border: 1px solid #111827; color: #fff; }
+    .color-meter-connect-secondary { background: #fff; border: 1px solid #111827; color: #111827; }
+    .color-meter-connect-secondary:disabled { background: #f8fafc; border-color: #cbd5e1; color: #94a3b8; opacity: 1; }
     .color-meter-lab { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
     .color-meter-metric { border: 1px solid #dbe2ea; border-radius: 10px; padding: 10px; background: #fff; }
     .color-meter-metric .k { color: #64748b; font-size: 12px; }
@@ -8171,9 +8248,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <section class="color-meter-card">
           <div class="code" style="margin:0 0 10px;">连接色差仪</div>
           <div id="colorMeterStatus" class="color-meter-status">正在检查浏览器蓝牙能力...</div>
-          <div class="color-meter-actions">
-            <button id="colorMeterConnectBtn">连接色差仪</button>
-            <button id="colorMeterDisconnectBtn" class="weak" disabled>断开</button>
+          <div class="color-meter-actions color-meter-connect-actions">
+            <button id="colorMeterConnectBtn" class="color-meter-connect-primary">连接色差仪</button>
+            <button id="colorMeterDisconnectBtn" class="color-meter-connect-secondary" disabled>断开</button>
+          </div>
+          <div class="color-meter-mode">
+            <div class="color-meter-mode-title">测量方式</div>
+            <div class="color-meter-mode-tabs">
+              <button class="color-meter-mode-btn" id="colorMeterSingleModeBtn" type="button" data-web-meter-mode="single">单次测量</button>
+              <button class="color-meter-mode-btn" id="colorMeterAverageModeBtn" type="button" data-web-meter-mode="average">平均测量</button>
+            </div>
+            <div class="color-meter-mode-note" id="colorMeterModeNote"></div>
           </div>
           <div class="color-meter-lab">
             <div class="color-meter-metric"><div class="k">L</div><div id="colorMeterL" class="v">--</div></div>
@@ -8196,7 +8281,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           </div>
           <div class="color-meter-row"><label>色号名称</label><input id="colorNameInput" placeholder="例如 彩龙3351浅灰" /></div>
           <div class="color-meter-actions end">
-            <button id="colorMeterMeasureBtn" class="secondary" disabled>测量</button>
+            <button id="colorMeterMeasureBtn" class="secondary" disabled>点击测量</button>
             <button id="colorSaveBtn" disabled>保存到色卡库</button>
           </div>
           <div class="muted" style="margin-top:10px;">同一色卡库内色号名称重复时，会更新原记录。</div>
@@ -8267,6 +8352,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorMeterConnectBtn: document.getElementById('colorMeterConnectBtn'),
       colorMeterMeasureBtn: document.getElementById('colorMeterMeasureBtn'),
       colorMeterDisconnectBtn: document.getElementById('colorMeterDisconnectBtn'),
+      colorMeterModeNote: document.getElementById('colorMeterModeNote'),
       colorMeterL: document.getElementById('colorMeterL'),
       colorMeterA: document.getElementById('colorMeterA'),
       colorMeterB: document.getElementById('colorMeterB'),
@@ -8698,10 +8784,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     const COLOR_SERVICE_UUID = 0xFFE0;
     const COLOR_CHARACTERISTIC_UUID = 0xFFE1;
+    const COLOR_METER_MODE_KEY = 'openfire_web_color_meter_measure_mode';
+    const COLOR_METER_AVERAGE_SAMPLE_COUNT = 3;
     let colorDevice = null;
     let colorCharacteristic = null;
     let colorPending = null;
+    let colorButtonMeasurePending = null;
+    let colorPassiveMeasureBusy = false;
+    let colorPassiveMeasureSamples = [];
     let colorResponseBytes = [];
+    let colorNotifyBytes = [];
     let colorMeasureId = 1;
     let colorLastLab = null;
 
@@ -8738,13 +8830,41 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return colorCommand([0xbb, 1, 0, ...colorU32le(colorMeasureId), 0, 0xff, 0], 10, 5000, true);
     }
 
-    function colorGetLabCommand() {
-      return colorCommand([0xbb, 3, 0, 0, 0, 0, 0, 0, 0xff, 0], 20, 3000, true);
+    function colorGetLabCommand(modeValue) {
+      const mode = Number(modeValue || 0) || 0;
+      return colorCommand([0xbb, 3, mode, 0, 0, 0, 0, 0, 0xff, 0], 20, 3000, true);
     }
 
     function onColorNotify(event) {
-      if (!colorPending) return;
-      colorResponseBytes.push(...new Uint8Array(event.target.value.buffer));
+      const value = event.target.value;
+      const incoming = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      if (!colorPending) {
+        colorNotifyBytes.push(...incoming);
+        while (colorNotifyBytes.length >= 10) {
+          const start = colorNotifyBytes.indexOf(0xbb);
+          if (start < 0) {
+            colorNotifyBytes = [];
+            return;
+          }
+          if (start > 0) colorNotifyBytes.splice(0, start);
+          if (colorNotifyBytes.length < 10) return;
+          const frame = Uint8Array.from(colorNotifyBytes.slice(0, 10));
+          colorNotifyBytes.splice(0, 10);
+          if (frame[0] === 0xbb && frame[1] === 1 && colorButtonMeasurePending) {
+            const pending = colorButtonMeasurePending;
+            colorButtonMeasurePending = null;
+            clearTimeout(pending.timer);
+            readColorLabAfterButton(frame[2] || 0, pending.index, pending.total).then(pending.resolve, pending.reject);
+            return;
+          }
+          if (frame[0] === 0xbb && frame[1] === 1 && colorCharacteristic) {
+            handlePassiveButtonColorMeasure(frame[2] || 0).catch((err) => setColorMeterStatus(err.message || '测量失败', true));
+            return;
+          }
+        }
+        return;
+      }
+      colorResponseBytes.push(...incoming);
       if (colorResponseBytes.length < colorPending.responseSize) return;
       const response = Uint8Array.from(colorResponseBytes);
       const ok = colorChecksum(response) === response[response.length - 1];
@@ -8799,6 +8919,153 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         a: view.getFloat32(9, true),
         b: view.getFloat32(13, true),
       };
+    }
+
+    async function readColorLabAfterButton(mode, index, total) {
+      setColorMeterStatus(total > 1 ? `正在读取第 ${index}/${total} 次 Lab...` : '正在读取 Lab...', false);
+      await waitColor(120);
+      const data = await colorExec(colorGetLabCommand(mode || 0));
+      const view = new DataView(data.buffer);
+      const lab = {
+        L: view.getFloat32(5, true),
+        a: view.getFloat32(9, true),
+        b: view.getFloat32(13, true),
+      };
+      if (!Number.isFinite(lab.L) || !Number.isFinite(lab.a) || !Number.isFinite(lab.b)) throw new Error('色差仪返回 Lab 数据异常');
+      return lab;
+    }
+
+    async function handlePassiveButtonColorMeasure(mode) {
+      if (colorPassiveMeasureBusy || colorButtonMeasurePending || colorPending) return;
+      colorPassiveMeasureBusy = true;
+      try {
+        const measureMode = readWebColorMeterMode();
+        const targetCount = measureMode === 'average' ? COLOR_METER_AVERAGE_SAMPLE_COUNT : 1;
+        const nextIndex = measureMode === 'average' ? colorPassiveMeasureSamples.length + 1 : 1;
+        const lab = await readColorLabAfterButton(mode || 0, nextIndex, targetCount);
+        if (measureMode !== 'average') {
+          colorPassiveMeasureSamples = [];
+          setColorLab(lab);
+          setColorMeterStatus('测量完成', false);
+          await matchColorCards();
+          return;
+        }
+        colorPassiveMeasureSamples.push(lab);
+        if (colorPassiveMeasureSamples.length < targetCount) {
+          setColorMeterStatus(`已获取 ${colorPassiveMeasureSamples.length}/${targetCount} 次，请继续按设备顶部按钮`, false);
+          return;
+        }
+        const sum = colorPassiveMeasureSamples.reduce((acc, item) => ({
+          L: acc.L + item.L,
+          a: acc.a + item.a,
+          b: acc.b + item.b,
+        }), { L: 0, a: 0, b: 0 });
+        const avg = {
+          L: sum.L / colorPassiveMeasureSamples.length,
+          a: sum.a / colorPassiveMeasureSamples.length,
+          b: sum.b / colorPassiveMeasureSamples.length,
+        };
+        colorPassiveMeasureSamples = [];
+        setColorLab(avg);
+        setColorMeterStatus(`平均测量完成，已获取 ${targetCount} 次`, false);
+        await matchColorCards();
+      } finally {
+        colorPassiveMeasureBusy = false;
+      }
+    }
+
+    async function clickMeasureColorLab() {
+      const mode = readWebColorMeterMode();
+      const targetCount = mode === 'average' ? COLOR_METER_AVERAGE_SAMPLE_COUNT : 1;
+      const samples = [];
+      for (let i = 0; i < targetCount; i += 1) {
+        setColorMeterStatus(targetCount > 1 ? `正在点击测量 ${i + 1}/${targetCount}...` : '正在点击测量...', false);
+        samples.push(await measureColorLab());
+        if (i + 1 < targetCount) await waitColor(250);
+      }
+      if (samples.length === 1) return samples[0];
+      const sum = samples.reduce((acc, item) => ({
+        L: acc.L + item.L,
+        a: acc.a + item.a,
+        b: acc.b + item.b,
+      }), { L: 0, a: 0, b: 0 });
+      return {
+        L: sum.L / samples.length,
+        a: sum.a / samples.length,
+        b: sum.b / samples.length,
+      };
+    }
+
+    function cancelButtonColorMeasure(message) {
+      if (!colorButtonMeasurePending) return;
+      const pending = colorButtonMeasurePending;
+      colorButtonMeasurePending = null;
+      clearTimeout(pending.timer);
+      pending.reject(new Error(message || '测量已取消'));
+    }
+
+    function waitForSingleButtonColorLab(index, total) {
+      cancelButtonColorMeasure('已开始新的测量');
+      colorNotifyBytes = [];
+      return new Promise((resolve, reject) => {
+        colorButtonMeasurePending = {
+          index,
+          total,
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            colorButtonMeasurePending = null;
+            reject(new Error('未收到设备按键测量结果，请确认色差仪已唤醒后重试'));
+          }, 60000),
+        };
+      });
+    }
+
+    async function waitForButtonColorLab() {
+      const mode = readWebColorMeterMode();
+      const targetCount = mode === 'average' ? COLOR_METER_AVERAGE_SAMPLE_COUNT : 1;
+      const samples = [];
+      setColorMeterStatus(targetCount > 1 ? `等待设备顶部按钮，需获取 ${targetCount} 次` : '等待设备顶部按钮...', false);
+      while (samples.length < targetCount) {
+        const lab = await waitForSingleButtonColorLab(samples.length + 1, targetCount);
+        samples.push(lab);
+        if (samples.length < targetCount) {
+          setColorMeterStatus(`已获取 ${samples.length}/${targetCount} 次，请继续按设备顶部按钮测量`, false);
+        }
+      }
+      if (samples.length === 1) return samples[0];
+      const sum = samples.reduce((acc, lab) => ({
+        L: acc.L + lab.L,
+        a: acc.a + lab.a,
+        b: acc.b + lab.b,
+      }), { L: 0, a: 0, b: 0 });
+      return {
+        L: sum.L / samples.length,
+        a: sum.a / samples.length,
+        b: sum.b / samples.length,
+      };
+    }
+
+    function readWebColorMeterMode() {
+      return localStorage.getItem(COLOR_METER_MODE_KEY) === 'average' ? 'average' : 'single';
+    }
+
+    function setWebColorMeterMode(mode) {
+      localStorage.setItem(COLOR_METER_MODE_KEY, mode === 'average' ? 'average' : 'single');
+      colorPassiveMeasureSamples = [];
+      renderWebColorMeterMode();
+    }
+
+    function renderWebColorMeterMode() {
+      const mode = readWebColorMeterMode();
+      document.querySelectorAll('[data-web-meter-mode]').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.webMeterMode === mode);
+      });
+      if (els.colorMeterModeNote) {
+        els.colorMeterModeNote.textContent = mode === 'average'
+          ? '平均测量：直接连续按 3 次设备顶部按钮，也可点击按钮测量。'
+          : '单次测量：直接按 1 次设备顶部按钮，也可点击按钮测量。';
+      }
     }
 
     function colorLabToHex(lab) {
@@ -8952,6 +9219,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorDevice = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [COLOR_SERVICE_UUID] });
       colorDevice.addEventListener('gattserverdisconnected', () => {
         colorCharacteristic = null;
+        cancelButtonColorMeasure('色差仪已断开');
         els.colorMeterMeasureBtn.disabled = true;
         els.colorMeterDisconnectBtn.disabled = true;
         setColorMeterStatus('色差仪已断开', false);
@@ -8963,11 +9231,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorCharacteristic.addEventListener('characteristicvaluechanged', onColorNotify);
       els.colorMeterMeasureBtn.disabled = false;
       els.colorMeterDisconnectBtn.disabled = false;
-      setColorMeterStatus('已连接：' + (colorDevice.name || 'BLE 色差仪'), false);
+      setColorMeterStatus('已连接：' + (colorDevice.name || 'BLE 色差仪') + '，可直接按设备顶部按钮测量', false);
     }
 
     async function openColorCardModal() {
       els.colorCardModal.classList.add('open');
+      renderWebColorMeterMode();
       if (!navigator.bluetooth) setColorMeterStatus('当前浏览器不支持 Web Bluetooth，请使用 Android Chrome 或电脑 Chrome/Edge', true);
       else if (!window.isSecureContext) setColorMeterStatus('Web Bluetooth 需要 HTTPS 或 localhost', true);
       else setColorMeterStatus('浏览器支持 Web Bluetooth，可以连接色差仪', false);
@@ -9222,10 +9491,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     els.colorMeterMeasureBtn.addEventListener('click', async () => {
       try {
         els.colorMeterMeasureBtn.disabled = true;
-        setColorMeterStatus('正在测量...', false);
-        const lab = await measureColorLab();
+        cancelButtonColorMeasure('已切换为点击测量');
+        const lab = await clickMeasureColorLab();
         setColorLab(lab);
-        setColorMeterStatus('测量完成', false);
+        setColorMeterStatus(readWebColorMeterMode() === 'average' ? '平均测量完成' : '测量完成', false);
         await matchColorCards();
       } catch (err) {
         setColorMeterStatus(err.message || '测量失败', true);
@@ -9236,8 +9505,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     els.colorMeterDisconnectBtn.addEventListener('click', () => {
       if (colorDevice && colorDevice.gatt && colorDevice.gatt.connected) colorDevice.gatt.disconnect();
       colorCharacteristic = null;
+      cancelButtonColorMeasure('色差仪已断开');
       els.colorMeterMeasureBtn.disabled = true;
       els.colorMeterDisconnectBtn.disabled = true;
+    });
+    document.querySelectorAll('[data-web-meter-mode]').forEach((button) => {
+      button.addEventListener('click', () => setWebColorMeterMode(button.dataset.webMeterMode || 'single'));
     });
     [els.colorNamePrefix, els.colorNameNumber, els.colorNameSuffix].forEach((node) => {
       if (node) node.addEventListener('input', refreshColorNameFromParts);

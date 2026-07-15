@@ -59,22 +59,38 @@ Page({
   async handleWebAction(payload) {
     const action = String(payload.action || "");
     if (action === "colorMeterConnect") {
-      await this.ensureMeterConnected();
-      wx.showToast({ title: "色差仪已连接", icon: "none" });
-      this.returnMeterDevice(ColorMeter.connected || {});
+      this.openMeterBridge("connect", payload);
       return;
     }
     if (action === "colorMeterMeasure") {
-      await this.ensureMeterConnected();
-      if (this.data.meterMeasuring) return;
-      this.setData({ meterMeasuring: true });
-      try {
-        const lab = await retry(() => ColorMeter.measureAndGetLab(), 2);
-        this.returnMeterLab(lab);
-      } finally {
-        this.setData({ meterMeasuring: false });
-      }
+      this.openMeterBridge("measure", payload);
+      return;
     }
+    if (action === "colorMeterDisconnect") {
+      this.openMeterBridge("disconnect", payload);
+    }
+  },
+
+  openMeterBridge(action, payload) {
+    const currentUrl = this.data.url || "";
+    const measureMode = String(
+      payload && payload.measure_mode ||
+      payload && payload.measureMode ||
+      this.getUrlParam(currentUrl, "measure_mode") ||
+      "single"
+    ) === "average" ? "average" : "single";
+    const deviceId = String(
+      payload && payload.device_id ||
+      payload && payload.deviceId ||
+      this.getUrlParam(currentUrl, "meter_device_id") ||
+      ""
+    );
+    const query = [
+      `action=${encodeURIComponent(action === "connect" ? "connect" : (action === "disconnect" ? "disconnect" : "measure"))}`,
+      `measure_mode=${encodeURIComponent(measureMode)}`,
+    ];
+    if (deviceId) query.push(`device_id=${encodeURIComponent(deviceId)}`);
+    wx.navigateTo({ url: `/pages/catalog_meter_bridge/index?${query.join("&")}` });
   },
 
   async ensureMeterConnected() {

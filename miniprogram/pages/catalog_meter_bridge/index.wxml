@@ -2,6 +2,14 @@
   <view class="panel">
     <view wx:if="{{scanning}}" class="spinner"></view>
     <view class="status">{{status}}</view>
+    <view wx:if="{{showConnectedActions && (connectedDeviceName || connectedDeviceId)}}" class="connected-card">
+      <view class="connected-title">当前设备</view>
+      <view class="connected-name">{{connectedDeviceName || connectedDeviceId || '色差仪'}}</view>
+      <view class="connected-actions">
+        <button class="disconnect-btn" loading="{{disconnecting}}" disabled="{{disconnecting}}" bindtap="disconnectDevice">断开设备</button>
+        <button class="back-btn" bindtap="backToH5">返回</button>
+      </view>
+    </view>
     <view wx:if="{{showDeviceList}}" class="device-list">
       <view wx:for="{{devices}}" wx:key="deviceId" class="device-row {{item.preferred ? 'preferred' : ''}}">
         <view class="device-main">

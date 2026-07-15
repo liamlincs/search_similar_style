@@ -35,12 +35,17 @@ Page({
     scanning: false,
     showDeviceList: false,
     connectingDeviceId: "",
+    connectedDeviceId: "",
+    connectedDeviceName: "",
+    disconnecting: false,
+    showConnectedActions: false,
   },
 
   onLoad(options) {
     const params = options || {};
     this.bridgeOptions = params;
-    const action = params.action === "connect" ? "connect" : "measure";
+    const action = params.action === "connect" ? "connect" : (params.action === "disconnect" ? "disconnect" : "measure");
+    this.setData({ showConnectedActions: action === "connect" });
     this.run(action, params.device_id || "").catch((err) => {
       console.error("[catalog-meter-bridge:error]", err);
       const message = getMeterErrorMessage(err);
@@ -74,14 +79,20 @@ Page({
   },
 
   async run(action, deviceId) {
+    if (action === "disconnect") {
+      this.syncConnectedDeviceState();
+      await this.disconnectDevice();
+      return;
+    }
     await this.ensureMeterConnected(deviceId);
     if (action === "connect") {
       await this.publishDevice();
-      this.setData({ status: "色差仪已连接" });
+      this.syncConnectedDeviceState();
+      this.setData({ status: "色差仪已连接，可断开设备或返回H5" });
       wx.showToast({ title: "色差仪已连接", icon: "none" });
-      setTimeout(() => wx.navigateBack({ delta: 1 }), 500);
       return;
     }
+    this.syncConnectedDeviceState();
     const measureMode = this.safeDecode(this.bridgeOptions.measure_mode || "") === "average" ? "average" : "single";
     const lab = await this.waitForButtonLab(measureMode);
     await this.publishLab(lab);
@@ -127,7 +138,7 @@ Page({
   },
 
   waitForSingleButtonLab(index, total) {
-    this.stopButtonMeasurement();
+    this.stopButtonMeasurement("已开始新的测量");
     return new Promise((resolve, reject) => {
       let settled = false;
       const cleanup = () => {
@@ -139,6 +150,13 @@ Page({
           ColorMeter.unsubscribe(this.buttonMeasureHandler);
           this.buttonMeasureHandler = null;
         }
+        this.buttonMeasureReject = null;
+      };
+      this.buttonMeasureReject = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
       };
       this.buttonMeasureHandler = async (event) => {
         if (!event || event.type !== "measure" || settled) return;
@@ -163,7 +181,13 @@ Page({
     });
   },
 
-  stopButtonMeasurement() {
+  stopButtonMeasurement(message) {
+    if (this.buttonMeasureReject) {
+      const reject = this.buttonMeasureReject;
+      this.buttonMeasureReject = null;
+      reject(new Error(message || "测量已取消"));
+      return;
+    }
     if (this.buttonMeasureTimer) {
       clearTimeout(this.buttonMeasureTimer);
       this.buttonMeasureTimer = null;
@@ -249,6 +273,20 @@ Page({
     }
   },
 
+  async publishDisconnect() {
+    const deviceId = this.data.connectedDeviceId || "";
+    const deviceName = this.data.connectedDeviceName || "";
+    await this.postNativeReading({
+      event: "disconnect",
+      deviceId,
+      deviceName,
+      ts: Date.now(),
+    }).catch((err) => {
+      console.warn("[catalog-meter-bridge:post-disconnect-fallback]", err);
+      return false;
+    });
+  },
+
   postNativeReading(payload) {
     const options = this.bridgeOptions || {};
     const apiBase = this.safeDecode(options.api_base || config.baseUrl || "").replace(/\/+$/, "");
@@ -307,6 +345,46 @@ Page({
     wx.setStorageSync(METER_DEVICE_STORAGE_KEY, next.slice(0, 8));
   },
 
+  syncConnectedDeviceState() {
+    const device = ColorMeter.connected || {};
+    this.setData({
+      connectedDeviceId: device.deviceId || "",
+      connectedDeviceName: device.name || device.localName || "",
+      showDeviceList: false,
+    });
+  },
+
+  async disconnectDevice() {
+    if (this.data.disconnecting) return;
+    this.setData({ disconnecting: true, status: "正在断开色差仪..." });
+    try {
+      this.stopDeviceScan();
+      this.stopButtonMeasurement();
+      await this.publishDisconnect();
+      await ColorMeter.disconnect().catch(() => null);
+      this.setData({
+        status: "色差仪已断开，可重新扫描连接",
+        connectedDeviceId: "",
+        connectedDeviceName: "",
+        connectingDeviceId: "",
+        devices: [],
+        showDeviceList: true,
+      });
+      wx.showToast({ title: "已断开", icon: "none" });
+    } catch (err) {
+      const message = getMeterErrorMessage(err, "断开设备失败");
+      this.setData({ status: message });
+      wx.showToast({ title: message, icon: "none" });
+    } finally {
+      this.setData({ disconnecting: false });
+    }
+  },
+
+  backToH5() {
+    this.stopButtonMeasurement("已返回H5");
+    wx.navigateBack({ delta: 1 });
+  },
+
   async ensureMeterConnected(deviceId) {
     if (ColorMeter.connected) return;
     this.setData({ status: "正在请求蓝牙权限..." });
@@ -323,6 +401,7 @@ Page({
       try {
         await ColorMeter.connect(knownDevice);
         this.rememberDevice(knownDevice);
+        this.syncConnectedDeviceState();
         await retry(() => ColorMeter.getDeviceInfo(), 1).catch(() => null);
         return;
       } catch (err) {
@@ -337,6 +416,7 @@ Page({
       try {
         await ColorMeter.connect(picked);
         this.rememberDevice(picked);
+        this.syncConnectedDeviceState();
         await retry(() => ColorMeter.getDeviceInfo(), 1).catch(() => null);
       } catch (err) {
         console.warn("[catalog-meter-bridge:selected-connect-failed]", picked, err);
