@@ -26,4 +26,7 @@ data/product_catalog.db
 data/product_catalog.db-*
 data/color_cards.db
 data/color_cards.db-*
+data/standard_samples/
+data/standard_samples_*/
+data/test_samples/
 .DS_Store
