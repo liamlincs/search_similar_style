@@ -44,6 +44,18 @@ python -m venv .venv
 python -m pip install --upgrade pip
 ```
 
+安装项目依赖：
+
+```bat
+python -m pip install -r requirements.txt
+```
+
+确认关键模块可导入：
+
+```bat
+python -c "import fastapi, uvicorn; print('api deps ok')"
+```
+
 退出虚拟环境：
 
 ```bat
