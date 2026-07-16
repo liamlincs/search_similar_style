@@ -392,11 +392,11 @@ class ColorCardStore:
             conn.commit()
         return {"id": clean_id, "name": clean_name}
 
-    def remove_library(self, library_id: str) -> bool:
+    def remove_library(self, library_id: str, *, allow_builtin: bool = False) -> bool:
         clean_id = clean_library_id(library_id)
         if not clean_id:
             raise ValueError("library_id is empty")
-        if not clean_id.startswith("custom_"):
+        if not allow_builtin and not clean_id.startswith("custom_"):
             raise ValueError("only custom color libraries can be deleted")
         with self._connect() as conn:
             rows = conn.execute("SELECT id FROM color_cards WHERE library_id=?", (clean_id,)).fetchall()

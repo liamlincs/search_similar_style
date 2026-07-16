@@ -63,6 +63,7 @@ from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
 from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag, parse_catalog_tag
 from color_card_store import ColorCardStore
+from color_card_importer import read_color_rows, slugify_library_id
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
 
 
@@ -7991,6 +7992,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
     .modal-head > div:first-child { min-width: 0; flex: 1; }
     .modal-close-btn { flex: none; width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 10px; border: 1px solid #e5e7eb; background: #fff; color: #111827; font-size: 30px; line-height: 1; font-weight: 700; display: inline-grid; place-items: center; }
+    .app-confirm-modal { position: fixed; inset: 0; z-index: 1200; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(17,24,39,.58); }
+    .app-confirm-modal.open { display: flex; }
+    .app-confirm-box { width: min(380px, 100%); background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 24px 70px rgba(15,23,42,.28); }
+    .app-confirm-message { color: #111827; font-size: 15px; line-height: 1.55; white-space: pre-line; }
+    .app-confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    .app-confirm-actions button { min-height: 38px; border-radius: 10px; padding: 0 16px; }
     .modal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
     .gallery-item { position: relative; background: #f9fafb; border-radius: 12px; padding: 10px; }
     .gallery-item img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 10px; background: #e5e7eb; }
@@ -8036,6 +8043,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-meter-row label { color: #475569; font-size: 13px; font-weight: 700; }
     .color-meter-row input, .color-meter-row select, .color-meter-row textarea { width: 100%; min-height: 38px; box-sizing: border-box; }
     .color-meter-row textarea { min-height: 72px; resize: vertical; }
+    .color-library-manage { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+    .color-library-delete-btn { min-height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid #fecdd3; background: #fff1f2; color: #be123c; font-weight: 700; }
+    .color-library-delete-btn:disabled { background: #f8fafc; border-color: #d1d5db; color: #94a3b8; }
+    .color-xlsx-upload-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+    .color-xlsx-upload-row input[type="file"] { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
+    .color-xlsx-upload-status { min-height: 18px; margin-top: 8px; font-size: 12px; color: #64748b; }
+    .color-xlsx-upload-status.err { color: #b91c1c; }
     .color-name-builder { display: grid; grid-template-columns: 1fr 96px 1fr; gap: 8px; }
     .color-meter-mode { margin-top: 12px; display: grid; gap: 8px; }
     .color-meter-mode-title { color: #475569; font-size: 13px; font-weight: 700; }
@@ -8119,6 +8133,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       .import-actions { position: sticky; bottom: -14px; background: #fff; padding-top: 10px; }
       .color-meter-grid { grid-template-columns: 1fr; }
       .color-meter-row { grid-template-columns: 1fr; gap: 6px; }
+      .color-library-manage { grid-template-columns: 1fr; }
+      .color-xlsx-upload-row { grid-template-columns: 1fr; }
       .color-name-builder { grid-template-columns: 1fr; }
       .color-meter-lab { grid-template-columns: 1fr; }
       .color-match-item { flex-direction: column; }
@@ -8240,7 +8256,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="modal-panel color-meter-panel">
       <div class="modal-head">
         <div>
-          <div class="code" style="margin:0;">色卡蓝牙录入</div>
+          <div class="code" style="margin:0;">色卡蓝牙/文件录入</div>
         </div>
         <button id="closeColorCardBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
@@ -8269,7 +8285,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </section>
         <section class="color-meter-card">
           <div class="code" style="margin:0 0 10px;">录入色号</div>
-          <div class="color-meter-row"><label>色卡库</label><select id="colorLibrarySelect"></select></div>
+          <div class="color-meter-row">
+            <label>色卡库</label>
+            <div class="color-library-manage">
+              <select id="colorLibrarySelect"></select>
+              <button id="colorDeleteLibraryBtn" class="color-library-delete-btn" type="button" disabled>删除库</button>
+            </div>
+          </div>
           <div class="color-meter-row"><label>新色卡库</label><input id="colorNewLibrary" placeholder="可选：输入后新建/切换到该库" /></div>
           <div class="color-meter-row">
             <label>名称模板</label>
@@ -8286,6 +8308,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           </div>
           <div class="muted" style="margin-top:10px;">同一色卡库内色号名称重复时，会更新原记录。</div>
         </section>
+      </div>
+      <div class="color-meter-card" style="margin-top:14px;">
+        <div class="code" style="margin:0 0 8px;">xlsx 批量导入</div>
+        <div class="color-xlsx-upload-row">
+          <input id="colorXlsxFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          <button id="colorXlsxUploadBtn" type="button">上传导入</button>
+        </div>
+        <div id="colorXlsxUploadStatus" class="color-xlsx-upload-status">格式需与“东莞国彩丝光棉.xlsx”一致；上传后会按文件名创建或替换同名色卡库。</div>
       </div>
       <div class="color-meter-card" style="margin-top:14px;">
         <div class="code" style="margin:0 0 8px;">相似色号列表</div>
@@ -8358,12 +8388,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorMeterB: document.getElementById('colorMeterB'),
       colorMeterSwatch: document.getElementById('colorMeterSwatch'),
       colorLibrarySelect: document.getElementById('colorLibrarySelect'),
+      colorDeleteLibraryBtn: document.getElementById('colorDeleteLibraryBtn'),
       colorNewLibrary: document.getElementById('colorNewLibrary'),
       colorNamePrefix: document.getElementById('colorNamePrefix'),
       colorNameNumber: document.getElementById('colorNameNumber'),
       colorNameSuffix: document.getElementById('colorNameSuffix'),
       colorNameInput: document.getElementById('colorNameInput'),
       colorSaveBtn: document.getElementById('colorSaveBtn'),
+      colorXlsxFile: document.getElementById('colorXlsxFile'),
+      colorXlsxUploadBtn: document.getElementById('colorXlsxUploadBtn'),
+      colorXlsxUploadStatus: document.getElementById('colorXlsxUploadStatus'),
       colorMatchStatus: document.getElementById('colorMatchStatus'),
       colorMatchList: document.getElementById('colorMatchList'),
     };
@@ -8377,6 +8411,68 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function setNodeText(node, value) {
       if (!node) return;
       node.textContent = value || '';
+    }
+
+    function appAlert(message) {
+      return new Promise((resolve) => {
+        let modal = document.getElementById('appAlertModal');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'appAlertModal';
+          modal.className = 'app-confirm-modal';
+          modal.innerHTML = `
+            <div class="app-confirm-box">
+              <div class="app-confirm-message" id="appAlertMessage"></div>
+              <div class="app-confirm-actions">
+                <button id="appAlertOk" type="button">确定</button>
+              </div>
+            </div>`;
+          document.body.appendChild(modal);
+        }
+        document.getElementById('appAlertMessage').textContent = String(message || '');
+        const ok = document.getElementById('appAlertOk');
+        const cleanup = () => {
+          modal.classList.remove('open');
+          ok.onclick = null;
+          resolve();
+        };
+        ok.onclick = cleanup;
+        modal.classList.add('open');
+        ok.focus();
+      });
+    }
+
+    function appConfirm(message) {
+      return new Promise((resolve) => {
+        let modal = document.getElementById('appConfirmModal');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'appConfirmModal';
+          modal.className = 'app-confirm-modal';
+          modal.innerHTML = `
+            <div class="app-confirm-box">
+              <div class="app-confirm-message" id="appConfirmMessage"></div>
+              <div class="app-confirm-actions">
+                <button id="appConfirmCancel" type="button" class="secondary">取消</button>
+                <button id="appConfirmOk" type="button">确定</button>
+              </div>
+            </div>`;
+          document.body.appendChild(modal);
+        }
+        document.getElementById('appConfirmMessage').textContent = String(message || '');
+        const ok = document.getElementById('appConfirmOk');
+        const cancel = document.getElementById('appConfirmCancel');
+        const cleanup = (value) => {
+          modal.classList.remove('open');
+          ok.onclick = null;
+          cancel.onclick = null;
+          resolve(value);
+        };
+        ok.onclick = () => cleanup(true);
+        cancel.onclick = () => cleanup(false);
+        modal.classList.add('open');
+        ok.focus();
+      });
     }
 
     function escapeHtml(value) {
@@ -8497,6 +8593,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         els.importBatchSubcategoryPicks.innerHTML = (globalTagGroups.subcategory || []).filter(name => String(name || '').trim() !== '暂无').map(name => `<button type="button" class="quick-pick" data-role="quickPick" data-value="${name}">${name}</button>`).join('');
       }
       bindQuickPicks(els.importModal);
+      renderActiveFilterTags();
     }
 
     async function deleteGlobalTag(tag) {
@@ -9133,6 +9230,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       refreshColorNameFromParts();
     }
 
+    function selectedColorLibraryOption() {
+      if (!els.colorLibrarySelect || els.colorLibrarySelect.selectedIndex < 0) return null;
+      return els.colorLibrarySelect.options[els.colorLibrarySelect.selectedIndex] || null;
+    }
+
+    function selectedColorLibraryName() {
+      const option = selectedColorLibraryOption();
+      return (option ? option.textContent : '').replace(/\\s*\\(\\d+\\)\\s*$/, '').trim();
+    }
+
+    function updateColorLibraryDeleteButton() {
+      if (!els.colorDeleteLibraryBtn) return;
+      els.colorDeleteLibraryBtn.disabled = !els.colorLibrarySelect || !els.colorLibrarySelect.value;
+    }
+
     async function loadColorLibraries(selectedId) {
       const resp = await fetch('/api/v1/color-card/libraries');
       if (!resp.ok) throw new Error(await resp.text());
@@ -9151,6 +9263,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (selectedId && selectedId === library.id) option.selected = true;
         els.colorLibrarySelect.appendChild(option);
       });
+      updateColorLibraryDeleteButton();
     }
 
     async function matchColorCards() {
@@ -9187,7 +9300,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const colorName = els.colorNameInput.value.trim();
       if (!colorName) throw new Error('请填写色号名称');
       let libraryId = els.colorLibrarySelect.value;
-      let libraryName = (els.colorLibrarySelect.options[els.colorLibrarySelect.selectedIndex]?.textContent || libraryId).replace(/\\s*\\(\\d+\\)\\s*$/, '');
+      let libraryName = selectedColorLibraryName() || libraryId;
       if (els.colorNewLibrary.value.trim()) {
         libraryId = els.colorNewLibrary.value.trim();
         libraryName = libraryId;
@@ -9212,6 +9325,59 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       await matchColorCards();
       incrementColorNameNumber();
       setColorMeterStatus('已保存：' + data.card.name, false);
+    }
+
+    async function deleteSelectedColorLibrary() {
+      const libraryId = els.colorLibrarySelect.value;
+      const libraryName = selectedColorLibraryName() || libraryId;
+      if (!libraryId) throw new Error('请选择要删除的色卡库');
+      const ok = await appConfirm(`确认删除色卡库“${libraryName}”及其中所有色号？\\n\\n此操作不可撤销。`);
+      if (!ok) return;
+      els.colorDeleteLibraryBtn.disabled = true;
+      const resp = await fetch('/api/v1/color-card/libraries/' + encodeURIComponent(libraryId) + '?allow_builtin=1', {
+        method: 'DELETE',
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      await loadColorLibraries();
+      if (els.colorMatchList) els.colorMatchList.innerHTML = '';
+      setNodeText(els.colorMatchStatus, '测量后会按 dE*00 从小到大返回相似色号。');
+      setColorMeterStatus('已删除色卡库：' + libraryName, false);
+    }
+
+    function setColorXlsxUploadStatus(message, isError) {
+      if (!els.colorXlsxUploadStatus) return;
+      els.colorXlsxUploadStatus.textContent = message || '';
+      els.colorXlsxUploadStatus.classList.toggle('err', !!isError);
+    }
+
+    async function uploadColorCardXlsx() {
+      const file = els.colorXlsxFile && els.colorXlsxFile.files && els.colorXlsxFile.files[0];
+      if (!file) throw new Error('请选择 xlsx 文件');
+      if (!/\\.xlsx$/i.test(file.name || '')) throw new Error('只支持上传 .xlsx 文件');
+      const form = new FormData();
+      form.append('file', file, file.name);
+      els.colorXlsxUploadBtn.disabled = true;
+      setColorXlsxUploadStatus('正在上传并导入...', false);
+      try {
+        const resp = await fetch('/api/v1/color-card/libraries/upload-xlsx', {
+          method: 'POST',
+          body: form,
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const data = await resp.json();
+        const library = data.library || {};
+        await loadColorLibraries(library.id || '');
+        if (els.colorXlsxFile) els.colorXlsxFile.value = '';
+        const message = `导入成功：已导入 ${data.count || 0} 个色号到 ${library.name || '色卡库'}`;
+        setColorXlsxUploadStatus(message, false);
+        await appAlert(message);
+      } catch (err) {
+        const message = err.message || 'xlsx 导入失败';
+        setColorXlsxUploadStatus(message, true);
+        await appAlert('导入失败：' + message);
+      } finally {
+        els.colorXlsxUploadBtn.disabled = false;
+      }
     }
 
     async function connectColorMeter() {
@@ -9521,9 +9687,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     els.colorLibrarySelect.addEventListener('change', () => {
       const label = els.colorLibrarySelect.options[els.colorLibrarySelect.selectedIndex]?.textContent || '';
       maybeFillColorNamePrefix(label);
+      updateColorLibraryDeleteButton();
     });
     els.colorSaveBtn.addEventListener('click', () => {
       saveColorCard().catch(err => setColorMeterStatus(err.message || '保存失败', true));
+    });
+    els.colorDeleteLibraryBtn.addEventListener('click', () => {
+      deleteSelectedColorLibrary().catch(err => {
+        updateColorLibraryDeleteButton();
+        setColorMeterStatus(err.message || '删除色卡库失败', true);
+      });
+    });
+    els.colorXlsxUploadBtn.addEventListener('click', () => {
+      uploadColorCardXlsx().catch(err => {
+        const message = err.message || 'xlsx 导入失败';
+        setColorXlsxUploadStatus(message, true);
+        appAlert('导入失败：' + message);
+      });
     });
     els.importBtn.addEventListener('click', openImportModal);
     els.closeImportBtn.addEventListener('click', closeImportModal);
@@ -9911,12 +10091,42 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"library": library, "libraries": color_card_store.list_libraries()}
 
+    @app.post("/api/v1/color-card/libraries/upload-xlsx")
+    async def api_upload_color_card_library_xlsx(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:create")
+        filename = Path(str(file.filename or "").replace("\\", "/").split("/")[-1]).name
+        suffix = Path(filename).suffix.lower()
+        if suffix != ".xlsx":
+            raise HTTPException(status_code=400, detail="只支持上传 .xlsx 文件")
+        library_name = Path(filename).stem.strip()
+        if not library_name:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+        _check_text_content_security(library_name, filename, openid=_wechat_openid_from_request(request))
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="上传文件为空")
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="xlsx 文件不能超过 20MB")
+        try:
+            rows = read_color_rows(content)
+            if not rows:
+                raise ValueError("未读取到有效色卡行，请确认表头包含 名称、L、a、b")
+            library_id = slugify_library_id(library_name)
+            count = color_card_store.replace_library(library_id, library_name, filename, rows)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logging.exception("color card xlsx import failed: %s", filename)
+            raise HTTPException(status_code=400, detail=f"xlsx 解析失败：{exc}") from exc
+        library = {"id": library_id, "name": library_name, "source_file": filename, "color_count": count}
+        return {"library": library, "count": count, "libraries": color_card_store.list_libraries()}
+
     @app.delete("/api/v1/color-card/libraries/{library_id}")
-    def api_delete_color_card_library(request: Request, library_id: str) -> Dict[str, Any]:
+    def api_delete_color_card_library(request: Request, library_id: str, allow_builtin: bool = False) -> Dict[str, Any]:
         _catalog_require_permission(request, "color:create")
         _check_text_content_security(library_id, openid=_wechat_openid_from_request(request))
         try:
-            removed = color_card_store.remove_library(library_id)
+            removed = color_card_store.remove_library(library_id, allow_builtin=allow_builtin)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": bool(removed), "libraries": color_card_store.list_libraries()}
