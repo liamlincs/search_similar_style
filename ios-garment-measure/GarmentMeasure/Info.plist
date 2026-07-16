@@ -20,12 +20,6 @@
 	<string>1</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSCameraUsageDescription</key>
-	<string>用于通过 AR 测量衣服关键尺寸，并拍摄 T 恤照片生成 3D 纹理预览。</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>用于选择 T 恤照片生成 3D 纹理预览。</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>用于连接局域网内的 AI 生成服务。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoadsInLocalNetwork</key>
@@ -39,6 +33,12 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>用于通过 AR 测量衣服关键尺寸，并拍摄 T 恤照片生成 3D 纹理预览。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于连接局域网内的 AI 生成服务。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于选择 T 恤照片生成 3D 纹理预览。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

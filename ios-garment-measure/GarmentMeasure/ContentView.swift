@@ -1,6 +1,9 @@
 import SwiftUI
 import UIKit
 import RealityKit
+import ARKit
+import SceneKit
+import _RealityKit_SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var garment: GarmentMeasurementStore
@@ -14,6 +17,12 @@ struct ContentView: View {
                 }
                 .tag(AppTab.measure)
 
+            ScanModelScreen()
+                .tabItem {
+                    Label("扫描", systemImage: "viewfinder")
+                }
+                .tag(AppTab.scan)
+
             GarmentPreviewScreen()
                 .tabItem {
                     Label("3D", systemImage: "tshirt")
@@ -25,7 +34,908 @@ struct ContentView: View {
 
 private enum AppTab {
     case measure
+    case scan
     case preview
+}
+
+private struct ScanModelScreen: View {
+    @EnvironmentObject private var garment: GarmentMeasurementStore
+    @State private var showingScanner = false
+    @State private var latestModelURL: URL?
+    @State private var scanMessage = "按引导绕物体拍一圈，完成后生成 USDZ。"
+    @State private var isReconstructing = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Image(systemName: "camera.viewfinder")
+                        .font(.system(size: 42, weight: .semibold))
+                        .foregroundStyle(.blue)
+                        .frame(width: 82, height: 82)
+                        .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 18))
+                        .padding(.top, 8)
+
+                    VStack(spacing: 6) {
+                        Text("高质量扫描")
+                            .font(.system(size: 30, weight: .bold))
+
+                        Text("Object Capture 拍摄，生成带纹理 USDZ。")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        ScanCapabilityRow(icon: "cube.transparent", title: "USDZ", detail: "可在 3D / AR 查看")
+                        ScanCapabilityRow(icon: "timer", title: "几分钟", detail: "复杂物体会更久")
+                        ScanCapabilityRow(icon: "tshirt", title: "衣服", detail: "建议撑开或套假人")
+                    }
+                    .padding(14)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 18)
+
+                    statusView
+
+                    Button {
+                        showingScanner = true
+                    } label: {
+                        Label(isReconstructing ? "正在重建模型..." : "开始扫描", systemImage: "camera.viewfinder")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!ObjectCaptureSession.isSupported || isReconstructing)
+                    .padding(.horizontal, 18)
+
+                    if let latestModelURL {
+                        ShareLink(item: latestModelURL) {
+                            Label("导出 USDZ", systemImage: "square.and.arrow.up")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+
+                    Spacer(minLength: 112)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("扫描")
+            .fullScreenCover(isPresented: $showingScanner) {
+                ObjectCaptureScanView { result in
+                    switch result {
+                    case .success(let directory):
+                        reconstructObject(from: directory)
+                    case .failure(let error):
+                        scanMessage = error.localizedDescription
+                    }
+                    showingScanner = false
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusView: some View {
+        if !ObjectCaptureSession.isSupported {
+            Text("当前设备不支持 Object Capture")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 18)
+        } else {
+            HStack(spacing: 8) {
+                if isReconstructing {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(scanMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    private func reconstructObject(from imagesDirectory: URL) {
+        let imageCount = ObjectCaptureFileStore.captureImageCount(in: imagesDirectory)
+        guard imageCount >= ObjectCaptureReconstructor.minimumImageCount else {
+            scanMessage = "只拍了 \(imageCount) 张，暂不重建。建议至少 \(ObjectCaptureReconstructor.minimumImageCount) 张，并绕物体拍满一圈。"
+            return
+        }
+
+        isReconstructing = true
+        scanMessage = "已拍 \(imageCount) 张，正在生成高质量 USDZ..."
+        Task {
+            do {
+                let outputURL = try await ObjectCaptureReconstructor.reconstruct(
+                    imagesDirectory: imagesDirectory
+                ) { message in
+                    await MainActor.run {
+                        scanMessage = message
+                    }
+                }
+                let archive = try garment.importObjectCaptureModel(
+                    temporaryURL: outputURL,
+                    imagesDirectory: imagesDirectory
+                )
+                latestModelURL = garment.quickLookURL(for: archive)
+                scanMessage = "Object Capture 模型已生成"
+            } catch {
+                scanMessage = ObjectCaptureReconstructor.userFacingErrorMessage(for: error)
+            }
+            isReconstructing = false
+        }
+    }
+}
+
+private struct ScanCapabilityRow: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.blue)
+                .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct ObjectCaptureScanView: View {
+    typealias Completion = @MainActor (Result<URL, Error>) -> Void
+
+    @StateObject private var controller = ObjectCaptureController()
+    let completion: Completion
+
+    var body: some View {
+        ZStack {
+            ObjectCaptureView(session: controller.session) {
+                EmptyView()
+            }
+            .ignoresSafeArea()
+
+            VStack {
+                topBar
+                Spacer()
+                captureGuideOverlay
+                Spacer()
+                bottomPanel
+            }
+        }
+        .background(Color.black)
+        .onAppear {
+            controller.startMonitoring { result in
+                completion(result)
+            }
+            controller.start()
+        }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button {
+                controller.cancelAndMarkCompleted()
+                completion(.failure(ObjectCaptureFlowError.cancelled))
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 21, weight: .bold))
+                    .frame(width: 52, height: 52)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.black)
+            .background(.white.opacity(0.88), in: Circle())
+
+            Spacer()
+
+            Text(controller.counterText)
+                .font(.subheadline.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.black.opacity(0.48), in: Capsule())
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 54)
+    }
+
+    private var captureGuideOverlay: some View {
+        ObjectCaptureOrbitGuide(
+            shotCount: controller.shotCount,
+            recommendedShotCount: controller.recommendedShotCount,
+            completedPass: controller.userCompletedScanPass,
+            currentDirection: controller.currentDirection
+        )
+        .opacity(controller.shouldShowCoverageGuide ? 1 : 0)
+    }
+
+    private var bottomPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(controller.title)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+
+                Spacer()
+
+                Text("步骤 \(controller.captureStep.index)/3")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.76))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.white.opacity(0.14), in: Capsule())
+            }
+
+            if controller.shouldShowStepGuide {
+                ObjectCaptureStepGuide(step: controller.captureStep)
+            } else {
+                ObjectCaptureReadinessGuide(
+                    title: controller.readinessTitle,
+                    message: controller.readinessMessage,
+                    feedback: controller.feedbackText
+                )
+            }
+
+            Text(controller.message)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.68))
+                .lineLimit(2)
+
+            if !controller.feedbackText.isEmpty {
+                Text(controller.feedbackText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.yellow)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    controller.performPrimaryAction()
+                } label: {
+                    Text(controller.primaryActionTitle)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!controller.canPerformPrimaryAction)
+
+                Button {
+                    controller.captureStillImage()
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .frame(width: 52, height: 52)
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .disabled(!controller.canRequestImageCapture)
+            }
+        }
+        .padding(18)
+        .background(.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 22))
+        .padding(.horizontal, 18)
+        .padding(.bottom, 24)
+    }
+}
+
+@MainActor
+private final class ObjectCaptureController: ObservableObject {
+    let session = ObjectCaptureSession()
+    @Published var state: ObjectCaptureSession.CaptureState = .initializing
+    @Published var feedback: Set<ObjectCaptureSession.Feedback> = []
+    @Published var shotCount = 0
+    @Published var canRequestImageCapture = false
+    @Published var userCompletedScanPass = false
+    @Published var cameraTracking: ObjectCaptureSession.Tracking = .notAvailable
+    @Published var isPaused = false
+    @Published var initializationTimedOut = false
+
+    let recommendedShotCount = 200
+
+    private var imagesDirectory: URL?
+    private var didComplete = false
+    private var didStartMonitoring = false
+    private let directions = ["正面", "右前", "右侧", "右后", "背面", "左后", "左侧", "左前"]
+
+    var shouldShowCoverageGuide: Bool {
+        switch state {
+        case .capturing, .finishing, .completed:
+            true
+        default:
+            false
+        }
+    }
+
+    var shouldShowStepGuide: Bool {
+        switch state {
+        case .capturing, .finishing, .completed:
+            true
+        default:
+            false
+        }
+    }
+
+    var counterText: String {
+        switch state {
+        case .capturing, .finishing, .completed:
+            "\(shotCount)/\(recommendedShotCount)"
+        default:
+            shotCount == 0 ? "未开始" : "\(shotCount)/\(recommendedShotCount)"
+        }
+    }
+
+    var readinessTitle: String {
+        if initializationTimedOut {
+            return "相机未准备好"
+        }
+
+        return switch state {
+        case .initializing: "等待相机准备"
+        case .ready: "先检测物体"
+        case .detecting: "确认取景后开始"
+        case .failed: "扫描失败"
+        default: "准备扫描"
+        }
+    }
+
+    var readinessMessage: String {
+        if initializationTimedOut {
+            return "Object Capture 一直停在初始化。请关掉扫描页重进；如果仍不行，重启 App，并确认没有其它 App 占用相机。"
+        }
+
+        if feedbackText.contains("光线") || feedbackText.localizedCaseInsensitiveContains("light") {
+            return "当前光线不足，移动不会计数。请补光或换到更亮的位置，等按钮变蓝后再开始。"
+        }
+
+        if isPaused {
+            return "扫描会话已暂停，请保持 App 在前台并重新进入扫描。"
+        }
+
+        if let trackingMessage {
+            return trackingMessage
+        }
+
+        switch state {
+        case .initializing:
+            return "现在还没有开始采集，绕拍不会增加张数。请保持手机稳定，等待按钮可点。"
+        case .ready:
+            return "把物体完整放进取景框，点击开始检测。"
+        case .detecting:
+            return "确认白色框覆盖物体后，点击开始拍摄。"
+        case .failed(let error):
+            return error.localizedDescription
+        default:
+            return "请按屏幕提示继续。"
+        }
+    }
+
+    var trackingMessage: String? {
+        switch cameraTracking {
+        case .normal:
+            nil
+        case .notAvailable:
+            "相机追踪暂不可用，请缓慢移动手机并让画面里有清晰纹理。"
+        case .limited(let reason):
+            switch reason {
+            case .initializing:
+                "正在初始化相机追踪，请保持手机稳定。"
+            case .relocalizing:
+                "正在重新定位，请慢慢移动手机对准物体。"
+            case .excessiveMotion:
+                "移动太快，请放慢速度。"
+            case .insufficientFeatures:
+                "画面特征太少，请让背景有纹理，避免纯白桌面或纯黑物体占满画面。"
+            @unknown default:
+                "相机追踪受限，请调整光线和拍摄角度。"
+            }
+        @unknown default:
+            nil
+        }
+    }
+
+    var currentDirection: String {
+        guard shotCount > 0 else { return "正面" }
+        let sector = min(directions.count - 1, shotCount / 8)
+        return directions[sector]
+    }
+
+    var captureStep: ObjectCaptureScanStep {
+        if shotCount >= 96 || userCompletedScanPass {
+            return ObjectCaptureScanStep(
+                index: 3,
+                title: "补顶部和细节",
+                message: "手机略抬高，补拍领口、边缘和反光少的位置。",
+                icon: "arrow.up.forward"
+            )
+        }
+        if shotCount >= 48 {
+            return ObjectCaptureScanStep(
+                index: 2,
+                title: "降低角度再拍一圈",
+                message: "向下移动到物体底部高度，慢慢绕拍底边。",
+                icon: "arrow.down.forward"
+            )
+        }
+        return ObjectCaptureScanStep(
+            index: 1,
+            title: "平视绕拍一圈",
+            message: "保持物体完整入镜，按环形提示顺时针慢慢移动。",
+            icon: "arrow.clockwise"
+        )
+    }
+
+    var title: String {
+        switch state {
+        case .initializing: "初始化扫描"
+        case .ready: "检测物体"
+        case .detecting: "确认取景"
+        case .capturing: "正在拍摄"
+        case .finishing: "正在整理照片"
+        case .completed: "拍摄完成"
+        case .failed: "扫描失败"
+        @unknown default: "扫描"
+        }
+    }
+
+    var message: String {
+        switch state {
+        case .initializing:
+            "请保持手机稳定，等待相机准备完成。"
+        case .ready:
+            "把物体放在光线均匀的位置，先让 App 识别目标。"
+        case .detecting:
+            "让物体完整进入画面，准备好后开始拍摄。"
+        case .capturing:
+            "\(captureStep.message) 当前建议：\(currentDirection)。"
+        case .finishing:
+            "正在保存拍摄数据，请稍等。"
+        case .completed:
+            "拍摄完成，接下来会生成带纹理 USDZ。"
+        case .failed(let error):
+            error.localizedDescription
+        @unknown default:
+            "请按屏幕提示继续扫描。"
+        }
+    }
+
+    var primaryActionTitle: String {
+        switch state {
+        case .ready: "开始检测"
+        case .detecting: "开始拍摄"
+        case .capturing: "完成拍摄"
+        case .completed: "生成模型"
+        case .failed: "关闭"
+        default: "请稍等"
+        }
+    }
+
+    var canPerformPrimaryAction: Bool {
+        switch state {
+        case .ready, .detecting, .capturing, .completed, .failed:
+            true
+        default:
+            false
+        }
+    }
+
+    var feedbackText: String {
+        feedback.map(\.localizedText).sorted().joined(separator: " / ")
+    }
+
+    func start() {
+        guard imagesDirectory == nil else { return }
+        do {
+            let directory = try ObjectCaptureFileStore.newSessionDirectory()
+            imagesDirectory = directory.appendingPathComponent("Images", isDirectory: true)
+            let checkpointDirectory = directory.appendingPathComponent("Checkpoints", isDirectory: true)
+            try FileManager.default.createDirectory(at: imagesDirectory!, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: checkpointDirectory, withIntermediateDirectories: true)
+
+            var configuration = ObjectCaptureSession.Configuration()
+            configuration.checkpointDirectory = checkpointDirectory
+            configuration.isOverCaptureEnabled = true
+            session.start(imagesDirectory: imagesDirectory!, configuration: configuration)
+
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                guard let self else { return }
+                if case .initializing = self.state {
+                    self.initializationTimedOut = true
+                }
+            }
+        } catch {
+            state = .failed(error)
+        }
+    }
+
+    func startMonitoring(completion: @escaping ObjectCaptureScanView.Completion) {
+        guard !didStartMonitoring else { return }
+        didStartMonitoring = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.state = self.session.state
+            for await state in session.stateUpdates {
+                self.state = state
+                if state != .initializing {
+                    self.initializationTimedOut = false
+                }
+                if case .completed = state, !self.didComplete {
+                    self.didComplete = true
+                    completion(.success(self.imagesDirectory ?? ObjectCaptureFileStore.rootDirectory))
+                } else if case .failed(let error) = state, !self.didComplete {
+                    if let objectCaptureError = error as? ObjectCaptureSession.Error,
+                       case .cancelled = objectCaptureError {
+                        self.didComplete = true
+                        completion(.failure(ObjectCaptureFlowError.cancelled))
+                        continue
+                    }
+                    self.didComplete = true
+                    completion(.failure(error))
+                }
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await feedback in session.feedbackUpdates {
+                self.feedback = feedback
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await count in session.numberOfShotsTakenUpdates {
+                self.shotCount = count
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await value in session.canRequestImageCaptureUpdates {
+                self.canRequestImageCapture = value
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for await value in session.userCompletedScanPassUpdates {
+                self.userCompletedScanPass = value
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.cameraTracking = self.session.cameraTracking
+            while !Task.isCancelled && !self.didComplete {
+                self.cameraTracking = self.session.cameraTracking
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isPaused = self.session.isPaused
+            for await value in session.isPausedUpdates {
+                self.isPaused = value
+            }
+        }
+    }
+
+    func performPrimaryAction() {
+        switch state {
+        case .ready:
+            _ = session.startDetecting()
+        case .detecting:
+            session.startCapturing()
+        case .capturing:
+            session.finish()
+        case .completed:
+            break
+        case .failed:
+            session.cancel()
+        default:
+            break
+        }
+    }
+
+    func captureStillImage() {
+        guard canRequestImageCapture else { return }
+        session.requestImageCapture()
+    }
+
+    func cancel() {
+        session.cancel()
+    }
+
+    func cancelAndMarkCompleted() {
+        didComplete = true
+        session.cancel()
+    }
+}
+
+private enum ObjectCaptureFlowError: LocalizedError {
+    case cancelled
+
+    var errorDescription: String? {
+        switch self {
+        case .cancelled: "已取消扫描"
+        }
+    }
+}
+
+private struct ObjectCaptureReadinessGuide: View {
+    let title: String
+    let message: String
+    let feedback: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: feedback.contains("光线") || feedback.localizedCaseInsensitiveContains("light") ? "lightbulb.max.fill" : "camera.viewfinder")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 42, height: 42)
+                .background(.white.opacity(0.16), in: Circle())
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(3)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct ObjectCaptureScanStep {
+    let index: Int
+    let title: String
+    let message: String
+    let icon: String
+}
+
+private struct ObjectCaptureStepGuide: View {
+    let step: ObjectCaptureScanStep
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: step.icon)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 42, height: 42)
+                .background(.white.opacity(0.16), in: Circle())
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    ForEach(1...3, id: \.self) { index in
+                        Circle()
+                            .fill(index <= step.index ? Color.white : Color.white.opacity(0.28))
+                            .frame(width: index == step.index ? 10 : 8, height: index == step.index ? 10 : 8)
+                    }
+                }
+
+                Text(step.title)
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.white)
+
+                Text(step.message)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(2)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct ObjectCaptureOrbitGuide: View {
+    let shotCount: Int
+    let recommendedShotCount: Int
+    let completedPass: Bool
+    let currentDirection: String
+
+    private let tickCount = 64
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                ForEach(0..<tickCount, id: \.self) { index in
+                    Capsule()
+                        .fill(index < coveredTicks ? Color.white : Color.white.opacity(0.23))
+                        .frame(width: 4, height: index % 8 == 0 ? 24 : 14)
+                        .offset(y: -86)
+                        .rotationEffect(.degrees(Double(index) / Double(tickCount) * 360))
+                }
+
+                Circle()
+                    .fill(.black.opacity(0.22))
+                    .frame(width: 128, height: 128)
+
+                VStack(spacing: 4) {
+                    Text(completedPass ? "一圈完成" : "绕拍覆盖")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text(currentDirection)
+                        .font(.title2.weight(.heavy))
+                        .foregroundStyle(.white)
+                    Text("\(shotCount)/\(recommendedShotCount)")
+                        .font(.caption.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.76))
+                }
+            }
+
+            Text(completedPass ? "可继续补顶部/底部，或完成拍摄" : "按圆环空缺方向继续移动")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.42), in: Capsule())
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 12)
+    }
+
+    private var coveredTicks: Int {
+        if completedPass { return tickCount }
+        let progress = min(1, Double(shotCount) / Double(max(1, recommendedShotCount)))
+        return Int(progress * Double(tickCount))
+    }
+}
+
+private enum ObjectCaptureFileStore {
+    static var rootDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ObjectCaptureSessions", isDirectory: true)
+    }
+
+    static func newSessionDirectory() throws -> URL {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let directory = rootDirectory.appendingPathComponent(formatter.string(from: Date()), isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    static func captureImageCount(in directory: URL) -> Int {
+        let extensions = Set(["jpg", "jpeg", "heic", "png"])
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else {
+            return 0
+        }
+        return files.filter { extensions.contains($0.pathExtension.lowercased()) }.count
+    }
+}
+
+private enum ObjectCaptureReconstructor {
+    static let minimumImageCount = 60
+
+    static func reconstruct(imagesDirectory: URL, progress: @escaping @Sendable (String) async -> Void) async throws -> URL {
+        let outputURL = imagesDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("model.usdz")
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+
+        var configuration = PhotogrammetrySession.Configuration()
+        configuration.sampleOrdering = .sequential
+        configuration.featureSensitivity = .high
+        configuration.isObjectMaskingEnabled = true
+        let checkpointDirectory = imagesDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("ReconstructionCheckpoints", isDirectory: true)
+        try FileManager.default.createDirectory(at: checkpointDirectory, withIntermediateDirectories: true)
+        configuration.checkpointDirectory = checkpointDirectory
+
+        let session = try PhotogrammetrySession(input: imagesDirectory, configuration: configuration)
+        let request = PhotogrammetrySession.Request.modelFile(url: outputURL, detail: .reduced)
+        try session.process(requests: [request])
+
+        for try await output in session.outputs {
+            switch output {
+            case .requestProgress(_, let fraction):
+                await progress("正在重建 USDZ：\(Int(fraction * 100))%")
+            case .requestProgressInfo(_, let info):
+                let stage = info.processingStage?.localizedText ?? "处理中"
+                if let remaining = info.estimatedRemainingTime {
+                    await progress("\(stage)，预计剩余 \(Int(remaining)) 秒")
+                } else {
+                    await progress(stage)
+                }
+            case .requestComplete(_, .modelFile(let url)):
+                return url
+            case .requestError(_, let error):
+                throw error
+            case .processingCancelled:
+                throw ObjectCaptureFlowError.cancelled
+            default:
+                break
+            }
+        }
+
+        guard FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw ObjectCaptureReconstructionError.missingOutput
+        }
+        return outputURL
+    }
+
+    static func userFacingErrorMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain.contains("PhotogrammetrySession") || nsError.domain.contains("CoreOC") {
+            switch nsError.code {
+            case 6:
+                return "重建失败：照片数量或覆盖角度不足。请至少拍 \(minimumImageCount) 张，平视一圈后再补低角度和顶部细节。"
+            default:
+                return "重建失败：照片质量不够或覆盖不足（\(nsError.domain) \(nsError.code)）。请补光、放慢移动，并多拍几个角度。"
+            }
+        }
+        return error.localizedDescription
+    }
+}
+
+private enum ObjectCaptureReconstructionError: LocalizedError {
+    case missingOutput
+
+    var errorDescription: String? {
+        "Object Capture 已结束，但没有生成 USDZ 文件。"
+    }
+}
+
+private extension ObjectCaptureSession.Feedback {
+    var localizedText: String {
+        switch self {
+        case .objectTooClose: "离物体太近"
+        case .objectTooFar: "离物体太远"
+        case .movingTooFast: "移动太快"
+        case .environmentLowLight: "光线偏暗"
+        case .environmentTooDark: "环境太暗"
+        case .outOfFieldOfView: "物体不在画面内"
+        case .objectNotFlippable: "不适合翻面扫描"
+        case .overCapturing: "重复拍摄过多"
+        case .objectNotDetected: "未检测到物体"
+        @unknown default: "需要调整拍摄"
+        }
+    }
+}
+
+private extension PhotogrammetrySession.Output.ProcessingStage {
+    var localizedText: String {
+        switch self {
+        case .preProcessing: "预处理照片"
+        case .imageAlignment: "对齐照片"
+        case .pointCloudGeneration: "生成点云"
+        case .meshGeneration: "生成网格"
+        case .textureMapping: "贴图映射"
+        case .optimization: "优化模型"
+        @unknown default: "处理中"
+        }
+    }
 }
 
 private struct MeasureScreen: View {
