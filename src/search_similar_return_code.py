@@ -34,6 +34,8 @@ def collect_images(base: Path, pattern: str, exts: List[str]) -> List[Path]:
     for p in sorted(base.glob(pattern)):
         if not p.is_file():
             continue
+        if p.name.startswith(".") or p.name.startswith("._"):
+            continue
         if p.suffix.lower().lstrip(".") in allow:
             out.append(p)
     if out:
@@ -41,6 +43,8 @@ def collect_images(base: Path, pattern: str, exts: List[str]) -> List[Path]:
     # fallback: if pattern misses files, scan directory and keep only allowed image extensions
     for p in sorted(base.glob("*")):
         if not p.is_file():
+            continue
+        if p.name.startswith(".") or p.name.startswith("._"):
             continue
         if p.suffix.lower().lstrip(".") in allow and p not in out:
             out.append(p)

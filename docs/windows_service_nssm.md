@@ -56,6 +56,16 @@ python -m pip install -r requirements.txt
 python -c "import fastapi, uvicorn; print('api deps ok')"
 ```
 
+确认标样图片目录存在且包含 `.jpg/.jpeg/.png` 图片：
+
+```bat
+dir data\standard_samples\*.jpg
+dir data\standard_samples\*.jpeg
+dir data\standard_samples\*.png
+```
+
+如果这里提示“找不到文件”，需要先把标样图片拷贝到 `data\standard_samples`，或修改配置文件里的 `paths.standard_dir` 指向实际图片目录。注意：搜索建索引时会跳过 `MY-` 开头的图片文件。
+
 退出虚拟环境：
 
 ```bat

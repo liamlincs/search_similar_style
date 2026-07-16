@@ -10,6 +10,9 @@ set PYTHON_EXE=%PROJECT_DIR%\.venv\Scripts\python.exe
 REM 配置文件
 set SEARCH_CONFIG=config/search_config.10k_12g_candidates.json
 
+REM 标样图片目录，需与 SEARCH_CONFIG 里的 paths.standard_dir 保持一致
+set STANDARD_DIR=data\standard_samples
+
 REM 线程与 tokenizer 配置
 set OMP_NUM_THREADS=1
 set MKL_NUM_THREADS=1
@@ -26,6 +29,29 @@ if errorlevel 1 (
 )
 
 if not exist logs mkdir logs
+
+if not exist "%STANDARD_DIR%" (
+    echo Standard image directory not found: %PROJECT_DIR%\%STANDARD_DIR%
+    echo Copy standard sample images into this directory, or update paths.standard_dir in:
+    echo   %PROJECT_DIR%\%SEARCH_CONFIG%
+    pause
+    exit /b 1
+)
+
+set HAS_STANDARD_IMAGE=
+for %%F in ("%STANDARD_DIR%\*.jpg" "%STANDARD_DIR%\*.jpeg" "%STANDARD_DIR%\*.png") do (
+    if exist "%%~F" (
+        echo %%~nxF | findstr /b /i "MY-" >nul
+        if errorlevel 1 set HAS_STANDARD_IMAGE=1
+    )
+)
+if not defined HAS_STANDARD_IMAGE (
+    echo No searchable standard images found in: %PROJECT_DIR%\%STANDARD_DIR%
+    echo Put .jpg/.jpeg/.png standard sample images in this folder.
+    echo Note: images starting with MY- are skipped by search indexing.
+    pause
+    exit /b 1
+)
 
 if not exist "%PYTHON_EXE%" (
     echo Python executable not found: %PYTHON_EXE%
