@@ -27,6 +27,7 @@ Page({
     templateIndex: 0,
     printUploadedImages: [],
     printImageIds: [],
+    printWatermark: "",
     printPreviewUrl: "",
     printPreviewLocalUrl: "",
     printPdfUrl: ""
@@ -70,6 +71,10 @@ Page({
 
   onTemplateChange(e) {
     this.setData({ templateIndex: Number(e.detail.value) });
+  },
+
+  onPrintWatermarkInput(e) {
+    this.setData({ printWatermark: e.detail.value || "" });
   },
 
   pickPrintImages() {
@@ -124,7 +129,7 @@ Page({
   },
 
   async renderPrintCollage() {
-    const { printImageIds, paperOptions, paperIndex, templates, templateIndex, printRendering } = this.data;
+    const { printImageIds, paperOptions, paperIndex, templates, templateIndex, printRendering, printWatermark } = this.data;
     if (printRendering) return;
     if (printImageIds.length === 0 || templates.length === 0) {
       wx.showToast({ title: "请先上传图片", icon: "none" });
@@ -137,7 +142,8 @@ Page({
         paper_size: paperOptions[paperIndex],
         template_id: templates[templateIndex].template_id,
         placements: printImageIds.map((id, idx) => ({ image_id: id, slot_index: idx })),
-        auto_fill: true
+        auto_fill: true,
+        watermark_text: String(printWatermark || "").trim()
       };
 
       const res = await renderPrintLayout(payload);

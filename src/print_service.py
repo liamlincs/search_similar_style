@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
@@ -39,6 +39,14 @@ class ImageMeta:
 
 
 IMAGES: dict[str, ImageMeta] = {}
+
+FONT_CANDIDATES = [
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
 
 
 @dataclass
@@ -145,11 +153,53 @@ def _contain_resize(source: Image.Image, target_w: int, target_h: int) -> Image.
     return canvas_img
 
 
+def _load_watermark_font(size: int) -> ImageFont.ImageFont:
+    for path in FONT_CANDIDATES:
+        fp = Path(path)
+        if fp.exists():
+            try:
+                return ImageFont.truetype(str(fp), size=size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
+
+
+def _watermark_overlay(width: int, height: int, text: str) -> Image.Image:
+    clean = str(text or "").strip()
+    overlay = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    if not clean:
+        return overlay
+
+    font_size = max(18, min(width, height) // 18)
+    font = _load_watermark_font(font_size)
+    draw = ImageDraw.Draw(overlay)
+    bbox = draw.textbbox((0, 0), clean, font=font)
+    text_w = max(1, bbox[2] - bbox[0])
+    text_h = max(1, bbox[3] - bbox[1])
+    tile_w = text_w + max(120, font_size * 6)
+    tile_h = text_h + max(90, font_size * 4)
+
+    tile = Image.new("RGBA", (tile_w, tile_h), (255, 255, 255, 0))
+    tile_draw = ImageDraw.Draw(tile)
+    tile_draw.text(
+        ((tile_w - text_w) // 2, (tile_h - text_h) // 2),
+        clean,
+        font=font,
+        fill=(15, 23, 42, 46),
+    )
+    rotated = tile.rotate(-24, expand=True)
+    for y in range(-rotated.height, height + rotated.height, max(1, rotated.height)):
+        for x in range(-rotated.width, width + rotated.width, max(1, rotated.width)):
+            overlay.alpha_composite(rotated, (x, y))
+    return overlay
+
+
 def render_layout(payload: dict) -> dict:
     paper_size = str(payload.get("paper_size", "A4"))
     template_id = str(payload.get("template_id", "grid_2x2"))
     placements = payload.get("placements", []) or []
     auto_fill = bool(payload.get("auto_fill", True))
+    watermark_text = str(payload.get("watermark_text", "") or "").strip()[:80]
 
     if paper_size not in {"A4", "A5", "4R"}:
         raise ValueError("paper_size 仅支持 A4/A5/4R")
@@ -213,6 +263,13 @@ def render_layout(payload: dict) -> dict:
             px = int(slot.x)
             py = int(page_h - slot.y - slot.height)
             bg.paste(slot_canvas, (px, py))
+
+    if watermark_text:
+        page_w_px = max(1, int(page_w))
+        page_h_px = max(1, int(page_h))
+        overlay = _watermark_overlay(page_w_px, page_h_px, watermark_text)
+        bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
+        c.drawImage(ImageReader(overlay), 0, 0, page_w, page_h, mask="auto")
 
     c.showPage()
     c.save()

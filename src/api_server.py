@@ -1460,10 +1460,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             results: List[Dict[str, Any]] = []
             for index, path in enumerate(files, start=1):
+                with catalog_import_lock:
+                    job = catalog_import_jobs.get(job_id)
+                    if job is None:
+                        return
+                    if bool(job.get("cancel_requested")):
+                        job["status"] = "canceled"
+                        job["message"] = f"已停止识别，已处理 {index - 1}/{total}"
+                        return
                 rel_path = str(path.relative_to(source_dir)).replace("\\", "/")
                 code = ""
                 error = ""
                 for crop in build_header_crops(path):
+                    with catalog_import_lock:
+                        job = catalog_import_jobs.get(job_id)
+                        if job is None:
+                            return
+                        if bool(job.get("cancel_requested")):
+                            job["status"] = "canceled"
+                            job["message"] = f"已停止识别，已处理 {index - 1}/{total}"
+                            return
                     code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
                     if code:
                         break
@@ -1490,6 +1506,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 with catalog_import_lock:
                     job = catalog_import_jobs.get(job_id)
                     if job is None:
+                        return
+                    if bool(job.get("cancel_requested")):
+                        job["status"] = "canceled"
+                        job["message"] = f"已停止识别，已处理 {index}/{total}"
                         return
                     job["processed"] = index
                     job["items"] = list(results)
@@ -1524,6 +1544,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "processed": 0,
             "items": [],
             "committed": False,
+            "cancel_requested": False,
         }
         with catalog_import_lock:
             catalog_import_jobs[job_id] = job
@@ -1542,6 +1563,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "processed": int(job.get("processed", 0)),
             "items": list(job.get("items", [])),
             "committed": bool(job.get("committed", False)),
+            "cancel_requested": bool(job.get("cancel_requested", False)),
         }
 
     def _catalog_import_job_item(job: Dict[str, Any], source_rel_path: str) -> Dict[str, Any] | None:
@@ -8109,6 +8131,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-source-title { font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 8px; }
     .import-upload-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
     .import-upload-row input[type="file"] { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
+    .import-upload-actions { display: flex; gap: 8px; align-items: center; }
+    .import-stop-btn { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
+    .import-stop-btn.hidden { display: none; }
+    .import-source-block button:disabled, .import-upload-row input:disabled { opacity: .52; cursor: not-allowed; }
     .import-progress { height: 10px; background: #e5e7eb; border-radius: 999px; overflow: hidden; margin-bottom: 10px; }
     .import-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #4f46e5, #6366f1); transition: width 0.2s ease; }
     .import-table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -8303,7 +8329,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="import-source-title">浏览器上传</div>
         <div class="import-upload-row">
           <input id="importUploadFiles" type="file" accept="image/*" multiple />
-          <button id="startUploadImportBtn" type="button">上传识别</button>
+          <div class="import-upload-actions">
+            <button id="startUploadImportBtn" type="button">上传识别</button>
+            <button id="cancelImportJobBtn" class="import-stop-btn hidden" type="button">停止识别</button>
+          </div>
         </div>
         <div class="muted" style="margin-top:8px;">支持 jpg、jpeg、png、webp、bmp；浏览器上传最多一次 __CATALOG_BROWSER_UPLOAD_MAX_FILES__ 张图片。</div>
       </div>
@@ -8471,6 +8500,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       startImportBtn: document.getElementById('startImportBtn'),
       importUploadFiles: document.getElementById('importUploadFiles'),
       startUploadImportBtn: document.getElementById('startUploadImportBtn'),
+      cancelImportJobBtn: document.getElementById('cancelImportJobBtn'),
       importProgressBar: document.getElementById('importProgressBar'),
       importMeta: document.getElementById('importMeta'),
       importBatchCategoryInput: document.getElementById('importBatchCategoryInput'),
@@ -9581,6 +9611,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
     }
 
+    function importIsBusy(job) {
+      const status = String((job && job.status) || '').trim();
+      return status === 'pending' || status === 'running';
+    }
+
+    function updateImportControls(job = null) {
+      const busy = importIsBusy(job);
+      if (els.startImportBtn) els.startImportBtn.disabled = busy;
+      if (els.startUploadImportBtn) els.startUploadImportBtn.disabled = busy;
+      if (els.importUploadFiles) els.importUploadFiles.disabled = busy;
+      if (els.importSourceDir) els.importSourceDir.disabled = busy;
+      if (els.cancelImportJobBtn) els.cancelImportJobBtn.classList.toggle('hidden', !busy || !importJobId);
+    }
+
     function deriveYearTagFromFilename(filename) {
       const raw = String(filename || '').trim();
       if (!raw) return '';
@@ -9636,6 +9680,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const pct = total > 0 ? Math.min(100, Math.round(processed * 100 / total)) : 0;
       if (els.importProgressBar) els.importProgressBar.style.width = pct + '%';
       setNodeText(els.importMeta, `${job.message || ''}${total ? ` · ${processed}/${total}` : ''}`);
+      updateImportControls(job);
       const items = job.items || [];
       if (!items.length) {
         if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="6" class="muted">处理中...</td></tr>';
@@ -9914,8 +9959,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     });
     els.startImportBtn.addEventListener('click', async () => {
       try {
+        importJobId = '';
+        updateImportControls({ status: 'running' });
         const sourceDir = els.importSourceDir.value.trim();
         if (!sourceDir) {
+          updateImportControls(null);
           setNodeText(els.importCommitStatus, '请输入服务器目录');
           return;
         }
@@ -9933,17 +9981,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         renderImportJob(job);
         await pollImportJob();
       } catch (err) {
+        updateImportControls(null);
         setNodeText(els.importCommitStatus, err.message || '导入预处理失败');
       }
     });
     els.startUploadImportBtn.addEventListener('click', async () => {
       try {
+        importJobId = '';
+        updateImportControls({ status: 'running' });
         const files = Array.from((els.importUploadFiles && els.importUploadFiles.files) || []);
         if (!files.length) {
+          updateImportControls(null);
           setNodeText(els.importCommitStatus, '请选择要上传的图片');
           return;
         }
         if (files.length > catalogBrowserUploadMaxFiles) {
+          updateImportControls(null);
           setNodeText(els.importCommitStatus, `浏览器上传最多一次 ${catalogBrowserUploadMaxFiles} 张图片，请分批上传`);
           return;
         }
@@ -9962,7 +10015,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         renderImportJob(job);
         await pollImportJob();
       } catch (err) {
+        updateImportControls(null);
         setNodeText(els.importCommitStatus, err.message || '上传导入预处理失败');
+      }
+    });
+    els.cancelImportJobBtn.addEventListener('click', async () => {
+      if (!importJobId) return;
+      try {
+        els.cancelImportJobBtn.disabled = true;
+        setNodeText(els.importCommitStatus, '正在停止识别...');
+        const resp = await fetch('/api/v1/catalog/imports/' + encodeURIComponent(importJobId) + '/cancel', { method: 'POST' });
+        if (!resp.ok) throw new Error(await resp.text());
+        const job = await resp.json();
+        renderImportJob(job);
+        await pollImportJob();
+      } catch (err) {
+        setNodeText(els.importCommitStatus, err.message || '停止识别失败');
+      } finally {
+        els.cancelImportJobBtn.disabled = false;
       }
     });
     els.commitImportBtn.addEventListener('click', async () => {
@@ -10682,6 +10752,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             job = catalog_import_jobs.get(job_id)
             if job is None:
                 raise HTTPException(status_code=404, detail="import job not found")
+            return _serialize_catalog_import_job(job)
+
+    @app.post("/api/v1/catalog/imports/{job_id}/cancel")
+    def api_cancel_catalog_import_job(request: Request, job_id: str) -> Dict[str, Any]:
+        _catalog_require_permission(request, "product:create")
+        with catalog_import_lock:
+            job = catalog_import_jobs.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="import job not found")
+            status = str(job.get("status", "pending"))
+            if status in {"completed", "failed", "canceled"}:
+                return _serialize_catalog_import_job(job)
+            job["cancel_requested"] = True
+            job["status"] = "canceled" if status == "pending" else status
+            job["message"] = "正在停止识别..." if status == "running" else "已停止识别"
             return _serialize_catalog_import_job(job)
 
     @app.get("/api/v1/catalog/imports/{job_id}/source-image")

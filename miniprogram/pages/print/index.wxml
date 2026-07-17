@@ -19,6 +19,13 @@
       </picker>
     </view>
 
+    <input
+      class="watermark-input"
+      value="{{printWatermark}}"
+      placeholder="水印内容"
+      bindinput="onPrintWatermarkInput"
+    />
+
     <button
       class="render-print"
       loading="{{printRendering}}"
