@@ -1025,6 +1025,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     _setup_logging()
     search_assets_lock = threading.Lock()
+    search_assets_reload_lock = threading.Lock()
     names: List[str] = []
     feats: np.ndarray | None = None
     secondary_names: List[str] = []
@@ -1147,7 +1148,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             standard_image_by_code_key = next_standard_image_by_code_key
         logging.info("search assets reloaded: reason=%s in %.2fs", reason, time.perf_counter() - t_reload)
 
-    _reload_search_assets("startup")
     catalog_store = CatalogStore(catalog_db_path)
     color_card_store = ColorCardStore(color_card_db_path)
     catalog_write_lock = threading.Lock()
@@ -1173,11 +1173,39 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     app.state.ready = False
     app.state.ready_detail = "initializing"
+    app.state.search_ready = False
+    app.state.search_ready_detail = "search assets not loaded"
     image_cache_dir = Path("outputs/image_cache")
     image_cache_dir.mkdir(parents=True, exist_ok=True)
     catalog_upload_dir = Path("outputs/catalog_import_uploads")
     catalog_upload_dir.mkdir(parents=True, exist_ok=True)
     wechat_access_token_cache: Dict[str, Any] = {"token": "", "expires_at": 0.0}
+
+    def _reload_search_assets_and_warm_caches(reason: str) -> None:
+        with search_assets_reload_lock:
+            with search_assets_lock:
+                has_existing_assets = bool(names) and feats is not None
+            app.state.search_ready = bool(has_existing_assets)
+            app.state.search_ready_detail = f"reloading search assets: {reason}" if has_existing_assets else f"loading search assets: {reason}"
+            try:
+                _reload_search_assets(reason)
+                with search_assets_lock:
+                    warm_names = list(names)
+                app.state.search_ready = True
+                app.state.search_ready_detail = "search assets ready; warming enhancement caches"
+                _preload_search_enhancement_caches(warm_names)
+                app.state.search_ready_detail = "search assets ready"
+            except Exception as exc:
+                app.state.search_ready = False
+                app.state.search_ready_detail = f"search assets load failed: {exc}"
+                logging.exception("search assets background reload failed: reason=%s", reason)
+
+    def _start_search_assets_reload(reason: str) -> None:
+        threading.Thread(
+            target=_reload_search_assets_and_warm_caches,
+            args=(reason,),
+            daemon=True,
+        ).start()
     color_meter_native_readings: Dict[str, Dict[str, Any]] = {}
 
     def _wechat_get_access_token() -> str:
@@ -4561,100 +4589,114 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accessory_pattern_cache: Dict[str, np.ndarray] = {}
     accessory_hat_prior_cache: Dict[str, float] = {}
     phash_cache: Dict[str, np.ndarray] = {}
-    if shape_consistency_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            shp = _extract_fg_shape(fp)
-            if shp is not None:
-                fg_shape_cache[file_name] = shp
-        logging.info("api preloaded shape cache: %d", len(fg_shape_cache))
-    if mask_consistency_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            mv = _extract_fg_mask_vec(fp, size=64)
-            if mv is not None:
-                fg_mask_cache[file_name] = mv
-        logging.info("api preloaded mask cache: %d", len(fg_mask_cache))
-    if region_crop_color_consistency_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            cv = _extract_color_sig(fp)
-            if cv is not None:
-                color_sig_cache[file_name] = cv
-        logging.info("api preloaded color cache: %d", len(color_sig_cache))
-    if stripe_consistency_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            sv = _extract_stripe_sig(fp, keep=24)
-            if sv is not None:
-                stripe_sig_cache[file_name] = sv
-        logging.info("api preloaded stripe cache: %d", len(stripe_sig_cache))
-    if pattern_consistency_enabled or strict_small_pattern_region_order_enabled or strict_small_pattern_region_rescue_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            pv = _extract_pattern_sig(fp, size=14)
-            if pv is not None:
-                pattern_sig_cache[file_name] = pv
-        logging.info("api preloaded pattern cache: %d", len(pattern_sig_cache))
-    if checker_consistency_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            cp = _extract_checker_profile(fp, grid=10)
-            if cp is not None:
-                checker_profile_cache[file_name] = cp
-        logging.info("api preloaded checker cache: %d", len(checker_profile_cache))
-    if accent_pattern_enabled:
-        accent_pattern_cache = _load_or_build_accent_pattern_cache(names)
-        logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
-    if strict_small_dark_motif_rescue_enabled:
-        dark_motif_cache = _load_or_build_dark_motif_cache(names)
-        logging.info("api preloaded dark motif cache: %d", len(dark_motif_cache))
-    if collar_contour_enabled:
-        collar_contour_cache = _load_or_build_collar_contour_cache(names)
-        logging.info("api preloaded collar contour cache: %d", len(collar_contour_cache))
-        if collar_chevron_enabled:
-            collar_chevron_cache = _load_or_build_collar_chevron_cache(names)
-            logging.info("api preloaded collar chevron cache: %d", len(collar_chevron_cache))
-    if sleeve_pattern_enabled:
-        sleeve_pattern_cache = _load_or_build_sleeve_pattern_cache(names)
-        logging.info("api preloaded sleeve pattern cache: %d", len(sleeve_pattern_cache))
-        if sleeve_pair_prior_boost > 0.0:
-            sleeve_pair_prior_cache = _load_or_build_sleeve_pair_prior_cache(names)
-            logging.info("api preloaded sleeve pair prior cache: %d", len(sleeve_pair_prior_cache))
-    if accessory_pattern_enabled:
-        accessory_pattern_cache = _load_or_build_accessory_pattern_cache(names)
-        logging.info("api preloaded accessory pattern cache: %d", len(accessory_pattern_cache))
-        if accessory_hat_prior_boost > 0.0:
-            accessory_hat_prior_cache = _load_or_build_accessory_hat_prior_cache(names)
-            logging.info("api preloaded accessory hat prior cache: %d", len(accessory_hat_prior_cache))
-    if phash_enabled:
-        uniq = sorted({n.split("@", 1)[0] for n in names})
-        for file_name in uniq:
-            fp = standard_dir / file_name
-            if not fp.exists() or not fp.is_file():
-                continue
-            bits = _extract_phash_bits(fp, size=32, keep=8)
-            if bits is not None:
-                phash_cache[file_name] = bits
-        logging.info("api preloaded phash cache: %d", len(phash_cache))
+
+    def _preload_search_enhancement_caches(file_names: List[str]) -> None:
+        nonlocal fg_shape_cache, fg_mask_cache, color_sig_cache, stripe_sig_cache
+        nonlocal pattern_sig_cache, checker_profile_cache, accent_pattern_cache, dark_motif_cache
+        nonlocal collar_contour_cache, collar_chevron_cache, sleeve_pattern_cache, sleeve_pair_prior_cache
+        nonlocal accessory_pattern_cache, accessory_hat_prior_cache, phash_cache
+        uniq = sorted({str(n).split("@", 1)[0] for n in file_names})
+        if shape_consistency_enabled:
+            next_cache: Dict[str, tuple[float, float]] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                shp = _extract_fg_shape(fp)
+                if shp is not None:
+                    next_cache[file_name] = shp
+            fg_shape_cache = next_cache
+            logging.info("api preloaded shape cache: %d", len(fg_shape_cache))
+        if mask_consistency_enabled:
+            next_cache: Dict[str, np.ndarray] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                mv = _extract_fg_mask_vec(fp, size=64)
+                if mv is not None:
+                    next_cache[file_name] = mv
+            fg_mask_cache = next_cache
+            logging.info("api preloaded mask cache: %d", len(fg_mask_cache))
+        if region_crop_color_consistency_enabled:
+            next_cache: Dict[str, np.ndarray] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                cv = _extract_color_sig(fp)
+                if cv is not None:
+                    next_cache[file_name] = cv
+            color_sig_cache = next_cache
+            logging.info("api preloaded color cache: %d", len(color_sig_cache))
+        if stripe_consistency_enabled:
+            next_cache: Dict[str, np.ndarray] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                sv = _extract_stripe_sig(fp, keep=24)
+                if sv is not None:
+                    next_cache[file_name] = sv
+            stripe_sig_cache = next_cache
+            logging.info("api preloaded stripe cache: %d", len(stripe_sig_cache))
+        if pattern_consistency_enabled or strict_small_pattern_region_order_enabled or strict_small_pattern_region_rescue_enabled:
+            next_cache: Dict[str, np.ndarray] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                pv = _extract_pattern_sig(fp, size=14)
+                if pv is not None:
+                    next_cache[file_name] = pv
+            pattern_sig_cache = next_cache
+            logging.info("api preloaded pattern cache: %d", len(pattern_sig_cache))
+        if checker_consistency_enabled:
+            next_cache: Dict[str, Dict[str, float]] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                cp = _extract_checker_profile(fp, grid=10)
+                if cp is not None:
+                    next_cache[file_name] = cp
+            checker_profile_cache = next_cache
+            logging.info("api preloaded checker cache: %d", len(checker_profile_cache))
+        if accent_pattern_enabled:
+            accent_pattern_cache = _load_or_build_accent_pattern_cache(file_names)
+            logging.info("api preloaded accent pattern cache: %d", len(accent_pattern_cache))
+        if strict_small_dark_motif_rescue_enabled:
+            dark_motif_cache = _load_or_build_dark_motif_cache(file_names)
+            logging.info("api preloaded dark motif cache: %d", len(dark_motif_cache))
+        if collar_contour_enabled:
+            collar_contour_cache = _load_or_build_collar_contour_cache(file_names)
+            logging.info("api preloaded collar contour cache: %d", len(collar_contour_cache))
+            if collar_chevron_enabled:
+                collar_chevron_cache = _load_or_build_collar_chevron_cache(file_names)
+                logging.info("api preloaded collar chevron cache: %d", len(collar_chevron_cache))
+        if sleeve_pattern_enabled:
+            sleeve_pattern_cache = _load_or_build_sleeve_pattern_cache(file_names)
+            logging.info("api preloaded sleeve pattern cache: %d", len(sleeve_pattern_cache))
+            if sleeve_pair_prior_boost > 0.0:
+                sleeve_pair_prior_cache = _load_or_build_sleeve_pair_prior_cache(file_names)
+                logging.info("api preloaded sleeve pair prior cache: %d", len(sleeve_pair_prior_cache))
+        if accessory_pattern_enabled:
+            accessory_pattern_cache = _load_or_build_accessory_pattern_cache(file_names)
+            logging.info("api preloaded accessory pattern cache: %d", len(accessory_pattern_cache))
+            if accessory_hat_prior_boost > 0.0:
+                accessory_hat_prior_cache = _load_or_build_accessory_hat_prior_cache(file_names)
+                logging.info("api preloaded accessory hat prior cache: %d", len(accessory_hat_prior_cache))
+        if phash_enabled:
+            next_cache: Dict[str, np.ndarray] = {}
+            for file_name in uniq:
+                fp = standard_dir / file_name
+                if not fp.exists() or not fp.is_file():
+                    continue
+                bits = _extract_phash_bits(fp, size=32, keep=8)
+                if bits is not None:
+                    next_cache[file_name] = bits
+            phash_cache = next_cache
+            logging.info("api preloaded phash cache: %d", len(phash_cache))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -4663,7 +4705,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/ready")
     def ready() -> JSONResponse:
         if bool(getattr(app.state, "ready", False)):
-            return JSONResponse(status_code=200, content={"status": "ready"})
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "ready",
+                    "search_ready": bool(getattr(app.state, "search_ready", False)),
+                    "search_detail": str(getattr(app.state, "search_ready_detail", "")),
+                },
+            )
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "detail": str(getattr(app.state, "ready_detail", "initializing"))},
@@ -10313,11 +10362,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         remaining_product = catalog_store.get_product(style_code)
-        threading.Thread(
-            target=_reload_search_assets,
-            args=("catalog_product_image_delete",),
-            daemon=True,
-        ).start()
+        _start_search_assets_reload("catalog_product_image_delete")
         return {
             "ok": True,
             "style_code": style_code,
@@ -10895,11 +10940,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if job is not None:
                     job["committed"] = True
                     job["message"] = f"已导入 {imported} 张图片"
-            threading.Thread(
-                target=_reload_search_assets,
-                args=("catalog_import_commit",),
-                daemon=True,
-            ).start()
+            _start_search_assets_reload("catalog_import_commit")
         return {
             "job_id": payload.job_id,
             "imported": imported,
@@ -10963,6 +11004,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         suffix = Path(file.filename).suffix.lower()
         if suffix.lstrip(".") not in {"png", "jpg", "jpeg"}:
             raise HTTPException(status_code=400, detail="only png/jpg/jpeg supported")
+        with search_assets_lock:
+            search_has_assets = bool(names) and feats is not None
+        if not search_has_assets:
+            raise HTTPException(
+                status_code=503,
+                detail=str(getattr(app.state, "search_ready_detail", "search assets loading")),
+            )
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf, tempfile.NamedTemporaryFile(suffix=".tight.jpg", delete=True) as tight_tf:
             upload_bytes = await file.read()
@@ -13948,6 +13996,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             logging.exception("recolor-ai failed unexpectedly")
             raise HTTPException(status_code=500, detail="融合预览服务暂不可用，请稍后再试") from exc
 
+    _start_search_assets_reload("startup")
     app.state.ready = True
     app.state.ready_detail = "ready"
     return app
