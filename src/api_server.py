@@ -8138,7 +8138,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-source-link:hover { text-decoration: underline; }
     .import-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; }
     .import-table-wrap { max-height: 52vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 12px; }
+    .import-preview-status { min-height: 120px; border-radius: 12px; background: #f9fafb; color: #64748b; display: grid; place-items: center; font-size: 15px; font-weight: 700; }
+    .import-preview-status.hidden { display: none; }
     .import-preview-img { width: 100%; max-height: 72vh; object-fit: contain; background: #f9fafb; border-radius: 12px; }
+    .import-preview-img.loading { display: none; }
     .color-meter-panel { width: min(1040px, 100%); }
     .color-meter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .color-meter-card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; background: #fafbfc; }
@@ -8353,6 +8356,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>
         <button id="closeImportPreviewBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
+      <div id="importPreviewStatus" class="import-preview-status hidden"></div>
       <img id="importPreviewImg" class="import-preview-img" alt="source preview" />
     </div>
   </div>
@@ -8477,6 +8481,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       importPreviewModal: document.getElementById('importPreviewModal'),
       importPreviewTitle: document.getElementById('importPreviewTitle'),
       importPreviewSubTitle: document.getElementById('importPreviewSubTitle'),
+      importPreviewStatus: document.getElementById('importPreviewStatus'),
       importPreviewImg: document.getElementById('importPreviewImg'),
       closeImportPreviewBtn: document.getElementById('closeImportPreviewBtn'),
       importBatchCategoryPicks: document.getElementById('importBatchCategoryPicks'),
@@ -9537,7 +9542,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!item || !importJobId) return;
       setNodeText(els.importPreviewTitle, item.source_name || '');
       setNodeText(els.importPreviewSubTitle, item.source_rel_path || '');
+      setNodeText(els.importPreviewStatus, '图片加载中...');
+      if (els.importPreviewStatus) els.importPreviewStatus.classList.remove('hidden');
       if (els.importPreviewImg) {
+        els.importPreviewImg.classList.add('loading');
+        els.importPreviewImg.onload = () => {
+          if (els.importPreviewStatus) els.importPreviewStatus.classList.add('hidden');
+          els.importPreviewImg.classList.remove('loading');
+        };
+        els.importPreviewImg.onerror = () => {
+          setNodeText(els.importPreviewStatus, '图片加载失败，请重试');
+          if (els.importPreviewStatus) els.importPreviewStatus.classList.remove('hidden');
+          els.importPreviewImg.classList.add('loading');
+        };
         const params = new URLSearchParams();
         params.set('source_rel_path', item.source_rel_path || '');
         params.set('max_edge', '1600');
@@ -9548,7 +9565,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     function closeImportPreview() {
       if (els.importPreviewModal) els.importPreviewModal.classList.remove('open');
-      if (els.importPreviewImg) els.importPreviewImg.src = '';
+      if (els.importPreviewStatus) els.importPreviewStatus.classList.add('hidden');
+      if (els.importPreviewImg) {
+        els.importPreviewImg.onload = null;
+        els.importPreviewImg.onerror = null;
+        els.importPreviewImg.classList.add('loading');
+        els.importPreviewImg.src = '';
+      }
     }
 
     function stopImportPolling() {
