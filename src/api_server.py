@@ -697,6 +697,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_public = bool(catalog_cfg.get("public_endpoints", True))
     catalog_image_max_edge = int(catalog_cfg.get("image_max_edge", 420))
     catalog_image_quality = int(catalog_cfg.get("image_quality", 68))
+    catalog_browser_upload_max_files = max(1, int(catalog_cfg.get("browser_upload_max_files", 30)))
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
@@ -4910,11 +4911,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .my-color-filter-icon { text-align: right; font-size: 24px; line-height: 1; }
     .my-color-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
     .my-color-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 72px; border-radius: 0 5px 5px 0; background: #ef4444; color: #fff; font-size: 16px; z-index: 0; }
-    .my-color-card { position: relative; z-index: 1; min-height: 98px; border-radius: 5px; padding: 14px 18px; display: block; color: #fff; transition: transform .18s ease; }
+    .my-color-card { position: relative; z-index: 1; min-height: 98px; border-radius: 5px; padding: 14px 12px 14px 18px; display: grid; grid-template-columns: minmax(0,1fr) 40px; align-items: start; gap: 8px; color: #fff; transition: transform .18s ease; }
     .my-color-swipe.open .my-color-card { transform: translateX(-72px); }
     .my-color-swatch { display: none; }
+    .my-color-info { min-width: 0; }
     .my-color-name { font-size: 18px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
     .my-color-meta { font-size: 14px; line-height: 1.45; color: rgba(255,255,255,.92); font-weight: 500; }
+    .my-color-menu-btn { width: 38px; height: 34px; min-height: 34px; padding: 0; border-radius: 8px; background: rgba(0,0,0,.12); color: currentColor; font-size: 24px; line-height: 1; }
     .my-color-list .color-match-item, .my-color-list .card { background: #202435; color: #fff; border-color: #30364b; }
     .selected-library-card { min-height: 62px; border-radius: 5px; background: #202435; color: #fff; display: grid; grid-template-columns: minmax(0,1fr) 32px; align-items: center; gap: 10px; padding: 10px 14px; font-size: 17px; }
     .selected-library-meta { color: #aab3c5; font-size: 13px; margin-top: 3px; }
@@ -5002,7 +5005,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <div class="form hidden" id="productCreateBox">
           <div class="form-title">产品图片录入</div>
           <input id="productFiles" type="file" accept="image/*" multiple />
-          <div class="muted">上传后先识别预览，确认年份、类别、细类后再入库。</div>
+          <div class="muted">上传后先识别预览，确认年份、类别、细类后再入库；预览里修改款号时，导入文件名会自动跟着改。</div>
           <button id="uploadProductsBtn" type="button">上传识别</button>
         </div>
         <div class="review hidden" id="importReviewBox">
@@ -5013,7 +5016,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             </div>
             <button class="secondary" id="cancelImportBtn" type="button">取消</button>
           </div>
-          <div class="bulk-note">批量标签：类别和细类会统一加到本次勾选导入的图片所属款号，可选择已有标签，也可直接输入新增标签。</div>
+          <div class="bulk-note">批量标签：类别和细类会统一加到本次勾选导入的图片所属款号，可选择已有标签，也可直接输入新增标签。修改单张图片的款号时，导入文件名会自动同步修改。</div>
           <div class="bulk-fields">
             <select id="bulkImportCategorySelect"></select>
             <select id="bulkImportSubcategorySelect"></select>
@@ -5302,6 +5305,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       pickedColorLab: null,
       pickedColorHex: "",
       pickedColorRgb: null,
+      colorActionTarget: null,
       meterPreviewMode: "swatch",
       meterSuppressClick: false,
       colorCompareDragging: false,
@@ -6115,17 +6119,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       box.innerHTML = state.colors.map((item) => {
         const canDelete = item.is_favorite || isEditableColorLibraryId(item.library_id);
+        const hex = normalizeHex(item.hex || labToHex({ L: Number(item.l) || 0, a: Number(item.a) || 0, b: Number(item.b) || 0 }));
+        const l = Number(item.l) || 0;
+        const a = Number(item.a) || 0;
+        const b = Number(item.b) || 0;
         return `
-        <div class="my-color-swipe" data-card-id="${escapeHtml(String(item.id || ""))}" data-favorite="${item.is_favorite ? "1" : "0"}" data-user-card="${(!item.is_favorite && isEditableColorLibraryId(item.library_id)) ? "1" : "0"}">
+        <div class="my-color-swipe" data-card-id="${escapeHtml(String(item.id || ""))}" data-card-name="${escapeHtml(item.name || "")}" data-card-hex="${hex}" data-card-l="${l}" data-card-a="${a}" data-card-b="${b}" data-favorite="${item.is_favorite ? "1" : "0"}" data-user-card="${(!item.is_favorite && isEditableColorLibraryId(item.library_id)) ? "1" : "0"}">
           ${canDelete ? '<button class="my-color-delete" type="button">删除</button>' : ""}
-          <div class="my-color-card" style="background:#${normalizeHex(item.hex || labToHex({ L: Number(item.l) || 0, a: Number(item.a) || 0, b: Number(item.b) || 0 }))};">
-            <div class="my-color-swatch" style="background:#${normalizeHex(item.hex || labToHex({ L: Number(item.l) || 0, a: Number(item.a) || 0, b: Number(item.b) || 0 }))};"></div>
-            <div>
+          <div class="my-color-card" style="background:#${hex};">
+            <div class="my-color-swatch" style="background:#${hex};"></div>
+            <div class="my-color-info">
               <div class="my-color-name">名称: ${escapeHtml(item.name || "")}</div>
               <div class="my-color-meta">色彩库: ${escapeHtml(item.library_name || item.library_id || "")}</div>
-              <div class="my-color-meta">色值: L*: ${Number(item.l).toFixed(2)} a*: ${Number(item.a).toFixed(2)} b*: ${Number(item.b).toFixed(2)}</div>
+              <div class="my-color-meta">色值: L*: ${l.toFixed(2)} a*: ${a.toFixed(2)} b*: ${b.toFixed(2)}</div>
               ${item.created_at ? `<div class="my-color-meta">创建时间: ${escapeHtml(item.created_at)}</div>` : ""}
             </div>
+            <button class="my-color-menu-btn" type="button" aria-label="更多操作">•••</button>
           </div>
         </div>
       `}).join("");
@@ -6462,10 +6471,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function closeColorImageMenu() {
       $("colorImageMenuSheet")?.classList.add("hidden");
     }
-    function openColorPickActions() {
+    function openColorPickActions(target = null) {
+      state.colorActionTarget = target;
       $("colorPickActionSheet")?.classList.remove("hidden");
     }
     function closeColorPickActions() {
+      state.colorActionTarget = null;
       $("colorPickActionSheet")?.classList.add("hidden");
     }
     async function saveLabColorToFavorites(name, lab, hex) {
@@ -6485,6 +6496,45 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const name = `取色 #${hex}`;
       await saveLabColorToFavorites(name, lab, hex);
       setStatus("已保存到我的色彩", false);
+    }
+    async function addColorCardToFavorites(cardId) {
+      const tag = ownerTag();
+      if (!tag) throw new Error("缺少用户 token，无法保存到我的色彩");
+      if (!cardId) throw new Error("色号数据不完整，无法保存");
+      await api("/api/v1/color-card/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_tag: tag, card_id: Number(cardId) }),
+      });
+      if (state.colorView === "mine") await loadColors();
+    }
+    async function saveCurrentActionColorToFavorites() {
+      const target = state.colorActionTarget;
+      if (!target) return savePickedColorToFavorites();
+      if (target.cardId && target.isExistingCard) {
+        await addColorCardToFavorites(target.cardId);
+      } else {
+        await saveLabColorToFavorites(target.name || `色号 #${target.hex}`, target.lab, target.hex);
+      }
+      setStatus("已保存到我的色彩", false);
+    }
+    function applyActionTargetToMeter(target) {
+      if (!target || !target.lab || !target.hex) return false;
+      state.pickedColorLab = target.lab;
+      state.pickedColorHex = target.hex;
+      state.pickedColorRgb = null;
+      $("colorL").value = target.lab.L.toFixed(2);
+      $("colorA").value = target.lab.a.toFixed(2);
+      $("colorB").value = target.lab.b.toFixed(2);
+      refreshColorSwatch();
+      updateMeterPreview();
+      return true;
+    }
+    function currentColorActionTarget() {
+      if (state.colorActionTarget) return state.colorActionTarget;
+      const lab = state.pickedColorLab;
+      const hex = state.pickedColorHex;
+      return lab && hex ? { lab, hex, name: `取色 #${hex}`, isExistingCard: false } : null;
     }
     async function deleteColorFavorite(cardId) {
       const tag = ownerTag();
@@ -7661,11 +7711,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (event.target === $("colorImageMenuSheet")) closeColorImageMenu();
     });
     $("savePickedColorBtn")?.addEventListener("click", () => {
+      const target = currentColorActionTarget();
       closeColorPickActions();
-      savePickedColorToFavorites().catch((err) => setStatus(err.message || "保存失败", true));
+      state.colorActionTarget = target;
+      saveCurrentActionColorToFavorites()
+        .catch((err) => setStatus(err.message || "保存失败", true))
+        .finally(() => { state.colorActionTarget = null; });
     });
     $("findPickedColorBtn")?.addEventListener("click", () => {
+      const target = currentColorActionTarget();
       closeColorPickActions();
+      if (target) applyActionTargetToMeter(target);
       showInstrumentPickedColor();
       switchColorView("instrument");
       matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true));
@@ -7675,6 +7731,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (event.target === $("colorPickActionSheet")) closeColorPickActions();
     });
     $("colorList")?.addEventListener("pointerdown", (event) => {
+      if (event.target.closest(".my-color-menu-btn")) return;
       const row = event.target.closest(".my-color-swipe[data-favorite='1'], .my-color-swipe[data-user-card='1']");
       if (!row) return;
       state.colorFavoriteSwipe = { row, startX: event.clientX, startY: event.clientY };
@@ -7697,6 +7754,32 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       });
     });
     $("colorList")?.addEventListener("click", (event) => {
+      const menuBtn = event.target.closest(".my-color-menu-btn");
+      if (menuBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        const row = menuBtn.closest(".my-color-swipe");
+        const lab = {
+          L: Number(row?.dataset.cardL),
+          a: Number(row?.dataset.cardA),
+          b: Number(row?.dataset.cardB),
+        };
+        const hex = normalizeHex(row?.dataset.cardHex || "");
+        if (!row || !hex || !Number.isFinite(lab.L) || !Number.isFinite(lab.a) || !Number.isFinite(lab.b)) {
+          return setStatus("色号数据不完整，无法操作", true);
+        }
+        document.querySelectorAll(".my-color-swipe.open").forEach((item) => item.classList.remove("open"));
+        openColorPickActions({
+          cardId: row.dataset.cardId || "",
+          name: row.dataset.cardName || `色号 #${hex}`,
+          hex,
+          lab,
+          isExistingCard: true,
+          isFavorite: row.dataset.favorite === "1",
+          isUserCard: row.dataset.userCard === "1",
+        });
+        return;
+      }
       const deleteBtn = event.target.closest(".my-color-delete");
       if (!deleteBtn) return;
       event.preventDefault();
@@ -8182,7 +8265,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <div class="modal-head">
         <div>
           <div class="code" style="margin:0;">款图录入</div>
-          <div class="muted">支持服务器目录或浏览器上传图片，先 OCR 生成候选文件名，再手工修改后导入到产品库图片目录。</div>
+          <div class="muted">支持服务器目录或浏览器上传图片，浏览器上传最多一次 __CATALOG_BROWSER_UPLOAD_MAX_FILES__ 张。识别后可手工修改款号、年份和最终文件名；修改款号时，导入后文件名会自动跟着改，再导入到产品库图片目录。</div>
         </div>
         <button id="closeImportBtn" class="modal-close-btn" aria-label="关闭" title="关闭">×</button>
       </div>
@@ -8199,6 +8282,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <input id="importUploadFiles" type="file" accept="image/*" multiple />
           <button id="startUploadImportBtn" type="button">上传识别</button>
         </div>
+        <div class="muted" style="margin-top:8px;">支持 jpg、jpeg、png、webp、bmp；浏览器上传最多一次 __CATALOG_BROWSER_UPLOAD_MAX_FILES__ 张图片。</div>
       </div>
       <div class="import-batch-tag-box">
         <div class="import-batch-tag-title">批量标签：年份在下方每行修改或填写，类别和细类统一加到本次勾选导入的图片所属款号</div>
@@ -8223,7 +8307,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <tr>
               <th style="width:52px;">导入</th>
               <th>源文件</th>
-              <th style="width:150px;">识别款号</th>
+              <th style="width:170px;">款号</th>
               <th style="width:110px;">年份标签</th>
               <th>导入后文件名</th>
               <th style="width:130px;">状态</th>
@@ -8312,10 +8396,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <div class="color-meter-card" style="margin-top:14px;">
         <div class="code" style="margin:0 0 8px;">xlsx 批量导入</div>
         <div class="color-xlsx-upload-row">
-          <input id="colorXlsxFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          <input id="colorXlsxFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple />
           <button id="colorXlsxUploadBtn" type="button">上传导入</button>
         </div>
-        <div id="colorXlsxUploadStatus" class="color-xlsx-upload-status">格式需与“东莞国彩丝光棉.xlsx”一致；上传后会按文件名创建或替换同名色卡库。</div>
+        <div id="colorXlsxUploadStatus" class="color-xlsx-upload-status">支持一次选择多个 .xlsx；格式需与“东莞国彩丝光棉.xlsx”一致，上传后会按每个文件名创建或替换同名色卡库。</div>
       </div>
       <div class="color-meter-card" style="margin-top:14px;">
         <div class="code" style="margin:0 0 8px;">相似色号列表</div>
@@ -8337,6 +8421,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let importJobId = '';
     let importPollTimer = null;
     let importJobData = null;
+    const catalogBrowserUploadMaxFiles = __CATALOG_BROWSER_UPLOAD_MAX_FILES__;
     const els = {
       styleCodeQuery: document.getElementById('styleCodeQuery'),
       searchBtn: document.getElementById('searchBtn'),
@@ -9351,13 +9436,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
 
     async function uploadColorCardXlsx() {
-      const file = els.colorXlsxFile && els.colorXlsxFile.files && els.colorXlsxFile.files[0];
-      if (!file) throw new Error('请选择 xlsx 文件');
-      if (!/\\.xlsx$/i.test(file.name || '')) throw new Error('只支持上传 .xlsx 文件');
+      const files = Array.from((els.colorXlsxFile && els.colorXlsxFile.files) || []);
+      if (!files.length) throw new Error('请选择 xlsx 文件');
+      const invalid = files.find((file) => !/\\.xlsx$/i.test(file.name || ''));
+      if (invalid) throw new Error('只支持上传 .xlsx 文件：' + (invalid.name || '未命名文件'));
       const form = new FormData();
-      form.append('file', file, file.name);
+      files.forEach((file) => {
+        form.append('files', file, file.name);
+      });
       els.colorXlsxUploadBtn.disabled = true;
-      setColorXlsxUploadStatus('正在上传并导入...', false);
+      setColorXlsxUploadStatus(`正在上传并导入 ${files.length} 个文件...`, false);
       try {
         const resp = await fetch('/api/v1/color-card/libraries/upload-xlsx', {
           method: 'POST',
@@ -9365,12 +9453,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         });
         if (!resp.ok) throw new Error(await resp.text());
         const data = await resp.json();
-        const library = data.library || {};
-        await loadColorLibraries(library.id || '');
+        const results = data.results || [];
+        const failed = results.filter((item) => !item.ok);
+        const success = results.filter((item) => item.ok);
+        const lastLibrary = (success[success.length - 1] || {}).library || data.library || {};
+        await loadColorLibraries(lastLibrary.id || '');
         if (els.colorXlsxFile) els.colorXlsxFile.value = '';
-        const message = `导入成功：已导入 ${data.count || 0} 个色号到 ${library.name || '色卡库'}`;
-        setColorXlsxUploadStatus(message, false);
-        await appAlert(message);
+        const totalCount = Number(data.total_count || data.count || 0);
+        const message = failed.length
+          ? `部分导入完成：成功 ${success.length} 个文件、${totalCount} 个色号；失败 ${failed.length} 个文件`
+          : `导入成功：${success.length || 1} 个文件，共 ${totalCount} 个色号`;
+        setColorXlsxUploadStatus(message, !!failed.length);
+        await appAlert(failed.length ? `${message}\\n\\n${failed.map((item) => `${item.filename || '文件'}：${item.error || '导入失败'}`).join('\\n')}` : message);
       } catch (err) {
         const message = err.message || 'xlsx 导入失败';
         setColorXlsxUploadStatus(message, true);
@@ -9448,6 +9542,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return match ? `20${match[1]}` : '';
     }
 
+    function styleCodeFromImportFilename(filename) {
+      const raw = String(filename || '').trim();
+      if (!raw) return '';
+      const stem = raw.replace(/\\.[^.]+$/, '');
+      return stem.includes('_') ? stem.slice(0, stem.lastIndexOf('_')) : stem;
+    }
+
+    function buildImportFilenameFromStyleCode(styleCode, currentFilename, fallbackExt) {
+      const cleanCode = String(styleCode || '').trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '');
+      if (!cleanCode) return String(currentFilename || '').trim();
+      const raw = String(currentFilename || '').trim();
+      const extMatch = raw.match(/(\\.[^.]+)$/);
+      const ext = extMatch ? extMatch[1] : (fallbackExt || '.jpg');
+      const stem = raw.replace(/\\.[^.]+$/, '');
+      const seqMatch = stem.match(/(_\\d+)$/);
+      return `${cleanCode}${seqMatch ? seqMatch[1] : '_000'}${ext}`;
+    }
+
     function normalizeImportTags(tags) {
       const seen = new Set();
       return (tags || []).map(tag => String(tag || '').trim()).filter((tag) => {
@@ -9486,7 +9598,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
               <button type="button" class="import-source-link" data-role="importPreviewBtn" data-index="${index}">${item.source_name || ''}</button>
               <div class="muted">${item.source_rel_path || ''}</div>
             </td>
-            <td data-label="识别款号">${item.proposed_style_code || '-'}</td>
+            <td data-label="款号"><input type="text" data-role="importStyleCode" data-index="${index}" value="${item.style_code || item.proposed_style_code || styleCodeFromImportFilename(item.target_filename || item.proposed_filename || '')}" placeholder="如 GZ25-1177" /></td>
             <td data-label="年份标签"><input type="text" data-role="importYearTag" data-index="${index}" value="${item.year_tag || item.proposed_year_tag || ''}" list="yearTagsList" placeholder="如 2024" /></td>
             <td data-label="导入后文件名"><input type="text" data-role="importFilename" data-index="${index}" value="${item.target_filename || item.proposed_filename || ''}" /></td>
             <td data-label="状态"><span class="import-badge ${item.status === 'ok' ? 'ok' : 'warn'}">${item.status === 'ok' ? '已识别' : '需人工确认'}</span>${item.error ? `<div class="muted" style="margin-top:4px;color:#b91c1c;">${item.error}</div>` : ''}</td>
@@ -9509,6 +9621,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if (!yearInput) return;
             const nextYearTag = deriveYearTagFromFilename(input.value);
             if (nextYearTag) yearInput.value = nextYearTag;
+            const styleInput = els.importTableBody.querySelector(`[data-role="importStyleCode"][data-index="${index}"]`);
+            if (styleInput) styleInput.value = styleCodeFromImportFilename(input.value);
+          });
+        });
+        els.importTableBody.querySelectorAll('[data-role="importStyleCode"]').forEach((input) => {
+          input.addEventListener('input', () => {
+            const index = input.dataset.index || '';
+            const fileInput = els.importTableBody.querySelector(`[data-role="importFilename"][data-index="${index}"]`);
+            const yearInput = els.importTableBody.querySelector(`[data-role="importYearTag"][data-index="${index}"]`);
+            const rows = importJobData && importJobData.items ? importJobData.items : [];
+            const row = rows[Number(index)] || {};
+            if (fileInput) {
+              fileInput.value = buildImportFilenameFromStyleCode(input.value, fileInput.value || row.proposed_filename || row.source_name || '', '.jpg');
+            }
+            if (yearInput) {
+              const nextYearTag = deriveYearTagFromFilename(fileInput ? fileInput.value : input.value);
+              if (nextYearTag) yearInput.value = nextYearTag;
+            }
           });
         });
       }
@@ -9539,7 +9669,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return rows.map((item, index) => {
         const checkbox = els.importTableBody.querySelector(`[data-role="importSelect"][data-index="${index}"]`);
         const input = els.importTableBody.querySelector(`[data-role="importFilename"][data-index="${index}"]`);
+        const styleInput = els.importTableBody.querySelector(`[data-role="importStyleCode"][data-index="${index}"]`);
         const yearInput = els.importTableBody.querySelector(`[data-role="importYearTag"][data-index="${index}"]`);
+        const targetFilename = input ? input.value.trim() : (item.target_filename || item.proposed_filename || '');
+        const editedStyleCode = styleInput ? styleInput.value.trim() : '';
         return {
           source_rel_path: item.source_rel_path,
           selected: !!(checkbox && checkbox.checked),
@@ -9548,7 +9681,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             typedTag('subcategory', els.importBatchSubcategoryInput ? els.importBatchSubcategoryInput.value.trim() : ''),
           ]),
           year_tag: yearInput ? yearInput.value.trim() : (item.year_tag || item.proposed_year_tag || ''),
-          target_filename: input ? input.value.trim() : (item.target_filename || item.proposed_filename || ''),
+          target_filename: editedStyleCode
+            ? buildImportFilenameFromStyleCode(editedStyleCode, targetFilename, '.jpg')
+            : targetFilename,
         };
       });
     }
@@ -9745,6 +9880,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           setNodeText(els.importCommitStatus, '请选择要上传的图片');
           return;
         }
+        if (files.length > catalogBrowserUploadMaxFiles) {
+          setNodeText(els.importCommitStatus, `浏览器上传最多一次 ${catalogBrowserUploadMaxFiles} 张图片，请分批上传`);
+          return;
+        }
         stopImportPolling();
         setNodeText(els.importCommitStatus, '');
         if (els.importTableBody) els.importTableBody.innerHTML = '<tr><td colspan="6" class="muted">图片上传中...</td></tr>';
@@ -9827,7 +9966,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     Promise.all([loadGlobalTags(), loadProducts(true)]).catch(err => setStatus(err.message || '加载失败', true));
   </script>
 </body>
-</html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True))
+</html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True)).replace("__CATALOG_BROWSER_UPLOAD_MAX_FILES__", str(catalog_browser_upload_max_files))
 
     @app.get("/product", response_class=HTMLResponse)
     def catalog_product_page(request: Request, token: str = "", access_token: str = ""):
@@ -10091,35 +10230,65 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"library": library, "libraries": color_card_store.list_libraries()}
 
-    @app.post("/api/v1/color-card/libraries/upload-xlsx")
-    async def api_upload_color_card_library_xlsx(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
-        _catalog_require_permission(request, "color:create")
+    async def _import_color_card_xlsx_upload(request: Request, file: UploadFile) -> Dict[str, Any]:
         filename = Path(str(file.filename or "").replace("\\", "/").split("/")[-1]).name
         suffix = Path(filename).suffix.lower()
         if suffix != ".xlsx":
-            raise HTTPException(status_code=400, detail="只支持上传 .xlsx 文件")
+            raise ValueError("只支持上传 .xlsx 文件")
         library_name = Path(filename).stem.strip()
         if not library_name:
-            raise HTTPException(status_code=400, detail="文件名不能为空")
+            raise ValueError("文件名不能为空")
         _check_text_content_security(library_name, filename, openid=_wechat_openid_from_request(request))
         content = await file.read()
         if not content:
-            raise HTTPException(status_code=400, detail="上传文件为空")
+            raise ValueError("上传文件为空")
         if len(content) > 20 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="xlsx 文件不能超过 20MB")
-        try:
-            rows = read_color_rows(content)
-            if not rows:
-                raise ValueError("未读取到有效色卡行，请确认表头包含 名称、L、a、b")
-            library_id = slugify_library_id(library_name)
-            count = color_card_store.replace_library(library_id, library_name, filename, rows)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            logging.exception("color card xlsx import failed: %s", filename)
-            raise HTTPException(status_code=400, detail=f"xlsx 解析失败：{exc}") from exc
+            raise ValueError("xlsx 文件不能超过 20MB")
+        rows = read_color_rows(content)
+        if not rows:
+            raise ValueError("未读取到有效色卡行，请确认表头包含 名称、L、a、b")
+        library_id = slugify_library_id(library_name)
+        count = color_card_store.replace_library(library_id, library_name, filename, rows)
         library = {"id": library_id, "name": library_name, "source_file": filename, "color_count": count}
-        return {"library": library, "count": count, "libraries": color_card_store.list_libraries()}
+        return {"ok": True, "filename": filename, "library": library, "count": count}
+
+    @app.post("/api/v1/color-card/libraries/upload-xlsx")
+    async def api_upload_color_card_library_xlsx(
+        request: Request,
+        files: List[UploadFile] | None = File(default=None),
+        file: UploadFile | None = File(default=None),
+    ) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:create")
+        upload_files = [item for item in (files or []) if item and str(item.filename or "").strip()]
+        if not upload_files and file is not None and str(file.filename or "").strip():
+            upload_files = [file]
+        if not upload_files:
+            raise HTTPException(status_code=400, detail="请选择 xlsx 文件")
+
+        results: List[Dict[str, Any]] = []
+        for upload in upload_files:
+            filename = Path(str(upload.filename or "").replace("\\", "/").split("/")[-1]).name
+            try:
+                results.append(await _import_color_card_xlsx_upload(request, upload))
+            except ValueError as exc:
+                results.append({"ok": False, "filename": filename, "error": str(exc)})
+            except Exception as exc:
+                logging.exception("color card xlsx import failed: %s", filename)
+                results.append({"ok": False, "filename": filename, "error": f"xlsx 解析失败：{exc}"})
+
+        success = [item for item in results if item.get("ok")]
+        if not success:
+            first_error = str((results[0] if results else {}).get("error") or "xlsx 导入失败")
+            raise HTTPException(status_code=400, detail=first_error)
+        total_count = sum(int(item.get("count") or 0) for item in success)
+        last = success[-1]
+        return {
+            "library": last.get("library") or {},
+            "count": int(last.get("count") or 0),
+            "total_count": total_count,
+            "results": results,
+            "libraries": color_card_store.list_libraries(),
+        }
 
     @app.delete("/api/v1/color-card/libraries/{library_id}")
     def api_delete_color_card_library(request: Request, library_id: str, allow_builtin: bool = False) -> Dict[str, Any]:
@@ -10332,6 +10501,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         upload_files = [item for item in files if item and str(item.filename or "").strip()]
         if not upload_files:
             raise HTTPException(status_code=400, detail="no files uploaded")
+        if len(upload_files) > catalog_browser_upload_max_files:
+            raise HTTPException(status_code=400, detail=f"浏览器上传最多一次 {catalog_browser_upload_max_files} 张图片")
         job_id = uuid.uuid4().hex
         source_dir = (catalog_upload_dir / job_id).resolve()
         source_dir.mkdir(parents=True, exist_ok=True)
