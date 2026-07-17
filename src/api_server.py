@@ -2223,6 +2223,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "raw_tags": list(product.get("raw_tags", [])),
             "tag_groups": dict(product.get("tag_groups", {}) or {}),
             "images": images,
+            "image_count": int(product.get("image_count", len(images)) or 0),
             "created_at": str(product.get("created_at", "")),
             "updated_at": str(product.get("updated_at", "")),
         }
@@ -5765,6 +5766,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const match = text.match(/_([0-9a-f]{10})_(\d{3})(\.[^.]+)$/i);
       return match ? `图片 ${Number(match[2]) + 1}${match[3]}` : text;
     }
+    function productImageCount(item) {
+      return Number(item && item.image_count) || (item && item.images || []).length || 0;
+    }
+    async function loadProductDetail(product) {
+      if (!product || !product.style_code) return product;
+      if ((product.images || []).length >= productImageCount(product) && product.images) return product;
+      const detail = await api("/api/v1/catalog/products/" + encodeURIComponent(product.style_code));
+      const next = detail && detail.style_code ? detail : product;
+      state.products = state.products.map((item) => item.style_code === next.style_code ? next : item);
+      return next;
+    }
     function optionList(type, selectedValues) {
       const selected = new Set(selectedValues || []);
       const list = (state.tagGroups[type] || []).filter((name) => type !== "subcategory" || String(name || "").trim() !== "暂无");
@@ -5821,13 +5833,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <img class="thumb" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" />
             <div class="product-tile-body">
               <div class="title">${escapeHtml(productDisplayTitle(item))}</div>
-              <div class="muted">${(item.images || []).length} 张</div>
+              <div class="muted">${productImageCount(item)} 张</div>
               <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
             </div>
           </div>
         `).join("");
         box.querySelectorAll("[data-role=viewProductTile]").forEach((tile) => {
-          tile.addEventListener("click", () => openGallery(state.products.find((row) => row.style_code === tile.dataset.code)));
+          tile.addEventListener("click", () => openGallery(state.products.find((row) => row.style_code === tile.dataset.code)).catch((err) => setStatus(err.message || "加载图片失败", true)));
         });
         $("productLoadMore").textContent = state.productLoading ? "加载中..." : (state.productHasMore ? "向下滑动加载更多" : "已加载全部");
         return;
@@ -5839,7 +5851,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           <img class="thumb" data-role="viewProduct" data-code="${item.style_code || ""}" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" />
           <div>
             <div class="title">${escapeHtml(productDisplayTitle(item))}</div>
-            <div class="muted">图片数：${(item.images || []).length}</div>
+            <div class="muted">图片数：${productImageCount(item)}</div>
             <div class="tags">${productTags(item).map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>
             <div class="tag-edit">
               <div class="tag-edit-row"><label>年份</label><input data-role="yearInput" value="${((item.tag_groups || {}).year || []).join("、")}" inputmode="numeric" placeholder="年份" /></div>
@@ -5884,13 +5896,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         });
       });
     }
-    function openGallery(product) {
+    async function openGallery(product) {
       if (!product) return;
+      state.currentGalleryProduct = product;
+      $("galleryTitle").textContent = productDisplayTitle(product);
+      $("gallerySubTitle").textContent = "图片加载中...";
+      $("galleryGrid").innerHTML = '<div class="empty">图片加载中...</div>';
+      $("galleryModal").classList.add("open");
+      product = await loadProductDetail(product);
       state.currentGalleryProduct = product;
       state.selectedGalleryImages = [];
       const isPersonal = isPersonalProduct(product);
       $("galleryTitle").textContent = productDisplayTitle(product);
-      $("gallerySubTitle").textContent = isPersonal ? `共 ${(product.images || []).length} 张图片` : `共 ${(product.images || []).length} 张图片，点击图片多选`;
+      $("gallerySubTitle").textContent = isPersonal ? `共 ${productImageCount(product)} 张图片` : `共 ${productImageCount(product)} 张图片，点击图片多选`;
       $("addPersonalBtn").textContent = isPersonal ? "取消个人产品" : "加入个人产品";
       $("addPersonalBtn").classList.toggle("remove", isPersonal);
       $("addPersonalBtn").classList.toggle("added", false);
@@ -5933,7 +5951,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           });
         });
       }
-      $("galleryModal").classList.add("open");
     }
     function openZoomImage(imageUrl, title, originalUrl = "") {
       if (!imageUrl) return;
@@ -5968,7 +5985,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function updateGallerySelectionUi() {
       const product = state.currentGalleryProduct;
       if (isPersonalProduct(product)) {
-        $("gallerySubTitle").textContent = `共 ${(product && product.images || []).length} 张图片`;
+        $("gallerySubTitle").textContent = `共 ${productImageCount(product)} 张图片`;
         $("addPersonalBtn").textContent = "取消个人产品";
         $("addPersonalBtn").classList.add("remove");
         return;
@@ -5980,7 +5997,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const mark = item.querySelector(".gallery-check");
         if (mark) mark.textContent = active ? "✓" : "＋";
       });
-      const total = (product && product.images || []).length;
+      const total = productImageCount(product);
       const count = selected.size;
       $("gallerySubTitle").textContent = `共 ${total} 张图片，已选 ${count} 张`;
       $("addPersonalBtn").textContent = count ? `加入个人产品 (${count})` : "加入个人产品";
@@ -6094,7 +6111,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (data.product) {
           state.currentGalleryProduct = data.product;
           state.products = state.products.map((item) => item.style_code === product.style_code ? data.product : item);
-          openGallery(data.product);
+          await openGallery(data.product);
           setStatus("已删除图片", false);
         } else {
           closeGallery();
@@ -7019,7 +7036,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         try {
           await loadPersonalFolders().catch(() => []);
           const activeTag = state.selectedPersonalFolder ? `${tag}:folder:${state.selectedPersonalFolder}` : tag;
-          const mineQuery = new URLSearchParams({ limit: String(limit), offset: "0", tags: activeTag, exclude_personal: "0" });
+          const mineQuery = new URLSearchParams({ limit: String(limit), offset: "0", tags: activeTag, exclude_personal: "0", include_images: "0" });
           const data = await api("/api/v1/catalog/products?" + mineQuery.toString());
           if (loadSeq !== state.productLoadSeq || state.appMode !== loadAppMode || state.productMode !== loadProductMode) return;
           state.products = data.products || [];
@@ -7036,7 +7053,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
         return;
       }
-      const query = new URLSearchParams({ limit: String(limit), offset: String(state.productMode === "query" ? state.productOffset : 0) });
+      const query = new URLSearchParams({ limit: String(limit), offset: String(state.productMode === "query" ? state.productOffset : 0), include_images: "0" });
       query.set("exclude_personal", "1");
       if (state.productMode === "query") query.set("style_code", $("keyword").value.trim());
       const groups = { year: [], category: [], subcategory: [] };
@@ -7165,7 +7182,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           if (!code) return;
           try {
             const detail = await api("/api/v1/catalog/products/" + encodeURIComponent(code));
-            openGallery(detail);
+            await openGallery(detail);
           } catch (err) {
             setStatus(err.message || "打开产品失败", true);
           }
@@ -8098,6 +8115,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .import-table th, .import-table td { padding: 9px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
     .import-table input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 13px; }
     .import-table tr.row-error td { background: #fff1f2; }
+    .import-select-cell { white-space: nowrap; vertical-align: middle !important; }
+    .import-select-label { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; line-height: 1; font-weight: 600; color: #111827; }
+    .import-select-label input[type="checkbox"] { flex: none; margin: 0; }
     .import-batch-tag-box { border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin: 0 0 12px; background: #fafbfc; }
     .import-batch-tag-title { font-size: 12px; color: #475569; margin-bottom: 8px; }
     .tag-admin-box { margin-top: 8px; }
@@ -8305,7 +8325,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         <table class="import-table">
           <thead>
             <tr>
-              <th style="width:52px;">导入</th>
+              <th style="width:92px;">导入</th>
               <th>源文件</th>
               <th style="width:170px;">款号</th>
               <th style="width:110px;">年份标签</th>
@@ -8799,6 +8819,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const params = buildProductQueryParams();
         params.set('limit', String(pageSize));
         params.set('offset', String(currentOffset));
+        params.set('include_images', '0');
         const resp = await fetch('/api/v1/catalog/products?' + params.toString());
         if (!resp.ok) throw new Error(await resp.text());
         const data = await resp.json();
@@ -8914,9 +8935,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return resp.json();
     }
 
-    function openGallery(product) {
+    async function openGallery(product) {
+      if (!product) return;
       els.galleryTitle.textContent = product.style_code || '';
-      els.gallerySubTitle.textContent = `共 ${(product.images || []).length} 张图片`;
+      els.gallerySubTitle.textContent = '图片加载中...';
+      els.galleryGrid.innerHTML = '<div class="muted">图片加载中...</div>';
+      els.galleryModal.classList.add('open');
+      product = await loadProductDetail(product);
+      els.galleryTitle.textContent = product.style_code || '';
+      els.gallerySubTitle.textContent = `共 ${productImageCount(product)} 张图片`;
       els.galleryGrid.innerHTML = (product.images || []).map(item => `
         <div class="gallery-item" data-image-name="${escapeHtml(item.image_name || '')}">
           <button type="button" class="gallery-delete-btn" data-role="deleteGalleryImage" data-image-name="${escapeHtml(item.image_name || '')}" title="删除图片">×</button>
@@ -8935,7 +8962,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             const data = await deleteProductImage(product.style_code, imageName);
             if (data.product) {
               currentProducts = currentProducts.map(item => item.style_code === product.style_code ? data.product : item);
-              openGallery(data.product);
+              await openGallery(data.product);
             } else {
               currentProducts = currentProducts.filter(item => item.style_code !== product.style_code);
               closeGallery();
@@ -8947,7 +8974,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           }
         });
       });
-      els.galleryModal.classList.add('open');
     }
 
     function closeGallery() {
@@ -9593,7 +9619,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       } else {
         if (els.importTableBody) els.importTableBody.innerHTML = items.map((item, index) => `
           <tr class="${item.status === 'ok' ? '' : 'row-error'}">
-            <td data-label="导入"><input type="checkbox" data-role="importSelect" data-index="${index}" ${item.selected === false ? '' : 'checked'} /><span>导入此图</span></td>
+            <td data-label="导入" class="import-select-cell"><label class="import-select-label"><input type="checkbox" data-role="importSelect" data-index="${index}" ${item.selected === false ? '' : 'checked'} /><span>导入此图</span></label></td>
             <td data-label="源文件">
               <button type="button" class="import-source-link" data-role="importPreviewBtn" data-index="${index}">${item.source_name || ''}</button>
               <div class="muted">${item.source_rel_path || ''}</div>
@@ -9688,6 +9714,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       });
     }
 
+    function productImageCount(item) {
+      return Number(item && item.image_count) || (item && item.images || []).length || 0;
+    }
+
+    async function loadProductDetail(product) {
+      if (!product || !product.style_code) return product;
+      if ((product.images || []).length >= productImageCount(product) && product.images) return product;
+      const resp = await fetch('/api/v1/catalog/products/' + encodeURIComponent(product.style_code));
+      if (!resp.ok) throw new Error(await resp.text());
+      const detail = await resp.json();
+      currentProducts = currentProducts.map(item => item.style_code === detail.style_code ? detail : item);
+      return detail;
+    }
+
     function renderCards(products, reset = true) {
       if (reset) els.cards.innerHTML = '';
       if (!products.length && reset) {
@@ -9705,7 +9745,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         card.innerHTML = `
           <img class="thumb" src="${item.cover_image_url || ''}" loading="lazy" alt="${item.style_code}" title="点击查看该款全部图片" />
           <div class="code">${item.style_code}</div>
-          <div class="muted card-meta">图片数：${(item.images || []).length}</div>
+          <div class="muted card-meta">图片数：${productImageCount(item)}</div>
           <div class="card-section-title">当前标签（点击可过滤）</div>
           <div class="tags">
             ${(groups.year || []).map(tag => `<span class="tag"><button type="button" class="tag-remove" data-role="filterFromCardBtn" data-tag="${typedTag('year', tag)}">年份：${tag}</button></span>`).join('')}
@@ -9731,7 +9771,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <button type="button" class="picker-add-btn" data-role="saveBtn">保存标签修改</button>
           </div>
         `;
-        card.querySelector('.thumb').addEventListener('click', () => openGallery(item));
+        card.querySelector('.thumb').addEventListener('click', () => openGallery(item).catch(err => setStatus(err.message || '加载图片失败', true)));
         bindQuickPicks(card);
         card.querySelectorAll('[data-role="filterFromCardBtn"]').forEach((button) => {
           button.addEventListener('click', () => toggleFilterTag(button.dataset.tag || ''));
@@ -9985,6 +10025,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         category_tags: str = "",
         subcategory_tags: str = "",
         exclude_personal: int = 1,
+        include_images: int = 1,
         limit: int = 200,
         offset: int = 0,
     ) -> Dict[str, Any]:
@@ -10007,6 +10048,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             limit=limit,
             offset=offset,
             exclude_owner=bool(exclude_personal),
+            include_images=bool(include_images),
         )
         return {"products": [_serialize_catalog_product(base_url, item) for item in products]}
 

@@ -482,6 +482,7 @@ class CatalogStore:
         limit: int = 200,
         offset: int = 0,
         exclude_owner: bool = False,
+        include_images: bool = True,
     ) -> List[Dict[str, Any]]:
         filters: List[str] = []
         filter_params: List[Any] = []
@@ -563,15 +564,26 @@ class CatalogStore:
                 return []
             codes = [str(row["style_code"]) for row in product_rows]
             placeholders = ",".join(["?"] * len(codes))
-            image_rows = conn.execute(
-                f"""
-                SELECT style_code, image_name, sort_order
-                FROM product_images
-                WHERE style_code IN ({placeholders})
-                ORDER BY style_code ASC, sort_order ASC, image_name ASC
-                """,
-                codes,
-            ).fetchall()
+            if include_images:
+                image_rows = conn.execute(
+                    f"""
+                    SELECT style_code, image_name, sort_order
+                    FROM product_images
+                    WHERE style_code IN ({placeholders})
+                    ORDER BY style_code ASC, sort_order ASC, image_name ASC
+                    """,
+                    codes,
+                ).fetchall()
+            else:
+                image_rows = conn.execute(
+                    f"""
+                    SELECT style_code, COUNT(*) AS image_count
+                    FROM product_images
+                    WHERE style_code IN ({placeholders})
+                    GROUP BY style_code
+                    """,
+                    codes,
+                ).fetchall()
             tag_rows = conn.execute(
                 f"""
                 SELECT pt.style_code, t.name
@@ -602,6 +614,7 @@ class CatalogStore:
                 "created_at": str(row["created_at"] or ""),
                 "updated_at": str(row["updated_at"] or ""),
                 "images": [],
+                "image_count": 0,
                 "tags": [],
                 "raw_tags": [],
                 "tag_groups": {
@@ -615,12 +628,16 @@ class CatalogStore:
             product = products.get(style_code)
             if product is None:
                 continue
+            if "image_count" in row.keys() and "image_name" not in row.keys():
+                product["image_count"] = int(row["image_count"] or 0)
+                continue
             product["images"].append(
                 {
                     "image_name": str(row["image_name"]),
                     "sort_order": int(row["sort_order"] or 0),
                 }
             )
+            product["image_count"] += 1
         for row in tag_rows:
             style_code = str(row["style_code"])
             product = products.get(style_code)
