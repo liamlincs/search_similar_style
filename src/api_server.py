@@ -1949,7 +1949,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             or path.startswith("/recolor-static/")
         )
         allow_api = (
-            path in {"/search", "/image-url", "/api/v1/image-url", "/api/v1/wechat/session", "/api/v1/templates", "/api/v1/render", "/api/v1/images/upload", "/recolor", "/recolor-ai"}
+            path in {
+                "/search",
+                "/image-url",
+                "/api/v1/image-url",
+                "/api/v1/wechat/session",
+                "/api/v1/templates",
+                "/api/v1/render",
+                "/api/v1/images/upload",
+                "/api/v1/admin/warm-enhancement-caches",
+                "/recolor",
+                "/recolor-ai",
+            }
             or is_catalog_route
             or path.startswith("/images/")
             or path.startswith("/print-static/")
