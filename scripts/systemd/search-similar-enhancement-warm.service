@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh Search Similar search and enhancement caches
+Description=Refresh Search Similar search feature cache
 After=search-similar-laptop.service
 Wants=search-similar-laptop.service
 
@@ -7,4 +7,4 @@ Wants=search-similar-laptop.service
 Type=oneshot
 User=john
 WorkingDirectory=/home/john/workspaces/search_similar_style
-ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8000/api/v1/admin/run-nightly-maintenance
+ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8000/api/v1/admin/reload-search-assets
