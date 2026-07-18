@@ -373,6 +373,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     secondary_recall_weight = float(search_cfg.get("secondary_recall_weight", 0.92))
     feature_cache_enabled = bool(search_cfg.get("feature_cache_enabled", True))
     db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
+    warm_enhancement_caches_on_startup = bool(search_cfg.get("warm_enhancement_caches_on_startup", True))
+    lazy_warm_enhancement_caches_on_search = bool(search_cfg.get("lazy_warm_enhancement_caches_on_search", True))
     recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
     preload_rerank_candidate_cache = bool(search_cfg.get("preload_rerank_candidate_cache", False))
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
@@ -1179,6 +1181,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.state.ready_detail = "initializing"
     app.state.search_ready = False
     app.state.search_ready_detail = "search assets not loaded"
+    app.state.enhancement_cache_warm = "pending" if warm_enhancement_caches_on_startup else "lazy"
+    app.state.enhancement_cache_warm_detail = ""
     app.state.image_cache_prewarm = "disabled" if not catalog_prewarm_image_cache else "pending"
     app.state.image_cache_prewarm_detail = ""
     image_cache_dir = Path("outputs/image_cache")
@@ -1198,8 +1202,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 with search_assets_lock:
                     warm_names = list(names)
                 app.state.search_ready = True
-                app.state.search_ready_detail = "search assets ready; warming enhancement caches"
-                _preload_search_enhancement_caches(warm_names)
+                app.state.search_ready_detail = "search assets ready"
+                if warm_enhancement_caches_on_startup:
+                    app.state.enhancement_cache_warm = "running"
+                    app.state.enhancement_cache_warm_detail = f"startup: {len(warm_names)} images"
+                    app.state.search_ready_detail = "search assets ready; warming enhancement caches"
+                    _preload_search_enhancement_caches(warm_names)
+                    app.state.enhancement_cache_warm = "done"
+                    app.state.enhancement_cache_warm_detail = f"startup done: {len(warm_names)} images"
                 app.state.search_ready_detail = "search assets ready"
                 _prewarm_catalog_image_cache()
             except Exception as exc:
@@ -1213,6 +1223,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             args=(reason,),
             daemon=True,
         ).start()
+
+    def _warm_enhancement_caches_once(reason: str) -> None:
+        if not lazy_warm_enhancement_caches_on_search:
+            return
+        current_state = str(getattr(app.state, "enhancement_cache_warm", ""))
+        if current_state in {"running", "done"}:
+            return
+        def _run() -> None:
+            with search_assets_reload_lock:
+                current = str(getattr(app.state, "enhancement_cache_warm", ""))
+                if current in {"running", "done"}:
+                    return
+                with search_assets_lock:
+                    warm_names = list(names)
+                if not warm_names:
+                    return
+                app.state.enhancement_cache_warm = "running"
+                app.state.enhancement_cache_warm_detail = f"{reason}: {len(warm_names)} images"
+                try:
+                    _preload_search_enhancement_caches(warm_names)
+                    app.state.enhancement_cache_warm = "done"
+                    app.state.enhancement_cache_warm_detail = f"{reason} done: {len(warm_names)} images"
+                    logging.info("enhancement caches warmed lazily: reason=%s images=%d", reason, len(warm_names))
+                    _prewarm_catalog_image_cache()
+                except Exception as exc:
+                    app.state.enhancement_cache_warm = "failed"
+                    app.state.enhancement_cache_warm_detail = f"{reason} failed: {exc}"
+                    logging.exception("enhancement cache lazy warm failed: reason=%s", reason)
+
+        threading.Thread(target=_run, daemon=True).start()
     color_meter_native_readings: Dict[str, Dict[str, Any]] = {}
 
     def _wechat_get_access_token() -> str:
@@ -3988,11 +4028,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("catalog image cache prewarm start: total=%d edge=%d quality=%d", total, edge, quality)
         for index, image_name in enumerate(image_names, start=1):
             safe = Path(image_name).name
+            out_fp = _cached_preview_path(safe, edge, quality)
+            if catalog_trust_image_cache and out_fp.exists():
+                skipped += 1
+                if index == total or index % 20 == 0:
+                    app.state.image_cache_prewarm_detail = (
+                        f"{index}/{total} built={built} cached={skipped} failed={failed}"
+                    )
+                    logging.info("catalog image cache prewarm progress: %s", app.state.image_cache_prewarm_detail)
+                continue
             fp = standard_dir / safe
             if not fp.exists() or not fp.is_file():
                 failed += 1
                 continue
-            out_fp = _cached_preview_path(safe, edge, quality)
             try:
                 if out_fp.exists() and out_fp.stat().st_mtime >= fp.stat().st_mtime:
                     skipped += 1
@@ -4767,6 +4815,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     "status": "ready",
                     "search_ready": bool(getattr(app.state, "search_ready", False)),
                     "search_detail": str(getattr(app.state, "search_ready_detail", "")),
+                    "enhancement_cache_warm": str(getattr(app.state, "enhancement_cache_warm", "")),
+                    "enhancement_cache_warm_detail": str(getattr(app.state, "enhancement_cache_warm_detail", "")),
                     "image_cache_prewarm": str(getattr(app.state, "image_cache_prewarm", "")),
                     "image_cache_prewarm_detail": str(getattr(app.state, "image_cache_prewarm_detail", "")),
                 },
@@ -11079,6 +11129,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 status_code=503,
                 detail=str(getattr(app.state, "search_ready_detail", "search assets loading")),
             )
+        if str(getattr(app.state, "enhancement_cache_warm", "")) in {"lazy", "failed"}:
+            _warm_enhancement_caches_once("search_request")
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tf, tempfile.NamedTemporaryFile(suffix=".tight.jpg", delete=True) as tight_tf:
             upload_bytes = await file.read()

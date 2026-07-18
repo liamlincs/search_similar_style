@@ -186,6 +186,8 @@
     "pattern_consistency_apply_topn": 256,
     "pattern_code_boost_enabled": true,
     "pattern_code_boost_weight": 0.08,
-    "pattern_code_boost_topn": 30
+    "pattern_code_boost_topn": 30,
+    "warm_enhancement_caches_on_startup": false,
+    "lazy_warm_enhancement_caches_on_search": true
   }
 }

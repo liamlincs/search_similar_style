@@ -29,7 +29,7 @@
     }
   },
   "catalog": {
-    "db_path": "/mnt/photo/products/product_catalog.db",
+    "db_path": "data/product_catalog.db",
     "import_source_dir": "",
     "public_endpoints": true,
     "image_max_edge": 320,
@@ -74,7 +74,7 @@
     "trust_image_cache": true
   },
   "color_card": {
-    "db_path": "/mnt/photo/products/color_cards.db"
+    "db_path": "data/color_cards.db"
   },
   "debug": {
     "save_query_images": true,
@@ -330,6 +330,8 @@
     "strict_small_dark_motif_full_presence_min_sim": 0.46,
     "strict_small_dark_motif_full_presence_boost": 0.1,
     "strict_small_dark_motif_rescue_weight": 0.14,
-    "strict_small_dark_motif_rescue_max_rows": 9
+    "strict_small_dark_motif_rescue_max_rows": 9,
+    "warm_enhancement_caches_on_startup": false,
+    "lazy_warm_enhancement_caches_on_search": true
   }
 }
