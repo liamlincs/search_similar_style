@@ -698,6 +698,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_image_max_edge = int(catalog_cfg.get("image_max_edge", 420))
     catalog_image_quality = int(catalog_cfg.get("image_quality", 68))
     catalog_browser_upload_max_files = max(1, int(catalog_cfg.get("browser_upload_max_files", 30)))
+    catalog_prewarm_image_cache = bool(catalog_cfg.get("prewarm_image_cache", False))
+    catalog_prewarm_image_cache_max_edge = max(128, min(2048, int(catalog_cfg.get("prewarm_image_cache_max_edge", catalog_image_max_edge))))
+    catalog_prewarm_image_cache_quality = max(40, min(95, int(catalog_cfg.get("prewarm_image_cache_quality", catalog_image_quality))))
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
@@ -1175,6 +1178,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.state.ready_detail = "initializing"
     app.state.search_ready = False
     app.state.search_ready_detail = "search assets not loaded"
+    app.state.image_cache_prewarm = "disabled" if not catalog_prewarm_image_cache else "pending"
+    app.state.image_cache_prewarm_detail = ""
     image_cache_dir = Path("outputs/image_cache")
     image_cache_dir.mkdir(parents=True, exist_ok=True)
     catalog_upload_dir = Path("outputs/catalog_import_uploads")
@@ -1195,6 +1200,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 app.state.search_ready_detail = "search assets ready; warming enhancement caches"
                 _preload_search_enhancement_caches(warm_names)
                 app.state.search_ready_detail = "search assets ready"
+                _prewarm_catalog_image_cache()
             except Exception as exc:
                 app.state.search_ready = False
                 app.state.search_ready_detail = f"search assets load failed: {exc}"
@@ -3957,6 +3963,53 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             out_fp.write_bytes(buf.getvalue())
         return out_fp
 
+    def _prewarm_catalog_image_cache() -> None:
+        if not catalog_prewarm_image_cache:
+            return
+        edge = int(catalog_prewarm_image_cache_max_edge)
+        quality = int(catalog_prewarm_image_cache_quality)
+        app.state.image_cache_prewarm = "running"
+        app.state.image_cache_prewarm_detail = f"starting e{edge}/q{quality}"
+        try:
+            image_names = catalog_store.list_image_names()
+        except Exception as exc:
+            app.state.image_cache_prewarm = "failed"
+            app.state.image_cache_prewarm_detail = f"failed to list catalog image names: {exc}"
+            logging.exception("catalog image cache prewarm failed to list image names")
+            return
+        total = len(image_names)
+        built = 0
+        skipped = 0
+        failed = 0
+        t0 = time.perf_counter()
+        logging.info("catalog image cache prewarm start: total=%d edge=%d quality=%d", total, edge, quality)
+        for index, image_name in enumerate(image_names, start=1):
+            safe = Path(image_name).name
+            fp = standard_dir / safe
+            if not fp.exists() or not fp.is_file():
+                failed += 1
+                continue
+            out_fp = _cached_preview_path(safe, edge, quality)
+            try:
+                if out_fp.exists() and out_fp.stat().st_mtime >= fp.stat().st_mtime:
+                    skipped += 1
+                else:
+                    _ensure_preview(fp, edge, quality)
+                    built += 1
+            except Exception:
+                failed += 1
+                logging.warning("catalog image cache prewarm failed: %s", safe, exc_info=True)
+            if index == total or index % 20 == 0:
+                app.state.image_cache_prewarm_detail = (
+                    f"{index}/{total} built={built} cached={skipped} failed={failed}"
+                )
+                logging.info("catalog image cache prewarm progress: %s", app.state.image_cache_prewarm_detail)
+        app.state.image_cache_prewarm = "done"
+        app.state.image_cache_prewarm_detail = (
+            f"{total}/{total} built={built} cached={skipped} failed={failed} in {time.perf_counter() - t0:.2f}s"
+        )
+        logging.info("catalog image cache prewarm done: %s", app.state.image_cache_prewarm_detail)
+
     def _local_file_sig(p: Path) -> str:
         st = p.stat()
         return f"{p.name}|{st.st_size}|{int(st.st_mtime)}"
@@ -4711,6 +4764,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     "status": "ready",
                     "search_ready": bool(getattr(app.state, "search_ready", False)),
                     "search_detail": str(getattr(app.state, "search_ready_detail", "")),
+                    "image_cache_prewarm": str(getattr(app.state, "image_cache_prewarm", "")),
+                    "image_cache_prewarm_detail": str(getattr(app.state, "image_cache_prewarm_detail", "")),
                 },
             )
         return JSONResponse(
@@ -5971,7 +6026,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!product) return;
       state.currentGalleryProduct = product;
       $("galleryTitle").textContent = productDisplayTitle(product);
-      $("gallerySubTitle").textContent = "图片加载中...";
+      $("gallerySubTitle").textContent = "";
       $("galleryGrid").innerHTML = '<div class="empty">图片加载中...</div>';
       $("galleryModal").classList.add("open");
       product = await loadProductDetail(product);
@@ -9022,7 +9077,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     async function openGallery(product) {
       if (!product) return;
       els.galleryTitle.textContent = product.style_code || '';
-      els.gallerySubTitle.textContent = '图片加载中...';
+      els.gallerySubTitle.textContent = '';
       els.galleryGrid.innerHTML = '<div class="muted">图片加载中...</div>';
       els.galleryModal.classList.add('open');
       product = await loadProductDetail(product);

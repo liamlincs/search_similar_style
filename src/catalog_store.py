@@ -475,6 +475,17 @@ class CatalogStore:
             ).fetchall()
         return self._assemble_products(product_rows, image_rows, tag_rows)
 
+    def list_image_names(self) -> List[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT image_name
+                FROM product_images
+                ORDER BY style_code ASC, sort_order ASC, image_name ASC
+                """
+            ).fetchall()
+        return [str(row["image_name"]) for row in rows if str(row["image_name"] or "").strip()]
+
     def list_products(
         self,
         style_code: str = "",

@@ -32,8 +32,8 @@
     "db_path": "data/product_catalog.db",
     "import_source_dir": "",
     "public_endpoints": true,
-    "image_max_edge": 420,
-    "image_quality": 68,
+    "image_max_edge": 320,
+    "image_quality": 62,
     "web_auth": {
       "enabled": false,
       "captcha_enabled": true,
@@ -67,7 +67,10 @@
         "color:view",
         "color:create"
       ]
-    }
+    },
+    "prewarm_image_cache": true,
+    "prewarm_image_cache_max_edge": 320,
+    "prewarm_image_cache_quality": 62
   },
   "color_card": {
     "db_path": "data/color_cards.db"
