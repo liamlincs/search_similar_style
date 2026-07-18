@@ -7373,14 +7373,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function loadCurrent() {
       (state.type === "color" ? loadColors() : loadProducts(true)).catch((err) => setStatus(err.message || "加载失败", true));
     }
-    function thumbnailUrl(raw, edge = 260) {
+    function thumbnailUrl(raw, edge = 320) {
       const text = String(raw || "").trim();
       if (!text) return "";
       try {
         const url = new URL(text, location.origin);
         if (url.pathname.startsWith("/images/")) {
-          url.searchParams.set("max_edge", String(edge));
-          url.searchParams.set("q", "68");
+          url.searchParams.set("max_edge", "320");
+          url.searchParams.set("q", "62");
         }
         return url.pathname + url.search + url.hash;
       } catch (_) {
