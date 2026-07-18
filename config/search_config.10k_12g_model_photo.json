@@ -332,6 +332,6 @@
     "strict_small_dark_motif_rescue_weight": 0.14,
     "strict_small_dark_motif_rescue_max_rows": 9,
     "warm_enhancement_caches_on_startup": false,
-    "lazy_warm_enhancement_caches_on_search": true
+    "lazy_warm_enhancement_caches_on_search": false
   }
 }

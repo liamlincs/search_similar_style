@@ -1,0 +1,10 @@
+[Unit]
+Description=Warm Search Similar enhancement caches
+After=search-similar-laptop.service
+Wants=search-similar-laptop.service
+
+[Service]
+Type=oneshot
+User=john
+WorkingDirectory=/home/john/workspaces/search_similar_style
+ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8000/api/v1/admin/warm-enhancement-caches

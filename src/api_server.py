@@ -1181,7 +1181,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.state.ready_detail = "initializing"
     app.state.search_ready = False
     app.state.search_ready_detail = "search assets not loaded"
-    app.state.enhancement_cache_warm = "pending" if warm_enhancement_caches_on_startup else "lazy"
+    app.state.enhancement_cache_warm = (
+        "pending"
+        if warm_enhancement_caches_on_startup
+        else ("lazy" if lazy_warm_enhancement_caches_on_search else "disabled")
+    )
     app.state.enhancement_cache_warm_detail = ""
     app.state.image_cache_prewarm = "disabled" if not catalog_prewarm_image_cache else "pending"
     app.state.image_cache_prewarm_detail = ""
@@ -1224,12 +1228,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             daemon=True,
         ).start()
 
-    def _warm_enhancement_caches_once(reason: str) -> None:
-        if not lazy_warm_enhancement_caches_on_search:
-            return
+    def _start_enhancement_cache_warm(reason: str, *, allow_when_disabled: bool = False) -> Dict[str, Any]:
+        if not allow_when_disabled and not lazy_warm_enhancement_caches_on_search:
+            return {
+                "started": False,
+                "state": str(getattr(app.state, "enhancement_cache_warm", "")),
+                "detail": "lazy enhancement warm is disabled",
+            }
         current_state = str(getattr(app.state, "enhancement_cache_warm", ""))
         if current_state in {"running", "done"}:
-            return
+            return {
+                "started": False,
+                "state": current_state,
+                "detail": str(getattr(app.state, "enhancement_cache_warm_detail", "")),
+            }
         def _run() -> None:
             with search_assets_reload_lock:
                 current = str(getattr(app.state, "enhancement_cache_warm", ""))
@@ -1253,6 +1265,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     logging.exception("enhancement cache lazy warm failed: reason=%s", reason)
 
         threading.Thread(target=_run, daemon=True).start()
+        return {
+            "started": True,
+            "state": "running",
+            "detail": f"{reason} requested",
+        }
+
+    def _warm_enhancement_caches_once(reason: str) -> None:
+        _start_enhancement_cache_warm(reason, allow_when_disabled=False)
     color_meter_native_readings: Dict[str, Dict[str, Any]] = {}
 
     def _wechat_get_access_token() -> str:
@@ -4802,6 +4822,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             phash_cache = next_cache
             logging.info("api preloaded phash cache: %d", len(phash_cache))
 
+    def _require_local_request(request: Request) -> None:
+        host = str(request.client.host if request.client else "").strip()
+        if host not in {"127.0.0.1", "::1", "localhost"}:
+            raise HTTPException(status_code=403, detail="local request required")
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
@@ -4825,6 +4850,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             status_code=503,
             content={"status": "not_ready", "detail": str(getattr(app.state, "ready_detail", "initializing"))},
         )
+
+    @app.post("/api/v1/admin/warm-enhancement-caches")
+    def api_warm_enhancement_caches(request: Request) -> Dict[str, Any]:
+        _require_local_request(request)
+        if not bool(getattr(app.state, "search_ready", False)):
+            raise HTTPException(
+                status_code=503,
+                detail=str(getattr(app.state, "search_ready_detail", "search assets loading")),
+            )
+        result = _start_enhancement_cache_warm("manual", allow_when_disabled=True)
+        result["enhancement_cache_warm"] = str(getattr(app.state, "enhancement_cache_warm", ""))
+        result["enhancement_cache_warm_detail"] = str(getattr(app.state, "enhancement_cache_warm_detail", ""))
+        return result
 
     def _catalog_mobile_page(
         initial_type: str,

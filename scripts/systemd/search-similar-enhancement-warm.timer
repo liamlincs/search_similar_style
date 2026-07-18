@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Search Similar enhancement cache warm nightly
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=search-similar-enhancement-warm.service
+
+[Install]
+WantedBy=timers.target

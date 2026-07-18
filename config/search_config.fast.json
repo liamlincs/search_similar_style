@@ -181,6 +181,6 @@
     "pattern_code_boost_weight": 0.08,
     "pattern_code_boost_topn": 30,
     "warm_enhancement_caches_on_startup": false,
-    "lazy_warm_enhancement_caches_on_search": true
+    "lazy_warm_enhancement_caches_on_search": false
   }
 }
