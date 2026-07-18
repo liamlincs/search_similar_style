@@ -1938,7 +1938,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         is_color_card_api = path.startswith("/api/v1/color-card/")
         is_catalog_route = is_catalog_ui or is_catalog_mobile_alias or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
         allow_public = (
-            path in {"/health", "/ready"}
+            path in {"/health", "/ready", "/api/v1/admin/warm-enhancement-caches"}
             or is_catalog_login
             or is_catalog_logout
             or ((not catalog_web_auth_enabled) and is_catalog_ui)
