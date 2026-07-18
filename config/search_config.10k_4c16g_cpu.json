@@ -32,6 +32,7 @@
     "db_path": "data/product_catalog.db",
     "import_source_dir": "",
     "public_endpoints": true,
+    "sync_on_startup": false,
     "image_max_edge": 320,
     "image_quality": 62,
     "web_auth": {
@@ -226,6 +227,7 @@
     "pattern_code_boost_weight": 0.08,
     "pattern_code_boost_topn": 30,
     "warm_enhancement_caches_on_startup": false,
-    "lazy_warm_enhancement_caches_on_search": false
+    "lazy_warm_enhancement_caches_on_search": false,
+    "auto_reload_search_assets_on_catalog_change": false
   }
 }

@@ -375,6 +375,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
     warm_enhancement_caches_on_startup = bool(search_cfg.get("warm_enhancement_caches_on_startup", True))
     lazy_warm_enhancement_caches_on_search = bool(search_cfg.get("lazy_warm_enhancement_caches_on_search", True))
+    auto_reload_search_assets_on_catalog_change = bool(search_cfg.get("auto_reload_search_assets_on_catalog_change", True))
     recall_topn_cap = int(search_cfg.get("recall_topn_cap", 0))
     preload_rerank_candidate_cache = bool(search_cfg.get("preload_rerank_candidate_cache", False))
     rerank_max_unique_codes = int(search_cfg.get("rerank_max_unique_codes", 0))
@@ -697,6 +698,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     color_card_db_path = Path(color_card_cfg.get("db_path", "data/color_cards.db"))
     catalog_import_source_dir = str(catalog_cfg.get("import_source_dir", "")).strip()
     catalog_public = bool(catalog_cfg.get("public_endpoints", True))
+    catalog_sync_on_startup = bool(catalog_cfg.get("sync_on_startup", True))
     catalog_image_max_edge = int(catalog_cfg.get("image_max_edge", 420))
     catalog_image_quality = int(catalog_cfg.get("image_quality", 68))
     catalog_browser_upload_max_files = max(1, int(catalog_cfg.get("browser_upload_max_files", 30)))
@@ -1157,9 +1159,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_store = CatalogStore(catalog_db_path)
     color_card_store = ColorCardStore(color_card_db_path)
     catalog_write_lock = threading.Lock()
-    with catalog_write_lock:
-        sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
-        logging.info("catalog sync done: %s", sync_stats)
+    if catalog_sync_on_startup:
+        with catalog_write_lock:
+            sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+            logging.info("catalog sync done: %s", sync_stats)
+    else:
+        logging.info("catalog sync skipped on startup")
     catalog_import_jobs: Dict[str, Dict[str, Any]] = {}
     catalog_import_lock = threading.Lock()
     catalog_external_token_cache: Dict[str, Dict[str, Any]] = {}
@@ -1221,14 +1226,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 app.state.search_ready_detail = f"search assets load failed: {exc}"
                 logging.exception("search assets background reload failed: reason=%s", reason)
 
-    def _start_search_assets_reload(reason: str) -> None:
+    def _start_search_assets_reload(reason: str) -> Dict[str, Any]:
+        if search_assets_reload_lock.locked():
+            return {
+                "started": False,
+                "state": "running",
+                "detail": str(getattr(app.state, "search_ready_detail", "")),
+            }
         threading.Thread(
             target=_reload_search_assets_and_warm_caches,
             args=(reason,),
             daemon=True,
         ).start()
+        return {
+            "started": True,
+            "state": "requested",
+            "detail": f"{reason} requested",
+        }
 
-    def _start_enhancement_cache_warm(reason: str, *, allow_when_disabled: bool = False) -> Dict[str, Any]:
+    def _start_enhancement_cache_warm(
+        reason: str,
+        *,
+        allow_when_disabled: bool = False,
+        force: bool = False,
+    ) -> Dict[str, Any]:
         if not allow_when_disabled and not lazy_warm_enhancement_caches_on_search:
             return {
                 "started": False,
@@ -1236,7 +1257,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "detail": "lazy enhancement warm is disabled",
             }
         current_state = str(getattr(app.state, "enhancement_cache_warm", ""))
-        if current_state in {"running", "done"}:
+        if current_state == "running" or (current_state == "done" and not force):
             return {
                 "started": False,
                 "state": current_state,
@@ -1245,7 +1266,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         def _run() -> None:
             with search_assets_reload_lock:
                 current = str(getattr(app.state, "enhancement_cache_warm", ""))
-                if current in {"running", "done"}:
+                if current == "running" or (current == "done" and not force):
                     return
                 with search_assets_lock:
                     warm_names = list(names)
@@ -1273,6 +1294,32 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     def _warm_enhancement_caches_once(reason: str) -> None:
         _start_enhancement_cache_warm(reason, allow_when_disabled=False)
+
+    def _start_nightly_search_maintenance(reason: str = "nightly") -> Dict[str, Any]:
+        if search_assets_reload_lock.locked():
+            return {
+                "started": False,
+                "state": "running",
+                "detail": str(getattr(app.state, "search_ready_detail", "")),
+            }
+
+        def _run() -> None:
+            try:
+                with catalog_write_lock:
+                    sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+                logging.info("catalog sync done: nightly maintenance: %s", sync_stats)
+            except Exception:
+                logging.exception("catalog sync failed: nightly maintenance")
+            _reload_search_assets_and_warm_caches(reason)
+            if bool(getattr(app.state, "search_ready", False)):
+                _start_enhancement_cache_warm(reason, allow_when_disabled=True, force=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {
+            "started": True,
+            "state": "requested",
+            "detail": f"{reason} requested",
+        }
     color_meter_native_readings: Dict[str, Dict[str, Any]] = {}
 
     def _wechat_get_access_token() -> str:
@@ -1938,7 +1985,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         is_color_card_api = path.startswith("/api/v1/color-card/")
         is_catalog_route = is_catalog_ui or is_catalog_mobile_alias or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
         allow_public = (
-            path in {"/health", "/ready", "/api/v1/admin/warm-enhancement-caches"}
+            path in {
+                "/health",
+                "/ready",
+                "/api/v1/admin/warm-enhancement-caches",
+                "/api/v1/admin/reload-search-assets",
+                "/api/v1/admin/run-nightly-maintenance",
+            }
             or is_catalog_login
             or is_catalog_logout
             or ((not catalog_web_auth_enabled) and is_catalog_ui)
@@ -1958,6 +2011,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/api/v1/render",
                 "/api/v1/images/upload",
                 "/api/v1/admin/warm-enhancement-caches",
+                "/api/v1/admin/reload-search-assets",
+                "/api/v1/admin/run-nightly-maintenance",
                 "/recolor",
                 "/recolor-ai",
             }
@@ -4092,6 +4147,58 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         )
         logging.info("catalog image cache prewarm done: %s", app.state.image_cache_prewarm_detail)
 
+    def _prewarm_catalog_image_names(image_names: List[str], reason: str = "catalog_change") -> None:
+        if not catalog_prewarm_image_cache:
+            return
+        edge = int(catalog_prewarm_image_cache_max_edge)
+        quality = int(catalog_prewarm_image_cache_quality)
+        built = 0
+        cached = 0
+        failed = 0
+        for image_name in sorted({Path(str(name or "")).name for name in image_names if str(name or "").strip()}):
+            out_fp = _cached_preview_path(image_name, edge, quality)
+            if catalog_trust_image_cache and out_fp.exists():
+                cached += 1
+                continue
+            fp = standard_dir / image_name
+            if not fp.exists() or not fp.is_file():
+                failed += 1
+                continue
+            try:
+                _ensure_preview(fp, edge, quality)
+                built += 1
+            except Exception:
+                failed += 1
+                logging.warning("catalog image cache prewarm failed: %s", image_name, exc_info=True)
+        logging.info(
+            "catalog image cache prewarm names done: reason=%s total=%d built=%d cached=%d failed=%d",
+            reason,
+            built + cached + failed,
+            built,
+            cached,
+            failed,
+        )
+
+    def _start_catalog_image_cache_prewarm_for_names(image_names: List[str], reason: str) -> None:
+        names_local = [Path(str(name or "")).name for name in image_names if str(name or "").strip()]
+        if not names_local:
+            return
+        threading.Thread(
+            target=_prewarm_catalog_image_names,
+            args=(names_local, reason),
+            daemon=True,
+        ).start()
+
+    def _delete_cached_previews(image_name: str) -> None:
+        stem = Path(str(image_name or "")).stem
+        if not stem:
+            return
+        for fp in image_cache_dir.glob(f"{stem}__e*_q*.jpg"):
+            try:
+                fp.unlink(missing_ok=True)
+            except Exception:
+                logging.warning("failed to remove image preview cache: %s", fp)
+
     def _local_file_sig(p: Path) -> str:
         st = p.stat()
         return f"{p.name}|{st.st_size}|{int(st.st_mtime)}"
@@ -4870,7 +4977,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 status_code=503,
                 detail=str(getattr(app.state, "search_ready_detail", "search assets loading")),
             )
-        result = _start_enhancement_cache_warm("manual", allow_when_disabled=True)
+        result = _start_enhancement_cache_warm("manual", allow_when_disabled=True, force=True)
+        result["enhancement_cache_warm"] = str(getattr(app.state, "enhancement_cache_warm", ""))
+        result["enhancement_cache_warm_detail"] = str(getattr(app.state, "enhancement_cache_warm_detail", ""))
+        return result
+
+    @app.post("/api/v1/admin/reload-search-assets")
+    def api_reload_search_assets(request: Request) -> Dict[str, Any]:
+        _require_local_request(request)
+        result = _start_search_assets_reload("manual")
+        result["search_ready"] = bool(getattr(app.state, "search_ready", False))
+        result["search_detail"] = str(getattr(app.state, "search_ready_detail", ""))
+        return result
+
+    @app.post("/api/v1/admin/run-nightly-maintenance")
+    def api_run_nightly_maintenance(request: Request) -> Dict[str, Any]:
+        _require_local_request(request)
+        result = _start_nightly_search_maintenance("nightly")
+        result["search_ready"] = bool(getattr(app.state, "search_ready", False))
+        result["search_detail"] = str(getattr(app.state, "search_ready_detail", ""))
         result["enhancement_cache_warm"] = str(getattr(app.state, "enhancement_cache_warm", ""))
         result["enhancement_cache_warm_detail"] = str(getattr(app.state, "enhancement_cache_warm_detail", ""))
         return result
@@ -10423,6 +10548,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not target_path.exists():
                 shutil.copyfile(src_path, target_path)
             copied.append(target_name)
+        _start_catalog_image_cache_prewarm_for_names(copied, "catalog_personal_product_create")
         tags = [owner_tag, _personal_folder_tag(owner_tag, folder_name)]
         product = catalog_store.upsert_product(
             personal_code,
@@ -10456,6 +10582,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if safe.startswith("MY-"):
                 try:
                     (standard_dir / safe).unlink(missing_ok=True)
+                    _delete_cached_previews(safe)
                 except Exception:
                     logging.warning("failed to remove personal product image: %s", safe)
         return {"ok": True, "style_code": style_code}
@@ -10487,6 +10614,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if safe_image_name.startswith("MY-"):
             try:
                 (standard_dir / safe_image_name).unlink(missing_ok=True)
+                _delete_cached_previews(safe_image_name)
             except Exception:
                 logging.warning("failed to remove personal product image: %s", safe_image_name)
         remaining_product = catalog_store.get_product(style_code)
@@ -10514,12 +10642,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 result = catalog_store.delete_product_image(style_code, safe_image_name)
                 try:
                     (standard_dir / safe_image_name).unlink(missing_ok=True)
+                    _delete_cached_previews(safe_image_name)
                 except Exception:
                     logging.warning("failed to remove product image: %s", safe_image_name)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         remaining_product = catalog_store.get_product(style_code)
-        _start_search_assets_reload("catalog_product_image_delete")
+        if auto_reload_search_assets_on_catalog_change:
+            _start_search_assets_reload("catalog_product_image_delete")
         return {
             "ok": True,
             "style_code": style_code,
@@ -11081,9 +11211,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 planned.append((src, target_name))
 
             imported = 0
+            imported_names: List[str] = []
             for src, target_name in planned:
                 shutil.copy2(src, standard_dir / target_name)
                 imported += 1
+                imported_names.append(target_name)
 
             sync_result = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
             for style_code, year_tags in style_year_tags.items():
@@ -11097,7 +11229,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if job is not None:
                     job["committed"] = True
                     job["message"] = f"已导入 {imported} 张图片"
-            _start_search_assets_reload("catalog_import_commit")
+            _start_catalog_image_cache_prewarm_for_names(imported_names, "catalog_import_commit")
+            if auto_reload_search_assets_on_catalog_change:
+                _start_search_assets_reload("catalog_import_commit")
         return {
             "job_id": payload.job_id,
             "imported": imported,
