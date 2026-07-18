@@ -70,7 +70,8 @@
     },
     "prewarm_image_cache": true,
     "prewarm_image_cache_max_edge": 320,
-    "prewarm_image_cache_quality": 62
+    "prewarm_image_cache_quality": 62,
+    "trust_image_cache": true
   },
   "color_card": {
     "db_path": "/mnt/photo/products/color_cards.db"

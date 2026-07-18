@@ -701,6 +701,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_prewarm_image_cache = bool(catalog_cfg.get("prewarm_image_cache", False))
     catalog_prewarm_image_cache_max_edge = max(128, min(2048, int(catalog_cfg.get("prewarm_image_cache_max_edge", catalog_image_max_edge))))
     catalog_prewarm_image_cache_quality = max(40, min(95, int(catalog_cfg.get("prewarm_image_cache_quality", catalog_image_quality))))
+    catalog_trust_image_cache = bool(catalog_cfg.get("trust_image_cache", False))
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
@@ -3953,6 +3954,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _ensure_preview(image_fp: Path, max_edge: int, quality: int) -> Path:
         quality = max(40, min(95, int(quality)))
         out_fp = _cached_preview_path(image_fp.name, max_edge, quality)
+        if catalog_trust_image_cache and out_fp.exists():
+            return out_fp
         if out_fp.exists() and out_fp.stat().st_mtime >= image_fp.stat().st_mtime:
             return out_fp
         with Image.open(image_fp) as im0:
@@ -11006,16 +11009,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def get_standard_image(image_name: str, max_edge: int = 0, q: int = 82) -> FileResponse:
         safe = Path(image_name).name
         fp = standard_dir / safe
-        if not fp.exists() or not fp.is_file():
-            raise HTTPException(status_code=404, detail="image not found")
         if max_edge > 0:
             edge = max(128, min(2048, int(max_edge)))
+            quality = max(40, min(95, int(q)))
+            cached_fp = _cached_preview_path(safe, edge, quality)
+            if catalog_trust_image_cache and cached_fp.exists():
+                return FileResponse(
+                    path=str(cached_fp),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=604800, immutable"},
+                )
+            if not fp.exists() or not fp.is_file():
+                raise HTTPException(status_code=404, detail="image not found")
             out_fp = _ensure_preview(fp, edge, q)
             return FileResponse(
                 path=str(out_fp),
                 media_type="image/jpeg",
                 headers={"Cache-Control": "public, max-age=604800, immutable"},
             )
+        if not fp.exists() or not fp.is_file():
+            raise HTTPException(status_code=404, detail="image not found")
         return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
 
     def _refresh_image_url_response(request: Request, image_name: str, kind: str = "") -> Dict[str, Any]:

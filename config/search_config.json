@@ -70,7 +70,8 @@
         "color:view",
         "color:create"
       ]
-    }
+    },
+    "trust_image_cache": true
   },
   "color_card": {
     "db_path": "data/color_cards.db"
