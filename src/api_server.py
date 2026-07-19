@@ -1295,6 +1295,65 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _warm_enhancement_caches_once(reason: str) -> None:
         _start_enhancement_cache_warm(reason, allow_when_disabled=False)
 
+    def _manifest_split_values(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            raw_items = value
+        else:
+            raw_items = re.split(r"[、,，\s]+", str(value or ""))
+        out: List[str] = []
+        seen = set()
+        for raw in raw_items:
+            clean = str(raw or "").strip()
+            if not clean:
+                continue
+            key = clean.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(clean)
+        return out
+
+    def _manifest_tags_from_item(item: Dict[str, Any]) -> List[str]:
+        raw_tags: List[str] = []
+        raw_tags.extend(_manifest_split_values(item.get("tags")))
+        raw_tags.extend(_manifest_split_values(item.get("raw_tags")))
+        for year in _manifest_split_values(item.get("year_tag") or item.get("year") or item.get("years")):
+            raw_tags.append(year if str(year).startswith("year:") else f"year:{year}")
+        for category in _manifest_split_values(item.get("category") or item.get("category_tags")):
+            raw_tags.append(category if str(category).startswith("category:") else f"category:{category}")
+        for subcategory in _manifest_split_values(item.get("subcategory") or item.get("subcategory_tags")):
+            raw_tags.append(subcategory if str(subcategory).startswith("subcategory:") else f"subcategory:{subcategory}")
+        return _normalize_import_tags(raw_tags)
+
+    def _apply_nas_import_manifest() -> Dict[str, int]:
+        manifest_path = standard_dir / "_nas_import_manifest.jsonl"
+        if not manifest_path.exists() or not manifest_path.is_file():
+            return {"rows": 0, "tag_rows": 0}
+        rows = 0
+        tag_rows = 0
+        for line in manifest_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            rows += 1
+            try:
+                item = json.loads(raw)
+            except Exception:
+                logging.warning("nas import manifest row is not json: %s", raw[:200])
+                continue
+            style_code = str(item.get("style_code") or "").strip()
+            if not style_code:
+                image_name = Path(str(item.get("image_name") or "")).name
+                style_code = filename_to_style_code(image_name).strip()
+            tags = _manifest_tags_from_item(item)
+            if style_code and tags:
+                catalog_store.add_product_tags(style_code, tags)
+                tag_rows += 1
+        logging.info("nas import manifest applied: rows=%d tag_rows=%d path=%s", rows, tag_rows, manifest_path)
+        return {"rows": rows, "tag_rows": tag_rows}
+
     def _start_nightly_search_maintenance(reason: str = "nightly") -> Dict[str, Any]:
         if search_assets_reload_lock.locked():
             return {
@@ -1307,12 +1366,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             try:
                 with catalog_write_lock:
                     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+                    manifest_stats = _apply_nas_import_manifest()
                 logging.info("catalog sync done: nightly maintenance: %s", sync_stats)
+                logging.info("nas import manifest done: nightly maintenance: %s", manifest_stats)
             except Exception:
                 logging.exception("catalog sync failed: nightly maintenance")
             _reload_search_assets_and_warm_caches(reason)
-            if bool(getattr(app.state, "search_ready", False)):
-                _start_enhancement_cache_warm(reason, allow_when_disabled=True, force=True)
 
         threading.Thread(target=_run, daemon=True).start()
         return {
@@ -5730,6 +5789,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       });
     }
 
+    function appAlert(message) {
+      return new Promise((resolve) => {
+        let modal = $("appAlertModal");
+        if (!modal) {
+          modal = document.createElement("div");
+          modal.id = "appAlertModal";
+          modal.className = "app-confirm-modal";
+          modal.innerHTML = `
+            <div class="app-confirm-box">
+              <div class="app-confirm-message" id="appAlertMessage"></div>
+              <div class="app-confirm-actions">
+                <button id="appAlertOk" type="button">确定</button>
+              </div>
+            </div>`;
+          document.body.appendChild(modal);
+        }
+        $("appAlertMessage").textContent = String(message || "");
+        const cleanup = () => {
+          modal.classList.remove("open");
+          $("appAlertOk").onclick = null;
+          resolve();
+        };
+        $("appAlertOk").onclick = cleanup;
+        modal.classList.add("open");
+      });
+    }
+
     function readPermissions(raw) {
       const defaults = ["product:view", "product:create", "color:view", "color:create"];
       const parts = String(raw || "").split(".");
@@ -7913,7 +7999,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         $("bulkImportSubcategorySelect").value = "";
         setProductTool("view");
         await loadProducts(true);
-        setStatus(`产品图片已导入 ${result.imported || 0} 张`, false);
+        const sync = result.sync || {};
+        const message = `导入成功：已导入 ${result.imported || 0} 张；新增款 ${sync.products_added || 0}，新增/更新图 ${sync.images_added_or_updated || 0}`;
+        setStatus(message, false);
+        await appAlert(message);
+      } catch (err) {
+        const message = err.message || "入库失败";
+        setStatus(message, true);
+        await appAlert("导入失败：" + message);
       } finally {
         setButtonLoading(button, false);
       }
@@ -10378,12 +10471,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ job_id: importJobId, items })
         });
-        if (!resp.ok) throw new Error(await resp.text());
+        if (!resp.ok) {
+          let message = await resp.text();
+          try {
+            const parsed = JSON.parse(message);
+            message = parsed.detail || message;
+          } catch (_) {}
+          throw new Error(message);
+        }
         const data = await resp.json();
-        setNodeText(els.importCommitStatus, `已导入 ${data.imported} 张；新增款 ${data.sync.products_added}，新增/更新图 ${data.sync.images_added_or_updated}`);
+        const message = `导入成功：已导入 ${data.imported || 0} 张；新增款 ${(data.sync || {}).products_added || 0}，新增/更新图 ${(data.sync || {}).images_added_or_updated || 0}`;
+        setNodeText(els.importCommitStatus, message);
+        await appAlert(message);
         await loadProducts(true);
       } catch (err) {
-        setNodeText(els.importCommitStatus, err.message || '导入失败');
+        const message = err.message || '导入失败';
+        setNodeText(els.importCommitStatus, message);
+        await appAlert('导入失败：' + message);
       }
     });
     els.closeGalleryBtn.addEventListener('click', closeGallery);
