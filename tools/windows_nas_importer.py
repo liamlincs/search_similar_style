@@ -25,6 +25,7 @@ from catalog_store import filename_to_style_code
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_-]+")
+KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2})?\b", re.IGNORECASE)
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -104,6 +105,33 @@ def _code_to_filename_prefix(code: str) -> str:
     return core if core else "UNKNOWN"
 
 
+def _normalize_kf_candidate(value: str) -> str:
+    code = str(value or "").upper()
+    code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+    code = re.sub(r"^K[EP8]", "KF", code)
+    code = re.sub(r"^K-F", "KF", code)
+    code = re.sub(r"-+", "-", code)
+    return code
+
+
+def _extract_kf_from_text(text: str) -> str:
+    if not text:
+        return ""
+    expanded = str(text).upper()
+    expanded = expanded.replace("Ｋ", "K").replace("Ｆ", "F")
+    expanded = re.sub(r"\bK\s+F\b", "KF", expanded)
+    expanded = expanded.replace("O", "0")
+    expanded = expanded.replace("＃", "#")
+    candidates: list[str] = []
+    for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
+        candidates.extend(m.group(0) for m in KF_CODE_RE.finditer(raw))
+    for candidate in candidates:
+        code = _normalize_kf_candidate(candidate)
+        if re.fullmatch(r"KF[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2})?", code):
+            return code
+    return ""
+
+
 def _build_name_allocator(target_dir: Path) -> tuple[set[str], dict[str, int]]:
     used = set()
     next_seq: dict[str, int] = {}
@@ -129,14 +157,44 @@ def _scan_images(source_dir: Path) -> list[Path]:
     ]
 
 
-def _extract_style(path: Path, tesseract_bin: str | None) -> str:
-    from extract_style_codes import build_header_crops, try_extract_code_from_image
+def _extract_style(path: Path, tesseract_bin: str | None) -> tuple[str, str]:
+    from extract_style_codes import (
+        _prep_for_scene_ocr,
+        _run_rapidocr,
+        _run_tesseract,
+        build_header_crops,
+        try_extract_code_from_image,
+    )
 
     for crop in build_header_crops(path):
         code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
         if code:
-            return code
-    return ""
+            return code, "normal"
+
+    with Image.open(path) as im0:
+        img = im0.convert("RGB")
+        w, h = img.size
+        boxes = [
+            (0, 0, w, max(1, int(h * 0.42))),
+            (0, 0, max(1, int(w * 0.55)), h),
+            (0, 0, w, h),
+        ]
+        for box in boxes:
+            crop = img.crop(box)
+            for variant in _prep_for_scene_ocr(crop):
+                raw = _run_rapidocr(variant)
+                code = _extract_kf_from_text(raw)
+                if code:
+                    logging.info("kf fallback rapidocr success: %s code=%s", path.name, code)
+                    return code, "kf_fallback"
+                if tesseract_bin:
+                    raw_t = _run_tesseract(variant, tesseract_bin)
+                    code_t = _extract_kf_from_text(raw_t)
+                    if code_t:
+                        logging.info("kf fallback tesseract success: %s code=%s", path.name, code_t)
+                        return code_t, "kf_fallback"
+
+    return "", ""
 
 
 @dataclass
@@ -497,7 +555,7 @@ HTML = r"""<!doctype html>
       $("rows").innerHTML = job.items.map((item, index) => {
         const statusClass = item.status === "ok" ? "" : (item.status === "ocr_failed" || item.status === "invalid_style_code" ? "err" : "warn");
         const pillClass = item.status === "ok" ? "pill" : (statusClass === "err" ? "pill err" : "pill warn");
-        const statusText = item.error || (item.status === "ok" ? "识别成功" : item.status);
+        const statusText = item.error || (item.status === "ok" ? (item.ocr_source === "kf_fallback" ? "识别成功（KF增强）" : "识别成功") : item.status);
         return `
           <tr class="${statusClass}" data-rel-path="${escapeHtml(item.source_rel_path || "")}" data-suffix="${escapeHtml(item.suffix || ".jpg")}">
             <td><input data-role="selected" type="checkbox" checked></td>
@@ -770,9 +828,10 @@ class ImportServer(ThreadingHTTPServer):
                     self.jobs.update(job_id, status="canceled", message=f"已停止扫描，已处理 {index - 1}/{len(files)}")
                     return
                 code = ""
+                source = ""
                 error = ""
                 try:
-                    code = _extract_style(path, self.tesseract_bin)
+                    code, source = _extract_style(path, self.tesseract_bin)
                 except Exception as exc:
                     logging.warning("OCR failed: %s", path, exc_info=True)
                     error = f"OCR 失败：{exc}"
@@ -798,6 +857,7 @@ class ImportServer(ThreadingHTTPServer):
                         "proposed_filename": filename,
                         "status": "ok" if valid else ("invalid_style_code" if code else "ocr_failed"),
                         "error": error,
+                        "ocr_source": source,
                     }
                 )
                 self.jobs.update(job_id, processed=index, items=list(items), message=f"已处理 {index}/{len(files)}")
