@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import logging
 import re
@@ -28,6 +29,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_-]+")
 KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 UNRECOGNIZED_DIR = Path(__file__).resolve().parent / "未识别"
+HASH_INDEX_NAME = "_nas_image_hash_index.jsonl"
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -271,6 +273,68 @@ def _copy_to_unique_target(
             except Exception:
                 pass
             raise
+
+
+def _file_hash(path: Path) -> str:
+    h = hashlib.blake2b(digest_size=32)
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _read_hash_index(target_dir: Path) -> dict[str, str]:
+    index_path = target_dir / HASH_INDEX_NAME
+    out: dict[str, str] = {}
+    if not index_path.exists() or not index_path.is_file():
+        return out
+    for line in index_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+        except Exception:
+            continue
+        image_hash = str(item.get("hash") or "").strip()
+        image_name = str(item.get("image_name") or "").strip()
+        if image_hash and image_name and image_hash not in out:
+            out[image_hash] = image_name
+    return out
+
+
+def _append_hash_index(target_dir: Path, image_hash: str, image_name: str) -> None:
+    row = {
+        "hash": image_hash,
+        "image_name": image_name,
+        "indexed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with (target_dir / HASH_INDEX_NAME).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        fh.flush()
+
+
+def _ensure_hash_index(target_dir: Path) -> dict[str, str]:
+    index_path = target_dir / HASH_INDEX_NAME
+    existing = _read_hash_index(target_dir)
+    if existing:
+        return existing
+    if index_path.exists():
+        return existing
+    for path in sorted(target_dir.iterdir()) if target_dir.exists() else []:
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTS:
+            continue
+        try:
+            image_hash = _file_hash(path)
+        except Exception:
+            logging.warning("failed to hash existing target image: %s", path, exc_info=True)
+            continue
+        if image_hash in existing:
+            continue
+        existing[image_hash] = path.name
+        _append_hash_index(target_dir, image_hash, path.name)
+    logging.info("hash index ready: %d items path=%s", len(existing), index_path)
+    return existing
 
 
 def _build_name_allocator(target_dir: Path) -> tuple[set[str], dict[str, int]]:
@@ -785,8 +849,9 @@ HTML = r"""<!doctype html>
           body: JSON.stringify({ items }),
         });
         const failed = result.failed || [];
-        const message = `导入完成：成功 ${result.imported || 0} 张，失败 ${failed.length} 张` +
+        const message = `导入完成：成功 ${result.imported || 0} 张，重复跳过 ${result.duplicates || 0} 张，失败 ${failed.length} 张` +
           (result.manifest_path ? `\n标签文件：${result.manifest_path}` : "") +
+          (result.hash_index_path ? `\n去重索引：${result.hash_index_path}` : "") +
           (failed.length ? "\\n\\n" + failed.slice(0, 20).map(x => `${x.source_rel_path || ""}：${x.error || "失败"}`).join("\\n") : "");
         setStatus(message, failed.length > 0);
         await alertBox(message);
@@ -1019,7 +1084,9 @@ class ImportServer(ThreadingHTTPServer):
             raise RuntimeError("该批次已导入")
         prepared = {str(item.get("source_rel_path")): item for item in job.items}
         used_names, next_seq = _build_name_allocator(job.target_dir)
+        hash_index = _ensure_hash_index(job.target_dir)
         imported = 0
+        duplicates = 0
         failed: list[dict[str, str]] = []
         manifest_path = job.target_dir / f"_nas_import_manifest_{time.strftime('%Y%m%d_%H%M%S')}_{job.job_id[:8]}.jsonl"
         active_lock_path = job.target_dir / f"_nas_import_active_{time.strftime('%Y%m%d_%H%M%S')}_{job.job_id[:8]}.lock"
@@ -1060,7 +1127,15 @@ class ImportServer(ThreadingHTTPServer):
                     failed.append({"source_rel_path": rel, "error": "款号必须以字母开头"})
                     continue
                 try:
+                    image_hash = _file_hash(src)
+                    duplicate_name = hash_index.get(image_hash)
+                    if duplicate_name:
+                        duplicates += 1
+                        logging.info("duplicate image skipped: source=%s existing=%s", rel, duplicate_name)
+                        continue
                     target_name = _copy_to_unique_target(src, job.target_dir, raw_filename, used_names, next_seq, style_code)
+                    hash_index[image_hash] = target_name
+                    _append_hash_index(job.target_dir, image_hash, target_name)
                     imported += 1
                     final_style_code = filename_to_style_code(target_name).strip()
                     tags = list(source.get("tags") or [])
@@ -1082,8 +1157,15 @@ class ImportServer(ThreadingHTTPServer):
                 active_lock_path.unlink(missing_ok=True)
             except Exception:
                 logging.warning("failed to remove import active lock: %s", active_lock_path, exc_info=True)
-        result = {"imported": imported, "failed": failed, "target_dir": str(job.target_dir), "manifest_path": str(manifest_path)}
-        self.jobs.update(job_id, committed=True, result=result, message=f"导入完成：成功 {imported} 张，失败 {len(failed)} 张")
+        result = {
+            "imported": imported,
+            "duplicates": duplicates,
+            "failed": failed,
+            "target_dir": str(job.target_dir),
+            "manifest_path": str(manifest_path),
+            "hash_index_path": str(job.target_dir / HASH_INDEX_NAME),
+        }
+        self.jobs.update(job_id, committed=True, result=result, message=f"导入完成：成功 {imported} 张，重复跳过 {duplicates} 张，失败 {len(failed)} 张")
         return result
 
 
