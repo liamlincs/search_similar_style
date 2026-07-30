@@ -1328,31 +1328,57 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return _normalize_import_tags(raw_tags)
 
     def _apply_nas_import_manifest() -> Dict[str, int]:
-        manifest_path = standard_dir / "_nas_import_manifest.jsonl"
-        if not manifest_path.exists() or not manifest_path.is_file():
-            return {"rows": 0, "tag_rows": 0}
+        manifest_paths: List[Path] = []
+        legacy_manifest_path = standard_dir / "_nas_import_manifest.jsonl"
+        if legacy_manifest_path.exists() and legacy_manifest_path.is_file():
+            manifest_paths.append(legacy_manifest_path)
+        manifest_paths.extend(
+            sorted(
+                p
+                for p in standard_dir.glob("_nas_import_manifest_*.jsonl")
+                if p.is_file()
+            )
+        )
+        if not manifest_paths:
+            return {"files": 0, "rows": 0, "tag_rows": 0}
         rows = 0
         tag_rows = 0
-        for line in manifest_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            raw = line.strip()
-            if not raw:
+        for manifest_path in manifest_paths:
+            for line in manifest_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                raw = line.strip()
+                if not raw:
+                    continue
+                rows += 1
+                try:
+                    item = json.loads(raw)
+                except Exception:
+                    logging.warning("nas import manifest row is not json: path=%s row=%s", manifest_path, raw[:200])
+                    continue
+                style_code = str(item.get("style_code") or "").strip()
+                if not style_code:
+                    image_name = Path(str(item.get("image_name") or "")).name
+                    style_code = filename_to_style_code(image_name).strip()
+                tags = _manifest_tags_from_item(item)
+                if style_code and tags:
+                    catalog_store.add_product_tags(style_code, tags)
+                    tag_rows += 1
+        logging.info("nas import manifest applied: files=%d rows=%d tag_rows=%d", len(manifest_paths), rows, tag_rows)
+        return {"files": len(manifest_paths), "rows": rows, "tag_rows": tag_rows}
+
+    def _active_nas_import_locks() -> List[Path]:
+        now = time.time()
+        locks: List[Path] = []
+        for path in standard_dir.glob("_nas_import_active_*.lock"):
+            if not path.is_file():
                 continue
-            rows += 1
             try:
-                item = json.loads(raw)
+                if now - path.stat().st_mtime > 12 * 3600:
+                    logging.warning("ignoring stale nas import active lock: %s", path)
+                    continue
             except Exception:
-                logging.warning("nas import manifest row is not json: %s", raw[:200])
-                continue
-            style_code = str(item.get("style_code") or "").strip()
-            if not style_code:
-                image_name = Path(str(item.get("image_name") or "")).name
-                style_code = filename_to_style_code(image_name).strip()
-            tags = _manifest_tags_from_item(item)
-            if style_code and tags:
-                catalog_store.add_product_tags(style_code, tags)
-                tag_rows += 1
-        logging.info("nas import manifest applied: rows=%d tag_rows=%d path=%s", rows, tag_rows, manifest_path)
-        return {"rows": rows, "tag_rows": tag_rows}
+                pass
+            locks.append(path)
+        return sorted(locks)
 
     def _start_nightly_search_maintenance(reason: str = "nightly") -> Dict[str, Any]:
         if search_assets_reload_lock.locked():
@@ -1364,6 +1390,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         def _run() -> None:
             try:
+                active_locks = _active_nas_import_locks()
+                if active_locks:
+                    logging.warning("nightly maintenance skipped; NAS import active: %s", [str(p) for p in active_locks])
+                    app.state.search_ready_detail = "nightly maintenance skipped; NAS import active"
+                    return
                 with catalog_write_lock:
                     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
                     manifest_stats = _apply_nas_import_manifest()

@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from PIL import Image
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -25,7 +26,8 @@ from catalog_store import filename_to_style_code
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_-]+")
-KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2})?\b", re.IGNORECASE)
+KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+UNRECOGNIZED_DIR = Path(__file__).resolve().parent / "未识别"
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -49,7 +51,14 @@ def _clean_style_code(value: str) -> str:
 
 def _is_valid_style_code(value: str) -> bool:
     code = _clean_style_code(value)
-    return bool(code) and bool(re.match(r"^[A-Za-z]", code))
+    return _looks_like_style_code(code)
+
+
+def _looks_like_style_code(value: str) -> bool:
+    code = _clean_style_code(value)
+    if len(code) < 3:
+        return False
+    return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]*", code))
 
 
 def _sanitize_filename(filename: str, fallback_suffix: str = ".jpg") -> str:
@@ -80,6 +89,31 @@ def _split_tags(value: Any) -> list[str]:
         seen.add(key)
         out.append(tag)
     return out
+
+
+def _tags_from_source_path(source_dir: Path, image_path: Path) -> tuple[list[str], str]:
+    try:
+        rel_parent = image_path.parent.relative_to(source_dir)
+    except Exception:
+        rel_parent = Path()
+    parts = [p.strip() for p in rel_parent.parts if str(p).strip()]
+    tags: list[str] = []
+    display: list[str] = []
+    if len(parts) >= 1:
+        tags.append(f"year:{parts[0]}")
+        display.append(f"年份：{parts[0]}")
+    if len(parts) >= 2:
+        tags.append(f"category:{parts[1]}")
+        display.append(f"类别：{parts[1]}")
+    if len(parts) >= 3:
+        subcategory_tags: list[str] = []
+        for part in parts[2:]:
+            subcategory_tags.extend(_split_tags(part))
+        for tag in subcategory_tags:
+            tags.append(f"subcategory:{tag}")
+        if subcategory_tags:
+            display.append(f"细类：{' / '.join(subcategory_tags)}")
+    return tags, "；".join(display)
 
 
 def _next_target_name(prefix: str, suffix: str, used_names: set[str], next_seq: dict[str, int]) -> str:
@@ -127,9 +161,116 @@ def _extract_kf_from_text(text: str) -> str:
         candidates.extend(m.group(0) for m in KF_CODE_RE.finditer(raw))
     for candidate in candidates:
         code = _normalize_kf_candidate(candidate)
-        if re.fullmatch(r"KF[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2})?", code):
+        if re.fullmatch(r"KF[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2}[A-Z]?)?", code):
             return code
     return ""
+
+
+def _style_before_hash(text: str) -> str:
+    if "#" not in str(text or "") and "＃" not in str(text or ""):
+        return ""
+    before = re.split(r"[#＃]", str(text), maxsplit=1)[0]
+    lines = [ln.strip() for ln in before.splitlines() if ln.strip()]
+    raw = lines[-1] if lines else before
+    code = _clean_style_code(raw)
+    return code if _looks_like_style_code(code) else ""
+
+
+def _style_from_top_left_text(text: str) -> str:
+    for line in str(text or "").splitlines():
+        code = _clean_style_code(line)
+        if _looks_like_style_code(code):
+            return code
+    code = _clean_style_code(text)
+    return code if _looks_like_style_code(code) else ""
+
+
+def _style_from_filename(path: Path) -> tuple[str, str]:
+    stem = path.stem.strip()
+    stem = re.sub(r"\s*\(\d+\)\s*$", "", stem).strip()
+    code = _style_before_hash(stem)
+    if code:
+        return code, "filename_hash"
+    code = _clean_style_code(stem)
+    if _looks_like_style_code(code):
+        return code, "filename"
+    return "", ""
+
+
+def _has_corner_label(img: Image.Image) -> bool:
+    arr = np.asarray(img.convert("RGB"))
+    if arr.size == 0:
+        return False
+    r = arr[..., 0].astype(np.int16)
+    g = arr[..., 1].astype(np.int16)
+    b = arr[..., 2].astype(np.int16)
+    red = (r > 170) & (g < 130) & (b < 130) & ((r - g) > 45) & ((r - b) > 35)
+    blue = (b > 150) & (g > 90) & (r < 130) & ((b - r) > 45)
+    mask = red | blue
+    return bool(mask.mean() > 0.035)
+
+
+def _corner_label_crops(path: Path) -> list[Image.Image]:
+    img = Image.open(path).convert("RGB")
+    w, h = img.size
+    regions = [
+        (0, 0, int(w * 0.42), int(h * 0.24)),
+        (int(w * 0.58), 0, w, int(h * 0.24)),
+        (0, 0, int(w * 0.52), int(h * 0.34)),
+        (int(w * 0.48), 0, w, int(h * 0.34)),
+    ]
+    crops: list[Image.Image] = []
+    for box in regions:
+        crop = img.crop(box)
+        if _has_corner_label(crop):
+            crops.append(crop)
+    return crops
+
+
+def _copy_unrecognized(source_dir: Path, image_path: Path) -> str:
+    try:
+        rel = image_path.relative_to(source_dir)
+    except Exception:
+        rel = Path(image_path.name)
+    target = UNRECOGNIZED_DIR / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(image_path, target)
+    return str(target)
+
+
+def _copy_to_unique_target(
+    src: Path,
+    target_dir: Path,
+    first_filename: str,
+    used_names: set[str],
+    next_seq: dict[str, int],
+    style_code: str,
+) -> str:
+    first = _sanitize_filename(first_filename, src.suffix.lower())
+    suffix = Path(first).suffix
+    stem = re.sub(r"_\d+$", "", Path(first).stem).strip() or style_code
+    candidates = [first]
+    while True:
+        if len(candidates) > 1 or candidates[-1].lower() in used_names:
+            candidates.append(_next_target_name(stem, suffix, used_names, next_seq))
+        candidate = candidates[-1]
+        target = target_dir / candidate
+        try:
+            with src.open("rb") as rf, target.open("xb") as wf:
+                shutil.copyfileobj(rf, wf, length=1024 * 1024)
+            shutil.copystat(src, target)
+            used_names.add(candidate.lower())
+            return candidate
+        except FileExistsError:
+            used_names.add(candidate.lower())
+            continue
+        except Exception:
+            try:
+                if target.exists() and target.stat().st_size == 0:
+                    target.unlink()
+            except Exception:
+                pass
+            raise
 
 
 def _build_name_allocator(target_dir: Path) -> tuple[set[str], dict[str, int]]:
@@ -159,40 +300,54 @@ def _scan_images(source_dir: Path) -> list[Path]:
 
 def _extract_style(path: Path, tesseract_bin: str | None) -> tuple[str, str]:
     from extract_style_codes import (
-        _prep_for_scene_ocr,
+        _prep_for_ocr,
         _run_rapidocr,
         _run_tesseract,
-        build_header_crops,
         try_extract_code_from_image,
     )
 
-    for crop in build_header_crops(path):
-        code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
-        if code:
-            return code, "normal"
+    filename_code, filename_source = _style_from_filename(path)
 
-    with Image.open(path) as im0:
-        img = im0.convert("RGB")
-        w, h = img.size
-        boxes = [
-            (0, 0, w, max(1, int(h * 0.42))),
-            (0, 0, max(1, int(w * 0.55)), h),
-            (0, 0, w, h),
-        ]
-        for box in boxes:
-            crop = img.crop(box)
-            for variant in _prep_for_scene_ocr(crop):
-                raw = _run_rapidocr(variant)
-                code = _extract_kf_from_text(raw)
-                if code:
-                    logging.info("kf fallback rapidocr success: %s code=%s", path.name, code)
-                    return code, "kf_fallback"
-                if tesseract_bin:
-                    raw_t = _run_tesseract(variant, tesseract_bin)
-                    code_t = _extract_kf_from_text(raw_t)
-                    if code_t:
-                        logging.info("kf fallback tesseract success: %s code=%s", path.name, code_t)
-                        return code_t, "kf_fallback"
+    try:
+        corner_crops = _corner_label_crops(path)
+        for crop in corner_crops:
+            code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
+            if code and _looks_like_style_code(code):
+                return code, "normal"
+    except Exception:
+        if filename_code:
+            logging.info("filename fallback after OCR read error: %s code=%s", path.name, filename_code)
+            return filename_code, filename_source
+        raise
+
+    if filename_code:
+        return filename_code, filename_source
+
+    loose_texts: list[str] = []
+    seen_texts = set()
+    for crop in corner_crops:
+        for variant in _prep_for_ocr(crop):
+            raw = _run_rapidocr(variant).strip()
+            if raw and raw not in seen_texts:
+                seen_texts.add(raw)
+                loose_texts.append(raw)
+            if tesseract_bin:
+                raw_t = _run_tesseract(variant, tesseract_bin).strip()
+                if raw_t and raw_t not in seen_texts:
+                    seen_texts.add(raw_t)
+                    loose_texts.append(raw_t)
+
+    for raw in loose_texts:
+        code = _extract_kf_from_text(raw)
+        if code:
+            logging.info("kf fallback label success: %s code=%s", path.name, code)
+            return code, "kf_fallback"
+
+    for raw in loose_texts:
+        code = _style_before_hash(raw)
+        if code:
+            logging.info("hash-prefix fallback success: %s code=%s", path.name, code)
+            return code, "hash_prefix"
 
     return "", ""
 
@@ -279,12 +434,6 @@ HTML = r"""<!doctype html>
     .status:empty { display: none; }
     .status.err { color: #b91c1c; }
     .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-    .batch-tags { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-    .batch-note { color: #475569; font-weight: 800; margin-bottom: 10px; }
-    .batch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
-    .batch-field { min-width: 0; }
-    .quick-picks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-content: flex-start; min-height: 78px; }
-    .quick-pick { min-height: 32px; padding: 5px 12px; border: 1px solid #d7dee8; border-radius: 999px; background: #f8fafc; color: #334155; font-weight: 800; white-space: nowrap; }
     .table-wrap { overflow: auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
     table { width: 100%; border-collapse: collapse; min-width: 1080px; }
     th, td { border-bottom: 1px solid #e5e7eb; padding: 10px; text-align: left; vertical-align: middle; }
@@ -306,8 +455,6 @@ HTML = r"""<!doctype html>
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
     @media (max-width: 900px) {
       .path-grid { grid-template-columns: 1fr; }
-      .batch-grid { grid-template-columns: 1fr; }
-      .quick-picks { min-height: 0; }
       .title-row { display: grid; }
       .top-progress { min-width: 0; width: 100%; }
       .progress-text { text-align: left; }
@@ -333,29 +480,13 @@ HTML = r"""<!doctype html>
       </label>
       <div class="scan-actions">
         <button id="scanBtn" type="button">扫描识别</button>
+        <button id="scanImportBtn" type="button">扫描入库</button>
         <button id="cancelScanBtn" type="button" class="secondary" disabled>停止扫描</button>
       </div>
     </div>
   </header>
   <main>
     <div id="status" class="status"></div>
-    <div class="batch-tags">
-      <div class="batch-note">批量标签：年份、类别、细类会统一加到本次勾选导入的图片所属款号。</div>
-      <div class="batch-grid">
-        <label class="batch-field">年份
-          <input id="batchYear" type="text" placeholder="如 2024" />
-          <div id="batchYearPicks" class="quick-picks"></div>
-        </label>
-        <label class="batch-field">类别
-          <input id="batchCategory" type="text" placeholder="如 单品、罗纹、毛织配件、布匹" />
-          <div id="batchCategoryPicks" class="quick-picks"></div>
-        </label>
-        <label class="batch-field">细类
-          <input id="batchSubcategory" type="text" placeholder="如 暂无，或输入新增细类" />
-          <div id="batchSubcategoryPicks" class="quick-picks"></div>
-        </label>
-      </div>
-    </div>
     <div class="toolbar">
       <button id="toggleBtn" type="button" class="secondary">全选/反选</button>
       <button id="commitBtn" type="button">确认复制入库</button>
@@ -369,11 +500,12 @@ HTML = r"""<!doctype html>
             <th>源文件</th>
             <th>款号</th>
             <th>导入后文件名</th>
+            <th>目录标签</th>
             <th>状态</th>
           </tr>
         </thead>
         <tbody id="rows">
-          <tr><td colspan="5" class="muted">填写源目录后开始扫描。</td></tr>
+          <tr><td colspan="6" class="muted">填写源目录后开始扫描。</td></tr>
         </tbody>
       </table>
     </div>
@@ -383,6 +515,7 @@ HTML = r"""<!doctype html>
       <img id="modalImage" class="modal-image" alt="图片预览" />
       <div id="modalMessage" class="modal-message"></div>
       <div class="modal-actions">
+        <button id="modalCancel" type="button" class="secondary" style="display:none">取消</button>
         <button id="modalOk" type="button">确定</button>
       </div>
     </div>
@@ -393,6 +526,8 @@ HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     let currentJob = null;
     let pollTimer = null;
+    let autoCommitAfterScan = false;
+    let autoCommitRunning = false;
 
     const PATH_MEMORY_KEYS = {
       source: "nas_importer_source_dir",
@@ -400,89 +535,49 @@ HTML = r"""<!doctype html>
     };
     $("sourceDir").value = localStorage.getItem(PATH_MEMORY_KEYS.source) || DEFAULT_SOURCE;
     $("targetDir").value = localStorage.getItem(PATH_MEMORY_KEYS.target) || DEFAULT_TARGET;
-    const QUICK_YEARS = ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026"];
-    const QUICK_CATEGORIES = ["单品", "罗纹", "毛织配件", "布匹"];
-    const QUICK_SUBCATEGORIES = ["屁帘", "章仔"];
-    const TAG_MEMORY_KEYS = {
-      year: "nas_importer_year_tags",
-      category: "nas_importer_category_tags",
-      subcategory: "nas_importer_subcategory_tags",
-    };
 
-    function splitInput(value) {
-      return String(value || "").split(/[、,，\s]+/).map(x => x.trim()).filter(Boolean);
-    }
     function rememberPaths() {
       const source = $("sourceDir").value.trim();
       const target = $("targetDir").value.trim();
       if (source) localStorage.setItem(PATH_MEMORY_KEYS.source, source);
       if (target) localStorage.setItem(PATH_MEMORY_KEYS.target, target);
     }
-    function uniqList(values) {
-      const out = [];
-      const seen = new Set();
-      (values || []).forEach((value) => {
-        const clean = String(value || "").trim();
-        if (!clean || seen.has(clean)) return;
-        seen.add(clean);
-        out.push(clean);
-      });
-      return out;
-    }
-    function readTagMemory(kind) {
-      try {
-        const raw = JSON.parse(localStorage.getItem(TAG_MEMORY_KEYS[kind]) || "[]");
-        return Array.isArray(raw) ? raw.map(String) : [];
-      } catch (_) {
-        return [];
-      }
-    }
-    function writeTagMemory(kind, values) {
-      const list = uniqList(values);
-      localStorage.setItem(TAG_MEMORY_KEYS[kind], JSON.stringify(list));
-      return list;
-    }
-    function rememberTagValues(kind, values) {
-      const current = readTagMemory(kind);
-      return writeTagMemory(kind, current.concat(values || []));
-    }
-    function setupQuickPicks(boxId, inputId, values, kind) {
-      const box = $(boxId);
-      if (!box) return;
-      const merged = uniqList((values || []).concat(readTagMemory(kind)));
-      box.innerHTML = merged.map(value => `<button type="button" class="quick-pick" data-value="${escapeHtml(value)}">${escapeHtml(value)}</button>`).join("");
-      box.querySelectorAll("button").forEach((button) => {
-        button.addEventListener("click", () => {
-          const input = $(inputId);
-          const value = button.dataset.value || "";
-          const parts = splitInput(input.value);
-          if (!parts.includes(value)) parts.push(value);
-          input.value = parts.join("、");
-          rememberTagValues(kind, parts);
-        });
-      });
-    }
-    function rememberBatchTags() {
-      rememberTagValues("year", splitInput($("batchYear").value));
-      rememberTagValues("category", splitInput($("batchCategory").value));
-      rememberTagValues("subcategory", splitInput($("batchSubcategory").value));
-      setupQuickPicks("batchYearPicks", "batchYear", QUICK_YEARS, "year");
-      setupQuickPicks("batchCategoryPicks", "batchCategory", QUICK_CATEGORIES, "category");
-      setupQuickPicks("batchSubcategoryPicks", "batchSubcategory", QUICK_SUBCATEGORIES, "subcategory");
-    }
-
     function alertBox(message, imageUrl = "") {
       return new Promise((resolve) => {
         $("modalBox").classList.toggle("image-box", !!imageUrl);
         $("modalImage").style.display = imageUrl ? "block" : "none";
         $("modalImage").src = imageUrl || "";
         $("modalMessage").textContent = String(message || "");
+        $("modalCancel").style.display = "none";
         $("modal").classList.add("open");
         $("modalOk").onclick = () => {
           $("modal").classList.remove("open");
           $("modalImage").removeAttribute("src");
           $("modalOk").onclick = null;
+          $("modalCancel").onclick = null;
           resolve();
+        };
+      });
+    }
+    function confirmBox(message) {
+      return new Promise((resolve) => {
+        $("modalBox").classList.remove("image-box");
+        $("modalImage").style.display = "none";
+        $("modalImage").removeAttribute("src");
+        $("modalMessage").textContent = String(message || "");
+        $("modalCancel").style.display = "inline-block";
+        $("modal").classList.add("open");
+        $("modalOk").onclick = () => {
+          $("modal").classList.remove("open");
+          $("modalOk").onclick = null;
+          $("modalCancel").onclick = null;
+          resolve(true);
+        };
+        $("modalCancel").onclick = () => {
+          $("modal").classList.remove("open");
+          $("modalOk").onclick = null;
+          $("modalCancel").onclick = null;
+          resolve(false);
         };
       });
     }
@@ -500,6 +595,7 @@ HTML = r"""<!doctype html>
     }
     function setScanning(active) {
       $("scanBtn").disabled = !!active;
+      $("scanImportBtn").disabled = !!active;
       $("scanBtn").textContent = active ? "扫描中..." : "扫描识别";
       $("cancelScanBtn").disabled = !active;
       $("sourceDir").disabled = !!active;
@@ -531,10 +627,15 @@ HTML = r"""<!doctype html>
         selected: row.querySelector('[data-role="selected"]').checked,
         source_rel_path: row.dataset.relPath || "",
         style_code: row.querySelector('[data-role="style"]').value.trim(),
-        year_tag: $("batchYear").value.trim(),
-        category: $("batchCategory").value.trim(),
-        subcategory: $("batchSubcategory").value.trim(),
         target_filename: row.querySelector('[data-role="filename"]').value.trim(),
+      };
+    }
+    function jobItemPayload(item) {
+      return {
+        selected: true,
+        source_rel_path: item.source_rel_path || "",
+        style_code: item.proposed_style_code || "",
+        target_filename: item.proposed_filename || "",
       };
     }
     function previewSource(jobId, relPath, name) {
@@ -549,19 +650,28 @@ HTML = r"""<!doctype html>
       setTopProgressStatus(label, job.processed || 0, job.total || 0);
       setStatus("");
       if (!job.items || !job.items.length) {
-        $("rows").innerHTML = '<tr><td colspan="5" class="muted">暂无待确认图片。</td></tr>';
+        $("rows").innerHTML = '<tr><td colspan="6" class="muted">暂无待确认图片。</td></tr>';
         return;
       }
       $("rows").innerHTML = job.items.map((item, index) => {
         const statusClass = item.status === "ok" ? "" : (item.status === "ocr_failed" || item.status === "invalid_style_code" ? "err" : "warn");
         const pillClass = item.status === "ok" ? "pill" : (statusClass === "err" ? "pill err" : "pill warn");
-        const statusText = item.error || (item.status === "ok" ? (item.ocr_source === "kf_fallback" ? "识别成功（KF增强）" : "识别成功") : item.status);
+        const sourceLabels = {
+          kf_fallback: "识别成功（KF增强）",
+          hash_prefix: "识别成功（#前文本）",
+          top_left: "识别成功（左上角）",
+          filename_hash: "识别成功（文件名#前）",
+          filename: "识别成功（文件名）",
+        };
+        const sourceText = sourceLabels[item.ocr_source] || "识别成功";
+        const statusText = item.error || (item.status === "ok" ? sourceText : item.status);
         return `
           <tr class="${statusClass}" data-rel-path="${escapeHtml(item.source_rel_path || "")}" data-suffix="${escapeHtml(item.suffix || ".jpg")}">
             <td><input data-role="selected" type="checkbox" checked></td>
             <td><div class="source"><button type="button" data-role="previewSource">${escapeHtml(item.source_name || "")}</button></div><div class="muted">${escapeHtml(item.source_rel_path || "")}</div></td>
             <td><input data-role="style" type="text" value="${escapeHtml(item.proposed_style_code || "")}"></td>
             <td><input data-role="filename" type="text" value="${escapeHtml(item.proposed_filename || "")}"></td>
+            <td><div class="muted">${escapeHtml(item.tag_display || "")}</div></td>
             <td><span class="${pillClass}">${escapeHtml(statusText)}</span></td>
           </tr>`;
       }).join("");
@@ -575,11 +685,13 @@ HTML = r"""<!doctype html>
         });
       });
     }
-    async function startScan() {
+    async function startScan(autoCommit = false) {
       const source_dir = $("sourceDir").value.trim();
       const target_dir = $("targetDir").value.trim();
       if (!source_dir || !target_dir) return alertBox("请填写源目录和目标目录");
       rememberPaths();
+      autoCommitAfterScan = !!autoCommit;
+      autoCommitRunning = false;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
@@ -603,6 +715,14 @@ HTML = r"""<!doctype html>
         if (!currentJob || ["completed", "failed", "canceled"].includes(currentJob.status)) setScanning(false);
       }
     }
+    async function startScanAndImport() {
+      const source_dir = $("sourceDir").value.trim();
+      const target_dir = $("targetDir").value.trim();
+      if (!source_dir || !target_dir) return alertBox("请填写源目录和目标目录");
+      const ok = await confirmBox(`确认扫描并直接入库？\n\n源目录：${source_dir}\n目标目录：${target_dir}\n\n扫描完成后会自动复制入库，不再停下来人工确认。`);
+      if (!ok) return;
+      await startScan(true);
+    }
     async function pollJob() {
       if (!currentJob) return;
       try {
@@ -613,6 +733,12 @@ HTML = r"""<!doctype html>
           pollTimer = null;
           setScanning(false);
           if (job.status === "failed") await alertBox("扫描失败：" + (job.message || ""));
+          if (job.status === "completed" && autoCommitAfterScan && !autoCommitRunning) {
+            autoCommitRunning = true;
+            await commitItems(job.items.map(jobItemPayload));
+            autoCommitAfterScan = false;
+            autoCommitRunning = false;
+          }
         }
       } catch (err) {
         clearInterval(pollTimer);
@@ -633,6 +759,7 @@ HTML = r"""<!doctype html>
           if (pollTimer) clearInterval(pollTimer);
           pollTimer = null;
           setScanning(false);
+          autoCommitAfterScan = false;
         }
       } catch (err) {
         setStatus(err.message || "停止扫描失败", true);
@@ -641,10 +768,15 @@ HTML = r"""<!doctype html>
     }
     async function commitJob() {
       if (!currentJob || currentJob.status !== "completed") return alertBox("请先等待扫描完成");
-      rememberBatchTags();
       const items = Array.from($("rows").querySelectorAll("tr[data-rel-path]")).map(rowPayload);
       if (!items.some((item) => item.selected)) return alertBox("请至少选择一张要导入的图片");
+      await commitItems(items);
+    }
+    async function commitItems(items) {
+      if (!currentJob || currentJob.status !== "completed") return alertBox("请先等待扫描完成");
+      if (!items.some((item) => item.selected)) return alertBox("请至少选择一张要导入的图片");
       $("commitBtn").disabled = true;
+      $("scanImportBtn").disabled = true;
       setStatus("正在复制到目标目录...");
       try {
         const result = await api("/api/jobs/" + encodeURIComponent(currentJob.job_id) + "/commit", {
@@ -654,6 +786,7 @@ HTML = r"""<!doctype html>
         });
         const failed = result.failed || [];
         const message = `导入完成：成功 ${result.imported || 0} 张，失败 ${failed.length} 张` +
+          (result.manifest_path ? `\n标签文件：${result.manifest_path}` : "") +
           (failed.length ? "\\n\\n" + failed.slice(0, 20).map(x => `${x.source_rel_path || ""}：${x.error || "失败"}`).join("\\n") : "");
         setStatus(message, failed.length > 0);
         await alertBox(message);
@@ -662,9 +795,11 @@ HTML = r"""<!doctype html>
         await alertBox("导入失败：" + (err.message || "未知错误"));
       } finally {
         $("commitBtn").disabled = false;
+        $("scanImportBtn").disabled = false;
       }
     }
-    $("scanBtn").addEventListener("click", startScan);
+    $("scanBtn").addEventListener("click", () => startScan(false));
+    $("scanImportBtn").addEventListener("click", startScanAndImport);
     $("cancelScanBtn").addEventListener("click", cancelScan);
     $("commitBtn").addEventListener("click", commitJob);
     $("toggleBtn").addEventListener("click", () => {
@@ -672,15 +807,9 @@ HTML = r"""<!doctype html>
       const should = boxes.some(box => !box.checked);
       boxes.forEach(box => { box.checked = should; });
     });
-    ["batchYear", "batchCategory", "batchSubcategory"].forEach((id) => {
-      $(id).addEventListener("blur", rememberBatchTags);
-    });
     ["sourceDir", "targetDir"].forEach((id) => {
       $(id).addEventListener("blur", rememberPaths);
     });
-    setupQuickPicks("batchYearPicks", "batchYear", QUICK_YEARS, "year");
-    setupQuickPicks("batchCategoryPicks", "batchCategory", QUICK_CATEGORIES, "category");
-    setupQuickPicks("batchSubcategoryPicks", "batchSubcategory", QUICK_SUBCATEGORIES, "subcategory");
   </script>
 </body>
 </html>
@@ -844,6 +973,17 @@ class ImportServer(ThreadingHTTPServer):
                 prefix = _code_to_filename_prefix(code) if code else SAFE_STEM_RE.sub("_", path.stem).strip("_") or "UNKNOWN"
                 filename = _next_target_name(prefix, path.suffix.lower(), used_names, next_seq)
                 rel = str(path.relative_to(job.source_dir)).replace("\\", "/")
+                tags, tag_display = _tags_from_source_path(job.source_dir, path)
+                unrecognized_copy = ""
+                if not valid:
+                    try:
+                        unrecognized_copy = _copy_unrecognized(job.source_dir, path)
+                        if not error:
+                            error = "OCR 未识别到可用款号"
+                        error = f"{error}；已保存到 {unrecognized_copy}"
+                    except Exception as copy_exc:
+                        logging.warning("copy unrecognized failed: %s", path, exc_info=True)
+                        error = f"{error or 'OCR 未识别到可用款号'}；未识别图片保存失败：{copy_exc}"
                 latest = self.jobs.get(job_id)
                 if not latest or latest.cancel_requested:
                     self.jobs.update(job_id, status="canceled", message=f"已停止扫描，已处理 {index - 1}/{len(files)}")
@@ -858,6 +998,9 @@ class ImportServer(ThreadingHTTPServer):
                         "status": "ok" if valid else ("invalid_style_code" if code else "ocr_failed"),
                         "error": error,
                         "ocr_source": source,
+                        "tags": tags,
+                        "tag_display": tag_display,
+                        "unrecognized_copy": unrecognized_copy,
                     }
                 )
                 self.jobs.update(job_id, processed=index, items=list(items), message=f"已处理 {index}/{len(files)}")
@@ -878,74 +1021,75 @@ class ImportServer(ThreadingHTTPServer):
         used_names, next_seq = _build_name_allocator(job.target_dir)
         imported = 0
         failed: list[dict[str, str]] = []
-        manifest_rows: list[dict[str, Any]] = []
-        for item in items:
-            if not item.get("selected"):
-                continue
-            rel = str(item.get("source_rel_path") or "")
-            source = prepared.get(rel)
-            if not source:
-                failed.append({"source_rel_path": rel, "error": "源记录不存在"})
-                continue
-            src = (job.source_dir / rel).resolve()
-            try:
-                src.relative_to(job.source_dir.resolve())
-            except Exception:
-                failed.append({"source_rel_path": rel, "error": "源路径无效"})
-                continue
-            if not src.exists() or not src.is_file():
-                failed.append({"source_rel_path": rel, "error": "源文件不存在"})
-                continue
-            style_code = _clean_style_code(str(item.get("style_code") or ""))
-            raw_filename = str(item.get("target_filename") or "").strip()
-            if not raw_filename and style_code:
-                raw_filename = f"{style_code}_000{src.suffix.lower()}"
-            if not _is_valid_style_code(style_code):
-                failed.append({"source_rel_path": rel, "error": "款号必须以字母开头"})
-                continue
-            try:
-                first = _sanitize_filename(raw_filename, src.suffix.lower())
-                if first.lower() in used_names:
-                    stem = re.sub(r"_\d+$", "", Path(first).stem).strip() or style_code
-                    target_name = _next_target_name(stem, Path(first).suffix, used_names, next_seq)
-                else:
-                    target_name = first
-                    used_names.add(first.lower())
-                shutil.copy2(src, job.target_dir / target_name)
-                imported += 1
-                final_style_code = filename_to_style_code(target_name).strip()
-                tags: list[str] = []
-                year_tag = str(item.get("year_tag") or "").strip()
-                if year_tag:
-                    tags.append(f"year:{year_tag}")
-                for category in _split_tags(item.get("category")):
-                    tags.append(f"category:{category}")
-                for subcategory in _split_tags(item.get("subcategory")):
-                    tags.append(f"subcategory:{subcategory}")
-                manifest_rows.append(
-                    {
+        manifest_path = job.target_dir / f"_nas_import_manifest_{time.strftime('%Y%m%d_%H%M%S')}_{job.job_id[:8]}.jsonl"
+        active_lock_path = job.target_dir / f"_nas_import_active_{time.strftime('%Y%m%d_%H%M%S')}_{job.job_id[:8]}.lock"
+        active_lock_path.write_text(
+            json.dumps(
+                {
+                    "job_id": job.job_id,
+                    "source_dir": str(job.source_dir),
+                    "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            for item in items:
+                if not item.get("selected"):
+                    continue
+                rel = str(item.get("source_rel_path") or "")
+                source = prepared.get(rel)
+                if not source:
+                    failed.append({"source_rel_path": rel, "error": "源记录不存在"})
+                    continue
+                src = (job.source_dir / rel).resolve()
+                try:
+                    src.relative_to(job.source_dir.resolve())
+                except Exception:
+                    failed.append({"source_rel_path": rel, "error": "源路径无效"})
+                    continue
+                if not src.exists() or not src.is_file():
+                    failed.append({"source_rel_path": rel, "error": "源文件不存在"})
+                    continue
+                style_code = _clean_style_code(str(item.get("style_code") or ""))
+                raw_filename = str(item.get("target_filename") or "").strip()
+                if not raw_filename and style_code:
+                    raw_filename = f"{style_code}_000{src.suffix.lower()}"
+                if not _is_valid_style_code(style_code):
+                    failed.append({"source_rel_path": rel, "error": "款号必须以字母开头"})
+                    continue
+                try:
+                    target_name = _copy_to_unique_target(src, job.target_dir, raw_filename, used_names, next_seq, style_code)
+                    imported += 1
+                    final_style_code = filename_to_style_code(target_name).strip()
+                    tags = list(source.get("tags") or [])
+                    row = {
                         "source_rel_path": rel,
                         "image_name": target_name,
                         "style_code": final_style_code,
                         "tags": tags,
                         "imported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "manifest_job_id": job.job_id,
                     }
-                )
-            except Exception as exc:
-                failed.append({"source_rel_path": rel, "error": str(exc)})
-        if manifest_rows:
-            manifest_path = job.target_dir / "_nas_import_manifest.jsonl"
-            with manifest_path.open("a", encoding="utf-8") as fh:
-                for row in manifest_rows:
-                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        result = {"imported": imported, "failed": failed, "target_dir": str(job.target_dir)}
+                    with manifest_path.open("a", encoding="utf-8") as fh:
+                        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                        fh.flush()
+                except Exception as exc:
+                    failed.append({"source_rel_path": rel, "error": str(exc)})
+        finally:
+            try:
+                active_lock_path.unlink(missing_ok=True)
+            except Exception:
+                logging.warning("failed to remove import active lock: %s", active_lock_path, exc_info=True)
+        result = {"imported": imported, "failed": failed, "target_dir": str(job.target_dir), "manifest_path": str(manifest_path)}
         self.jobs.update(job_id, committed=True, result=result, message=f"导入完成：成功 {imported} 张，失败 {len(failed)} 张")
         return result
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Windows NAS product image batch importer")
-    parser.add_argument("--source", default="", help=r"源目录，例如 Z:\2018\成衣")
+    parser.add_argument("--source", default="/Users/tk/Downloads/产品库", help=r"源目录，例如 Z:\2018\成衣")
     parser.add_argument("--target", default=r"Z:\products\standard_samples", help=r"目标目录，默认 Z:\products\standard_samples")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
