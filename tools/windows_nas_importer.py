@@ -99,6 +99,9 @@ def _tags_from_source_path(source_dir: Path, image_path: Path) -> tuple[list[str
     except Exception:
         rel_parent = Path()
     parts = [p.strip() for p in rel_parent.parts if str(p).strip()]
+    source_year = source_dir.name.strip()
+    if re.fullmatch(r"\d{4}", source_year):
+        parts = [source_year] + parts
     tags: list[str] = []
     display: list[str] = []
     if len(parts) >= 1:
