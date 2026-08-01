@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageOps
 from zoneinfo import ZoneInfo
 
 try:
@@ -64,7 +64,7 @@ from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_a
 from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag, parse_catalog_tag
 from color_card_store import ColorCardStore
 from color_card_importer import read_color_rows, slugify_library_id
-from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image
+from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image, _run_rapidocr
 
 
 def _style_code_key(code: str) -> str:
@@ -1589,6 +1589,103 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             logging.warning("wechat text content security check failed error=%s", exc)
             if not wechat_security_fail_open:
                 raise HTTPException(status_code=503, detail="内容安全校验暂不可用，请稍后再试") from exc
+
+    def _prepare_lab_ocr_images(image_bytes: bytes) -> List[Image.Image]:
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as im0:
+                base = ImageOps.exif_transpose(im0).convert("RGB")
+        except Exception as exc:
+            raise ValueError("图片格式无法识别") from exc
+        base.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+        variants: List[Image.Image] = [base]
+        gray = ImageOps.grayscale(base)
+        variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(gray).enhance(2.2)).convert("RGB"))
+        w, h = base.size
+        crop_boxes = [
+            (0, int(h * 0.22), w, int(h * 0.88)),
+            (int(w * 0.18), int(h * 0.30), int(w * 0.82), int(h * 0.82)),
+            (int(w * 0.25), int(h * 0.35), int(w * 0.78), int(h * 0.78)),
+        ]
+        for box in crop_boxes:
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            crop = base.crop(box)
+            variants.append(crop)
+            crop_gray = ImageOps.grayscale(crop)
+            variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(crop_gray).enhance(2.6)).convert("RGB"))
+        return variants
+
+    def _parse_lab_ocr_text(raw_text: str) -> Dict[str, float] | None:
+        text = str(raw_text or "")
+        if not text.strip():
+            return None
+        normalized = (
+            text.replace("：", ":")
+            .replace("＊", "*")
+            .replace("，", ".")
+            .replace(",", ".")
+            .replace("−", "-")
+            .replace("–", "-")
+        )
+
+        def clean_number(raw: str) -> float | None:
+            value = re.sub(r"\s+", "", str(raw or ""))
+            if value.count(".") > 1:
+                head, tail = value.split(".", 1)
+                value = head + "." + tail.replace(".", "")
+            try:
+                out = float(value)
+            except ValueError:
+                return None
+            return out if math.isfinite(out) else None
+
+        lab: Dict[str, float] = {}
+        label_patterns = (
+            ("L", r"(?:[Ll]\s*\*?\s*[:=]?|[I1]\s*\*?\s*[:=])"),
+            ("a", r"[aA]\s*\*?\s*[:=]?"),
+            ("b", r"[bB]\s*\*?\s*[:=]?"),
+        )
+        for key, label_pattern in label_patterns:
+            matches = re.findall(
+                rf"(?:^|[^A-Za-z0-9]){label_pattern}\s*([+-]?\d{{1,3}}(?:\s*[.]\s*\d{{1,3}})?)",
+                normalized,
+            )
+            for match in matches:
+                value = clean_number(match)
+                if value is None:
+                    continue
+                if key == "L" and not (0 <= value <= 100):
+                    continue
+                if key in {"a", "b"} and not (-150 <= value <= 150):
+                    continue
+                lab[key] = value
+                break
+        if {"L", "a", "b"}.issubset(lab):
+            return {"L": lab["L"], "a": lab["a"], "b": lab["b"]}
+        return None
+
+    def _extract_lab_from_image_bytes(image_bytes: bytes) -> Dict[str, Any]:
+        texts: List[str] = []
+        errors: List[str] = []
+        for image in _prepare_lab_ocr_images(image_bytes):
+            try:
+                text = _run_rapidocr(image).strip()
+            except Exception as exc:
+                errors.append(str(exc))
+                continue
+            if not text:
+                continue
+            texts.append(text)
+            lab = _parse_lab_ocr_text(text)
+            if lab:
+                return {"lab": lab, "ocr_text": text, "ocr_texts": texts}
+        joined = "\n".join(texts)
+        lab = _parse_lab_ocr_text(joined)
+        if lab:
+            return {"lab": lab, "ocr_text": joined, "ocr_texts": texts}
+        if errors and not texts:
+            raise RuntimeError(errors[0])
+        raise ValueError("未识别到 L*、a*、b* 数值，请拍清仪器屏幕或改用手动测量")
 
     def _list_import_source_images(source_dir: Path) -> List[Path]:
         return [
@@ -5261,10 +5358,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-screen { display: none; min-height: calc(100vh - 136px); }
     .color-screen.active { display: block; }
     .color-screen-title { display: none; }
-    .meter-preview-card { border-radius: 6px; background: #202435; padding: 10px; margin: 0 0 10px; touch-action: none; overscroll-behavior: contain; }
+    .meter-preview-card { position: relative; border-radius: 6px; background: #202435; padding: 10px; margin: 0 0 10px; touch-action: none; overscroll-behavior: contain; }
     .meter-preview-inner { height: 118px; background: #9d9d9b; display: grid; place-items: center; color: #080b16; font-size: 17px; position: relative; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .meter-preview-inner * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .meter-preview-inner.params { background: #202435; color: #f8fafc; }
+    .meter-photo-btn { position: absolute; right: 18px; top: 18px; z-index: 2; width: 42px; min-width: 42px; height: 42px; min-height: 42px; padding: 0; border-radius: 8px; display: grid; place-items: center; background: rgba(255,255,255,.94); color: #0f172a; box-shadow: 0 7px 18px rgba(0,0,0,.28); }
+    .meter-photo-btn svg { width: 24px; height: 24px; display: block; stroke: currentColor; }
     .meter-param-grid { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; gap: 8px; font-size: 18px; line-height: 1.75; }
     .meter-param-title { font-size: 18px; margin-bottom: 12px; }
     .color-compare-float { position: fixed; z-index: 130; width: 126px; height: 74px; border-radius: 8px; display: grid; place-items: center; color: #050505; font-size: 16px; font-weight: 700; box-shadow: 0 10px 28px rgba(0,0,0,.34); border: 2px solid rgba(255,255,255,.86); pointer-events: none; transform: translate(-50%, -50%); }
@@ -5503,11 +5602,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="color-screen-title">仪器对色</div>
             <div class="meter-preview-card">
               <div class="meter-preview-inner" id="meterPreviewInner"></div>
+              <button class="meter-photo-btn" id="meterImageLabBtn" type="button" aria-label="拍照或相册识别 Lab" title="拍照或相册识别 Lab">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4.5l1.6 2H19a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8.5a2 2 0 0 1 2-2h2.9l1.6-2h5z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>
+              </button>
               <div class="meter-dots">
                 <button class="meter-dot active" id="meterSwatchDot" type="button" aria-label="颜色"></button>
                 <button class="meter-dot" id="meterParamsDot" type="button" aria-label="参数"></button>
               </div>
             </div>
+            <input id="meterImageLabCamera" class="hidden" type="file" accept="image/*" capture="environment" />
+            <input id="meterImageLabFile" class="hidden" type="file" accept="image/*" />
             <div class="meter-row-actions">
               <div class="meter-pill" id="selectedColorLibraryName">请选择色彩库</div>
               <button class="meter-cyan-btn" id="chooseColorLibraryBtn" type="button">选择色彩库</button>
@@ -5559,6 +5663,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="color-action-panel">
               <button id="chooseColorImageBtn" type="button">选择图片</button>
               <button id="cancelColorImageMenuBtn" type="button">取消</button>
+            </div>
+          </div>
+          <div class="color-action-sheet hidden" id="meterImageLabSheet">
+            <div class="color-action-panel">
+              <button id="meterImageLabCameraBtn" type="button">拍照识别 Lab</button>
+              <button id="meterImageLabFileBtn" type="button">从相册选择</button>
+              <button id="cancelMeterImageLabBtn" type="button">取消</button>
             </div>
           </div>
           <div class="color-action-sheet hidden" id="colorPickActionSheet">
@@ -6877,6 +6988,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       setColorStatus(statusText, false);
       return true;
     }
+    function applyImageExtractedLab(lab, statusText = "已从图片识别 Lab") {
+      const normalized = {
+        L: Number(lab?.L),
+        a: Number(lab?.a),
+        b: Number(lab?.b),
+      };
+      if (!Number.isFinite(normalized.L) || !Number.isFinite(normalized.a) || !Number.isFinite(normalized.b)) return false;
+      state.pickedColorLab = null;
+      state.pickedColorHex = "";
+      state.pickedColorRgb = null;
+      $("colorL").value = normalized.L.toFixed(2);
+      $("colorA").value = normalized.a.toFixed(2);
+      $("colorB").value = normalized.b.toFixed(2);
+      refreshColorSwatch();
+      setMeterPreviewMode("params");
+      setColorStatus(statusText, false);
+      return true;
+    }
     function applyNativeMeterLabFromUrl() {
       const params = new URLSearchParams(window.location.search || "");
       if (!params.has("meter_l") || !params.has("meter_a") || !params.has("meter_b")) return false;
@@ -6957,6 +7086,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function closeColorImageMenu() {
       $("colorImageMenuSheet")?.classList.add("hidden");
+    }
+    function openMeterImageLabSheet() {
+      $("meterImageLabSheet")?.classList.remove("hidden");
+    }
+    function closeMeterImageLabSheet() {
+      $("meterImageLabSheet")?.classList.add("hidden");
+    }
+    function chooseMeterImageLabInput(inputId) {
+      const input = $(inputId);
+      if (!input) return;
+      input.value = "";
+      input.click();
+    }
+    async function extractMeterLabFromImageFile(file) {
+      if (!file) return;
+      closeMeterImageLabSheet();
+      setColorStatus("正在识别图片 Lab...", false);
+      $("colorMatchStatus").textContent = "正在识别图片 Lab...";
+      $("colorMatchList").innerHTML = "";
+      const form = new FormData();
+      form.append("file", file);
+      const data = await api("/api/v1/color-card/extract-lab-image", {
+        method: "POST",
+        body: form,
+      });
+      if (!applyImageExtractedLab(data.lab, `已从图片识别 Lab：L ${Number(data.lab.L).toFixed(2)} / a ${Number(data.lab.a).toFixed(2)} / b ${Number(data.lab.b).toFixed(2)}`)) {
+        throw new Error("图片 Lab 数据异常");
+      }
+      await matchColorCards();
     }
     function openColorPickActions(target = null) {
       state.colorActionTarget = target;
@@ -8306,6 +8464,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       pickColorFromImage(event);
     });
     $("colorImageFile")?.addEventListener("change", () => setColorImageFile(($("colorImageFile").files || [])[0] || null));
+    $("meterImageLabBtn")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMeterImageLabSheet();
+    });
+    $("meterImageLabCameraBtn")?.addEventListener("click", () => chooseMeterImageLabInput("meterImageLabCamera"));
+    $("meterImageLabFileBtn")?.addEventListener("click", () => chooseMeterImageLabInput("meterImageLabFile"));
+    $("cancelMeterImageLabBtn")?.addEventListener("click", closeMeterImageLabSheet);
+    $("meterImageLabSheet")?.addEventListener("click", (event) => {
+      if (event.target === $("meterImageLabSheet")) closeMeterImageLabSheet();
+    });
+    ["meterImageLabCamera", "meterImageLabFile"].forEach((id) => {
+      $(id)?.addEventListener("change", () => {
+        const file = ($(id).files || [])[0] || null;
+        if (!file) return;
+        extractMeterLabFromImageFile(file).catch((err) => {
+          setColorStatus(err.message || "图片 Lab 识别失败", true);
+          $("colorMatchStatus").textContent = err.message || "图片 Lab 识别失败";
+        });
+      });
+    });
     $("runImageSearchBtn").addEventListener("click", () => runImageSearch().catch((err) => setStatus(err.message || "图搜失败", true)));
     $("clearImageSearchBtn").addEventListener("click", clearImageSearch);
     $("keyword").addEventListener("keydown", (event) => {
@@ -11052,6 +11231,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "query_lab": {"L": payload.L, "a": payload.a, "b": payload.b},
             "library_id": library_id,
             "matches": matches,
+        }
+
+    @app.post("/api/v1/color-card/extract-lab-image")
+    async def api_extract_color_lab_from_image(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
+        _catalog_require_permission(request, "color:view")
+        filename = Path(str(file.filename or "").replace("\\", "/").split("/")[-1]).name or "color-meter.jpg"
+        suffix = Path(filename).suffix.lower()
+        content_type = str(file.content_type or "").lower()
+        if suffix and suffix not in allowed_image_exts:
+            raise HTTPException(status_code=400, detail="只支持上传图片文件")
+        if content_type and not content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="只支持上传图片文件")
+        image_bytes = await file.read()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="上传图片为空")
+        if len(image_bytes) > 12 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="图片不能超过 12MB")
+        _check_search_upload_content_security(image_bytes, filename)
+        try:
+            result = _extract_lab_from_image_bytes(image_bytes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logging.exception("extract color lab from image failed: %s", filename)
+            raise HTTPException(status_code=503, detail=f"图片 Lab 识别暂不可用：{exc}") from exc
+        lab = result["lab"]
+        return {
+            "lab": {"L": lab["L"], "a": lab["a"], "b": lab["b"]},
+            "ocr_text": result.get("ocr_text", ""),
         }
 
     @app.post("/api/v1/catalog/tags")
