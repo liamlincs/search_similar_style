@@ -1596,23 +1596,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 base = ImageOps.exif_transpose(im0).convert("RGB")
         except Exception as exc:
             raise ValueError("图片格式无法识别") from exc
-        base.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+        base.thumbnail((1100, 1100), Image.Resampling.LANCZOS)
         variants: List[Image.Image] = [base]
-        gray = ImageOps.grayscale(base)
-        variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(gray).enhance(2.2)).convert("RGB"))
         w, h = base.size
         crop_boxes = [
-            (0, int(h * 0.22), w, int(h * 0.88)),
             (int(w * 0.18), int(h * 0.30), int(w * 0.82), int(h * 0.82)),
-            (int(w * 0.25), int(h * 0.35), int(w * 0.78), int(h * 0.78)),
+            (0, int(h * 0.22), w, int(h * 0.88)),
         ]
         for box in crop_boxes:
             if box[2] <= box[0] or box[3] <= box[1]:
                 continue
             crop = base.crop(box)
             variants.append(crop)
+        gray = ImageOps.grayscale(base)
+        variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(gray).enhance(2.1)).convert("RGB"))
+        for box in crop_boxes[:1]:
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            crop = base.crop(box)
             crop_gray = ImageOps.grayscale(crop)
-            variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(crop_gray).enhance(2.6)).convert("RGB"))
+            variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(crop_gray).enhance(2.4)).convert("RGB"))
         return variants
 
     def _parse_lab_ocr_text(raw_text: str) -> Dict[str, float] | None:
@@ -7099,14 +7102,51 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       input.value = "";
       input.click();
     }
+    function compressImageForLabUpload(file, maxEdge = 1280, quality = 0.82) {
+      return new Promise((resolve) => {
+        if (!file || !/^image\//i.test(file.type || "")) return resolve(file);
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => {
+          try {
+            const width = Number(img.naturalWidth || img.width || 0);
+            const height = Number(img.naturalHeight || img.height || 0);
+            if (!width || !height) return resolve(file);
+            const scale = Math.min(1, maxEdge / Math.max(width, height));
+            if (scale >= 0.98 && file.size <= 900 * 1024) return resolve(file);
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.max(1, Math.round(width * scale));
+            canvas.height = Math.max(1, Math.round(height * scale));
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return resolve(file);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob((blob) => {
+              if (!blob) return resolve(file);
+              const next = new File([blob], (file.name || "color-meter.jpg").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+              resolve(next.size && next.size < file.size ? next : file);
+            }, "image/jpeg", quality);
+          } catch (_) {
+            resolve(file);
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve(file);
+        };
+        img.src = url;
+      });
+    }
     async function extractMeterLabFromImageFile(file) {
       if (!file) return;
       closeMeterImageLabSheet();
       setColorStatus("正在识别图片 Lab...", false);
       $("colorMatchStatus").textContent = "正在识别图片 Lab...";
       $("colorMatchList").innerHTML = "";
+      const uploadFile = await compressImageForLabUpload(file);
       const form = new FormData();
-      form.append("file", file);
+      form.append("file", uploadFile);
       const data = await api("/api/v1/color-card/extract-lab-image", {
         method: "POST",
         body: form,
