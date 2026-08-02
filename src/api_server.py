@@ -697,6 +697,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     catalog_db_path = Path(catalog_cfg.get("db_path", "data/product_catalog.db"))
     color_card_db_path = Path(color_card_cfg.get("db_path", "data/color_cards.db"))
+    color_card_lab_ocr_max_edge = max(480, int(color_card_cfg.get("lab_ocr_max_edge", 760)))
+    color_card_lab_ocr_max_variants = max(1, min(int(color_card_cfg.get("lab_ocr_max_variants", 3)), 5))
     catalog_import_source_dir = str(catalog_cfg.get("import_source_dir", "")).strip()
     catalog_public = bool(catalog_cfg.get("public_endpoints", True))
     catalog_sync_on_startup = bool(catalog_cfg.get("sync_on_startup", True))
@@ -1597,18 +1599,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 base = ImageOps.exif_transpose(im0).convert("RGB")
         except Exception as exc:
             raise ValueError("图片格式无法识别") from exc
-        base.thumbnail((1100, 1100), Image.Resampling.LANCZOS)
-        variants: List[Image.Image] = [base]
+        base.thumbnail((color_card_lab_ocr_max_edge, color_card_lab_ocr_max_edge), Image.Resampling.BILINEAR)
         w, h = base.size
         crop_boxes = [
             (int(w * 0.18), int(h * 0.30), int(w * 0.82), int(h * 0.82)),
             (0, int(h * 0.22), w, int(h * 0.88)),
         ]
+        variants: List[Image.Image] = []
         for box in crop_boxes:
             if box[2] <= box[0] or box[3] <= box[1]:
                 continue
             crop = base.crop(box)
             variants.append(crop)
+        variants.append(base)
         gray = ImageOps.grayscale(base)
         variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(gray).enhance(2.1)).convert("RGB"))
         for box in crop_boxes[:1]:
@@ -1617,7 +1620,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             crop = base.crop(box)
             crop_gray = ImageOps.grayscale(crop)
             variants.append(ImageOps.autocontrast(ImageEnhance.Contrast(crop_gray).enhance(2.4)).convert("RGB"))
-        return variants
+        return variants[:color_card_lab_ocr_max_variants]
 
     def _parse_lab_ocr_text(raw_text: str) -> Dict[str, float] | None:
         text = str(raw_text or "")
@@ -11312,6 +11315,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/api/v1/color-card/extract-lab-image")
     async def api_extract_color_lab_from_image(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
+        started = time.perf_counter()
         _catalog_require_permission(request, "color:view")
         filename = Path(str(file.filename or "").replace("\\", "/").split("/")[-1]).name or "color-meter.jpg"
         suffix = Path(filename).suffix.lower()
@@ -11325,7 +11329,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail="上传图片为空")
         if len(image_bytes) > 12 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="图片不能超过 12MB")
+        read_ms = (time.perf_counter() - started) * 1000.0
+        sec_started = time.perf_counter()
         _check_search_upload_content_security(image_bytes, filename)
+        sec_ms = (time.perf_counter() - sec_started) * 1000.0
+        ocr_started = time.perf_counter()
         try:
             result = _extract_lab_from_image_bytes(image_bytes)
         except ValueError as exc:
@@ -11333,6 +11341,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except Exception as exc:
             logging.exception("extract color lab from image failed: %s", filename)
             raise HTTPException(status_code=503, detail=f"图片 Lab 识别暂不可用：{exc}") from exc
+        ocr_ms = (time.perf_counter() - ocr_started) * 1000.0
+        logging.info(
+            "color lab image extracted filename=%s bytes=%d read_ms=%.1f security_ms=%.1f ocr_ms=%.1f total_ms=%.1f",
+            filename,
+            len(image_bytes),
+            read_ms,
+            sec_ms,
+            ocr_ms,
+            (time.perf_counter() - started) * 1000.0,
+        )
         lab = result["lab"]
         return {
             "lab": {"L": lab["L"], "a": lab["a"], "b": lab["b"]},
