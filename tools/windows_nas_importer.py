@@ -515,9 +515,9 @@ HTML = r"""<!doctype html>
     .pill.warn { background: #ffedd5; color: #c2410c; }
     .modal { position: fixed; inset: 0; display: none; place-items: center; background: rgba(17,24,39,.48); z-index: 20; padding: 20px; }
     .modal.open { display: grid; }
-    .modal-box { width: min(520px, 100%); border-radius: 8px; background: #fff; box-shadow: 0 18px 50px rgba(0,0,0,.22); padding: 18px; }
+    .modal-box { width: min(680px, 100%); max-height: min(82vh, 720px); display: flex; flex-direction: column; border-radius: 8px; background: #fff; box-shadow: 0 18px 50px rgba(0,0,0,.22); padding: 18px; }
     .modal-box.image-box { width: min(920px, 100%); }
-    .modal-message { white-space: pre-line; line-height: 1.55; font-weight: 700; color: #111827; }
+    .modal-message { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.55; font-weight: 700; color: #111827; }
     .modal-image { display: none; width: 100%; max-height: 76vh; object-fit: contain; background: #f3f4f6; border-radius: 6px; margin-bottom: 12px; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
     @media (max-width: 900px) {
@@ -855,7 +855,7 @@ HTML = r"""<!doctype html>
         const message = `导入完成：成功 ${result.imported || 0} 张，重复跳过 ${result.duplicates || 0} 张，失败 ${failed.length} 张` +
           (result.manifest_path ? `\n标签文件：${result.manifest_path}` : "") +
           (result.hash_index_path ? `\n去重索引：${result.hash_index_path}` : "") +
-          (failed.length ? "\\n\\n" + failed.slice(0, 20).map(x => `${x.source_rel_path || ""}：${x.error || "失败"}`).join("\\n") : "");
+          (failed.length ? "\n\n" + failed.slice(0, 20).map(x => `${x.source_rel_path || ""}：${x.error || "失败"}`).join("\n") : "");
         setStatus(message, failed.length > 0);
         await alertBox(message);
       } catch (err) {
