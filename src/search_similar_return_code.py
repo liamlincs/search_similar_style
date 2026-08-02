@@ -116,11 +116,17 @@ def build_feature_db(
     names = []
     feats = []
     for p in files:
-        img = Image.open(p).convert("RGB")
+        try:
+            img = Image.open(p).convert("RGB")
+        except Exception as exc:
+            logging.warning("skip invalid standard image while building feature db: %s err=%s", p, exc)
+            continue
         views = _multi_crop_views(img, crop_ratio=standard_crop_ratio) if standard_multicrop else [img]
         for i, v in enumerate(views):
             names.append(f"{p.name}@c{i}")
             feats.append(extract_embedding(v, backend, w_clip, w_shape, w_color, w_stripe))
+    if not feats:
+        raise RuntimeError(f"no valid standard images found in {standard_dir}")
     return names, np.vstack(feats).astype(np.float32)
 
 
