@@ -11332,22 +11332,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raise HTTPException(status_code=400, detail="图片不能超过 12MB")
         read_ms = (time.perf_counter() - started) * 1000.0
 
-        def _run_security_timed() -> float:
-            sec_started = time.perf_counter()
-            _check_search_upload_content_security(image_bytes, filename)
-            return (time.perf_counter() - sec_started) * 1000.0
-
         def _run_ocr_timed() -> tuple[Dict[str, Any], float]:
             ocr_started = time.perf_counter()
             ocr_result = _extract_lab_from_image_bytes(image_bytes)
             return ocr_result, (time.perf_counter() - ocr_started) * 1000.0
 
-        parallel_started = time.perf_counter()
         try:
-            sec_ms, (result, ocr_ms) = await asyncio.gather(
-                asyncio.to_thread(_run_security_timed),
-                asyncio.to_thread(_run_ocr_timed),
-            )
+            result, ocr_ms = await asyncio.to_thread(_run_ocr_timed)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except HTTPException:
@@ -11355,15 +11346,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         except Exception as exc:
             logging.exception("extract color lab from image failed: %s", filename)
             raise HTTPException(status_code=503, detail=f"图片 Lab 识别暂不可用：{exc}") from exc
-        parallel_ms = (time.perf_counter() - parallel_started) * 1000.0
         logging.info(
-            "color lab image extracted filename=%s bytes=%d read_ms=%.1f security_ms=%.1f ocr_ms=%.1f parallel_ms=%.1f total_ms=%.1f",
+            "color lab image extracted filename=%s bytes=%d read_ms=%.1f security_ms=skipped ocr_ms=%.1f total_ms=%.1f",
             filename,
             len(image_bytes),
             read_ms,
-            sec_ms,
             ocr_ms,
-            parallel_ms,
             (time.perf_counter() - started) * 1000.0,
         )
         lab = result["lab"]
