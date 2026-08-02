@@ -10170,31 +10170,49 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       els.colorXlsxUploadStatus.classList.toggle('err', !!isError);
     }
 
+    const COLOR_XLSX_UPLOAD_BATCH_SIZE = 20;
+
+    async function uploadColorCardXlsxBatch(files, batchIndex, batchCount) {
+      const form = new FormData();
+      files.forEach((file) => {
+        form.append('files', file, file.name);
+      });
+      setColorXlsxUploadStatus(`正在上传第 ${batchIndex}/${batchCount} 批（${files.length} 个文件）...`, false);
+      const resp = await fetch('/api/v1/color-card/libraries/upload-xlsx', {
+        method: 'POST',
+        body: form,
+      });
+      if (!resp.ok) throw new Error(await resp.text());
+      return await resp.json();
+    }
+
     async function uploadColorCardXlsx() {
       const files = Array.from((els.colorXlsxFile && els.colorXlsxFile.files) || []);
       if (!files.length) throw new Error('请选择 xlsx 文件');
       const invalid = files.find((file) => !/\\.xlsx$/i.test(file.name || ''));
       if (invalid) throw new Error('只支持上传 .xlsx 文件：' + (invalid.name || '未命名文件'));
-      const form = new FormData();
-      files.forEach((file) => {
-        form.append('files', file, file.name);
-      });
       els.colorXlsxUploadBtn.disabled = true;
-      setColorXlsxUploadStatus(`正在上传并导入 ${files.length} 个文件...`, false);
+      const batches = [];
+      for (let i = 0; i < files.length; i += COLOR_XLSX_UPLOAD_BATCH_SIZE) {
+        batches.push(files.slice(i, i + COLOR_XLSX_UPLOAD_BATCH_SIZE));
+      }
+      setColorXlsxUploadStatus(`正在上传并导入 ${files.length} 个文件，共 ${batches.length} 批...`, false);
       try {
-        const resp = await fetch('/api/v1/color-card/libraries/upload-xlsx', {
-          method: 'POST',
-          body: form,
-        });
-        if (!resp.ok) throw new Error(await resp.text());
-        const data = await resp.json();
-        const results = data.results || [];
+        const results = [];
+        let lastLibrary = {};
+        let totalCount = 0;
+        for (let i = 0; i < batches.length; i += 1) {
+          const data = await uploadColorCardXlsxBatch(batches[i], i + 1, batches.length);
+          const batchResults = data.results || [];
+          results.push(...batchResults);
+          totalCount += Number(data.total_count || data.count || 0);
+          const batchSuccess = batchResults.filter((item) => item.ok);
+          lastLibrary = ((batchSuccess[batchSuccess.length - 1] || {}).library || data.library || lastLibrary || {});
+        }
         const failed = results.filter((item) => !item.ok);
         const success = results.filter((item) => item.ok);
-        const lastLibrary = (success[success.length - 1] || {}).library || data.library || {};
         await loadColorLibraries(lastLibrary.id || '');
         if (els.colorXlsxFile) els.colorXlsxFile.value = '';
-        const totalCount = Number(data.total_count || data.count || 0);
         const message = failed.length
           ? `部分导入完成：成功 ${success.length} 个文件、${totalCount} 个色号；失败 ${failed.length} 个文件`
           : `导入成功：${success.length || 1} 个文件，共 ${totalCount} 个色号`;
