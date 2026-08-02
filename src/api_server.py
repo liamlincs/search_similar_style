@@ -8733,7 +8733,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         external_token = str(token or access_token or "").strip()
         if external_token or catalog_type in {"product", "color"}:
             return _catalog_mobile_response(request, catalog_type, external_token)
-        return """<!doctype html>
+        html = """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
@@ -10813,6 +10813,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   </script>
 </body>
 </html>""".replace("__CATALOG_IMPORT_SOURCE_DIR__", html_escape(catalog_import_source_dir, quote=True)).replace("__CATALOG_BROWSER_UPLOAD_MAX_FILES__", str(catalog_browser_upload_max_files))
+        return HTMLResponse(html, headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"})
 
     @app.get("/product", response_class=HTMLResponse)
     def catalog_product_page(request: Request, token: str = "", access_token: str = ""):
