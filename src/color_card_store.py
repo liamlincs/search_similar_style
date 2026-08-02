@@ -159,7 +159,13 @@ class ColorCardStore:
             )
 
     def replace_library(self, library_id: str, name: str, source_file: str, rows: Iterable[Dict[str, Any]], sort_order: int = 0) -> int:
-        rows_list = list(rows)
+        rows_by_name: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            clean_name = str(row.get("name", "")).strip()
+            if not clean_name:
+                continue
+            rows_by_name[clean_name] = {**row, "name": clean_name}
+        rows_list = list(rows_by_name.values())
         with self._connect() as conn:
             conn.execute(
                 """
