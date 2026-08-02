@@ -5371,6 +5371,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .meter-preview-inner * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .meter-preview-inner.params { background: #202435; color: #f8fafc; }
     .meter-photo-btn { position: absolute; right: 18px; bottom: 42px; z-index: 2; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 7px; display: grid; place-items: center; background: rgba(255,255,255,.94); color: #0f172a; box-shadow: 0 6px 16px rgba(0,0,0,.24); }
+    .meter-preview-card.params-mode .meter-photo-btn { bottom: 18px; }
     .meter-photo-btn svg { width: 21px; height: 21px; display: block; stroke: currentColor; }
     .meter-param-grid { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; gap: 8px; font-size: 18px; line-height: 1.75; }
     .meter-param-grid > div:last-child { padding-right: 58px; }
