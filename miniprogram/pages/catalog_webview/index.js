@@ -254,7 +254,8 @@ Page({
         String(config.catalogH5BaseUrl || "").trim() ||
         String(config.baseUrl || "").trim()
       ).replace(/\/+$/, "");
-      const path = config.catalogH5Path || "/catalog";
+      const defaultPath = type === "color" ? "/color" : "/product";
+      const path = String(config.catalogH5Path || defaultPath) === "/catalog" ? defaultPath : (config.catalogH5Path || defaultPath);
       const token = decodeOption(options.token || options.catalog_token || options.access_token || "");
       const query = [`type=${encodeURIComponent(type)}`];
       if (token) query.push(`token=${encodeURIComponent(token)}`);

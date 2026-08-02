@@ -8637,10 +8637,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     setColorImageFile(null);
     $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.appMode === "category" && state.productTool === "import"));
     $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
+    const initialType = state.type;
+    switchType(initialType);
     const initialTasks = [loadTags()];
-    if (state.type === "color") initialTasks.push(loadColorLibraries());
+    if (initialType === "color") initialTasks.push(loadColorLibraries());
     Promise.all(initialTasks).finally(() => {
-      switchType(state.type);
       if (applyNativeMeterLabFromUrl()) {
         switchColorView("instrument");
         matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true));
