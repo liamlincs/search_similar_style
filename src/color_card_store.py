@@ -145,6 +145,9 @@ class ColorCardStore:
                 CREATE INDEX IF NOT EXISTS idx_color_cards_library_lab
                 ON color_cards(library_id, l, a, b);
 
+                CREATE INDEX IF NOT EXISTS idx_color_cards_library_name
+                ON color_cards(library_id, name COLLATE NOCASE);
+
                 CREATE TABLE IF NOT EXISTS color_card_favorites (
                     user_tag TEXT NOT NULL,
                     card_id INTEGER NOT NULL,
@@ -484,12 +487,23 @@ class ColorCardStore:
             conn.commit()
         return dict(row)
 
-    def match(self, lab: tuple[float, float, float], library_id: str = "", limit: int = 12) -> List[Dict[str, Any]]:
+    def match(
+        self,
+        lab: tuple[float, float, float],
+        library_id: str = "",
+        limit: int = 12,
+        library_ids: Iterable[str] | None = None,
+    ) -> List[Dict[str, Any]]:
         params: list[Any] = []
         where = ""
-        if library_id:
+        clean_library_ids = [clean_library_id(item) for item in (library_ids or []) if clean_library_id(item)]
+        if clean_library_ids:
+            placeholders = ",".join("?" for _ in clean_library_ids)
+            where = f"WHERE c.library_id IN ({placeholders})"
+            params.extend(clean_library_ids)
+        elif library_id:
             where = "WHERE c.library_id=?"
-            params.append(library_id)
+            params.append(clean_library_id(library_id))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""

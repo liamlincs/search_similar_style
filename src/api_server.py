@@ -216,6 +216,7 @@ class ColorCardMatchRequest(BaseModel):
     a: float
     b: float
     library_id: str = ""
+    library_ids: List[str] = []
     limit: int = 12
 
 
@@ -7656,12 +7657,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       refreshColorSwatch();
       $("colorMatchStatus").textContent = "正在匹配近似色号...";
       const ids = activeColorLibraryIds().filter((id) => !isVirtualFavoriteLibraryId(id));
-      const batches = await Promise.all((ids.length ? ids : [""]).map((libraryId) => api("/api/v1/color-card/match", {
+      const allLibraryIds = (state.colorLibraries || []).filter((lib) => !isVirtualFavoriteLibraryId(lib.id)).map((lib) => lib.id).filter(Boolean);
+      const selectedAllLibraries = ids.length > 0 && allLibraryIds.length > 0 && ids.length >= allLibraryIds.length;
+      const data = await api("/api/v1/color-card/match", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ L: lab.L, a: lab.a, b: lab.b, library_id: libraryId, limit: 12 }),
-      })));
-      const matches = batches.flatMap((data) => data.matches || [])
+        body: JSON.stringify({ L: lab.L, a: lab.a, b: lab.b, library_ids: selectedAllLibraries ? [] : ids, limit: 12 }),
+      });
+      const matches = (data.matches || [])
         .sort((left, right) => Number(left.delta_e_00 || 999) - Number(right.delta_e_00 || 999))
         .slice(0, 12);
       $("colorMatchStatus").textContent = `找到 ${matches.length} 条近似色号`;
@@ -7769,6 +7772,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       if (state.colorView === "mine" && !state.colorLibraries.length) {
         await loadColorLibraries();
+      }
+      if (state.colorView !== "mine") {
+        state.colors = [];
+        renderColors();
+        setStatus("", false);
+        return;
       }
       setStatus("加载中...", false);
       if (state.colorView === "mine") {
@@ -11284,10 +11293,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         _catalog_require_permission(request, "color:view")
         limit = max(1, min(int(payload.limit or 12), 100))
         library_id = str(payload.library_id or "").strip()
-        matches = color_card_store.match((float(payload.L), float(payload.a), float(payload.b)), library_id=library_id, limit=limit)
+        library_ids = [str(item or "").strip() for item in (payload.library_ids or []) if str(item or "").strip()]
+        _check_text_content_security(library_id, *library_ids, openid=_wechat_openid_from_request(request))
+        matches = color_card_store.match(
+            (float(payload.L), float(payload.a), float(payload.b)),
+            library_id=library_id,
+            library_ids=library_ids,
+            limit=limit,
+        )
         return {
             "query_lab": {"L": payload.L, "a": payload.a, "b": payload.b},
             "library_id": library_id,
+            "library_ids": library_ids,
             "matches": matches,
         }
 
