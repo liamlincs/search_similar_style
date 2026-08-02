@@ -8723,7 +8723,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 catalog_type,
                 sorted(permissions) if permissions is not None else None,
                 user_id,
-            )
+            ),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
         )
 
     @app.get("/catalog", response_class=HTMLResponse)
