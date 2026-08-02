@@ -5370,8 +5370,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .meter-preview-inner { height: 118px; background: #9d9d9b; display: grid; place-items: center; color: #080b16; font-size: 17px; position: relative; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .meter-preview-inner * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .meter-preview-inner.params { background: #202435; color: #f8fafc; }
-    .meter-photo-btn { position: absolute; right: 18px; bottom: 18px; z-index: 2; width: 42px; min-width: 42px; height: 42px; min-height: 42px; padding: 0; border-radius: 8px; display: grid; place-items: center; background: rgba(255,255,255,.94); color: #0f172a; box-shadow: 0 7px 18px rgba(0,0,0,.28); }
-    .meter-photo-btn svg { width: 24px; height: 24px; display: block; stroke: currentColor; }
+    .meter-photo-btn { position: absolute; right: 18px; bottom: 42px; z-index: 2; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 7px; display: grid; place-items: center; background: rgba(255,255,255,.94); color: #0f172a; box-shadow: 0 6px 16px rgba(0,0,0,.24); }
+    .meter-photo-btn svg { width: 21px; height: 21px; display: block; stroke: currentColor; }
     .meter-param-grid { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; gap: 8px; font-size: 18px; line-height: 1.75; }
     .meter-param-grid > div:last-child { padding-right: 58px; }
     .meter-param-title { font-size: 18px; margin-bottom: 12px; }
