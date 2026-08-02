@@ -7767,6 +7767,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
     }
     async function loadColors() {
+      if (state.type !== "color") {
+        state.colors = [];
+        renderColors();
+        return;
+      }
       if (!canColorView) return renderColors();
       if (state.colorMode !== "query") {
         state.colors = [];
@@ -8632,7 +8637,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     setColorImageFile(null);
     $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.appMode === "category" && state.productTool === "import"));
     $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
-    Promise.all([loadTags(), loadColorLibraries()]).finally(() => {
+    const initialTasks = [loadTags()];
+    if (state.type === "color") initialTasks.push(loadColorLibraries());
+    Promise.all(initialTasks).finally(() => {
       switchType(state.type);
       if (applyNativeMeterLabFromUrl()) {
         switchColorView("instrument");
