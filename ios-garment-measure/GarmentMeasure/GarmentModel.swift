@@ -70,6 +70,46 @@ struct GarmentModelArchive: Codable, Identifiable {
     }()
 }
 
+struct MeasurementPhotoArchive: Codable, Identifiable {
+    let id: String
+    let createdAt: Date
+    let imageFileName: String
+    var measurementPlane: SavedMeasurementPlane?
+    var projection: SavedCameraProjection?
+
+    var title: String {
+        Self.titleFormatter.string(from: createdAt)
+    }
+
+    var calibrationText: String {
+        canMeasureLater ? "可继续测量" : "缺少平面"
+    }
+
+    var canMeasureLater: Bool { measurementPlane != nil && projection != nil }
+
+    private static let titleFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+}
+
+struct SavedMeasurementPlane: Codable {
+    let pointX: Float
+    let pointY: Float
+    let pointZ: Float
+    let normalX: Float
+    let normalY: Float
+    let normalZ: Float
+}
+
+struct SavedCameraProjection: Codable {
+    let viewWidth: Double
+    let viewHeight: Double
+    let viewToCameraTransform: [Float]
+    let projectionTransform: [Float]
+}
+
 @MainActor
 final class GarmentMeasurementStore: ObservableObject {
     @Published var selectedDimension: GarmentDimension = .bodyLength
@@ -81,6 +121,8 @@ final class GarmentMeasurementStore: ObservableObject {
     @Published var generatedPreview: UIImage?
     @Published var generatedMesh: GeneratedGarmentMesh?
     @Published var generatedModelURL: URL?
+    @Published private(set) var measurementPhotoArchives: [MeasurementPhotoArchive] = []
+    @Published var activeMeasurementPhotoID: String?
     @Published private(set) var modelArchives: [GarmentModelArchive] = []
     @Published var activeArchiveID: String?
     @Published var generationStatus: String = ""
@@ -88,6 +130,7 @@ final class GarmentMeasurementStore: ObservableObject {
     @Published private(set) var previewRevision = 0
 
     init() {
+        loadMeasurementPhotoArchives()
         loadModelArchives()
         if let latest = modelArchives.first {
             selectArchive(latest)
@@ -96,6 +139,10 @@ final class GarmentMeasurementStore: ObservableObject {
 
     func setLatestDistance(_ centimeters: Double) {
         latestDistanceCentimeters = centimeters
+    }
+
+    func clearLatestDistance() {
+        latestDistanceCentimeters = nil
     }
 
     func saveLatestDistance() {
@@ -127,6 +174,66 @@ final class GarmentMeasurementStore: ObservableObject {
         activeArchiveID = nil
         generationStatus = ""
         bumpPreviewRevision()
+    }
+
+    @discardableResult
+    func saveMeasurementPhoto(
+        _ image: UIImage,
+        measurementPlane: SavedMeasurementPlane?,
+        projection: SavedCameraProjection?
+    ) -> MeasurementPhotoArchive? {
+        let normalized = image.resizedForWorkingCopy(maxSide: 1600)
+        setGarmentPhoto(normalized)
+
+        let createdAt = Date()
+        let id = archiveIDFormatter.string(from: createdAt)
+        let imageFileName = "photo.jpg"
+        let directory = measurementPhotoRootURL.appendingPathComponent(id, isDirectory: true)
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let imageURL = directory.appendingPathComponent(imageFileName)
+            guard let data = normalized.jpegData(compressionQuality: 0.86) else { return nil }
+            try data.write(to: imageURL, options: [.atomic])
+
+            let archive = MeasurementPhotoArchive(
+                id: id,
+                createdAt: createdAt,
+                imageFileName: imageFileName,
+                measurementPlane: measurementPlane,
+                projection: projection
+            )
+            try writeMeasurementPhotoArchive(archive, in: directory)
+            activeMeasurementPhotoID = id
+            loadMeasurementPhotoArchives()
+            return archive
+        } catch {
+            generationStatus = "测量照片保存失败"
+            return nil
+        }
+    }
+
+    func selectMeasurementPhoto(_ archive: MeasurementPhotoArchive) {
+        guard let image = measurementPhoto(for: archive) else {
+            loadMeasurementPhotoArchives()
+            return
+        }
+        setGarmentPhoto(image)
+        activeMeasurementPhotoID = archive.id
+        latestDistanceCentimeters = nil
+    }
+
+    func measurementPhoto(for archive: MeasurementPhotoArchive) -> UIImage? {
+        UIImage(contentsOfFile: measurementPhotoURL(for: archive).path)
+    }
+
+    func deleteMeasurementPhoto(_ archive: MeasurementPhotoArchive) {
+        let directory = measurementPhotoRootURL.appendingPathComponent(archive.id, isDirectory: true)
+        try? FileManager.default.removeItem(at: directory)
+        if activeMeasurementPhotoID == archive.id {
+            activeMeasurementPhotoID = nil
+        }
+        loadMeasurementPhotoArchives()
     }
 
     func regenerateTexture() {
@@ -372,6 +479,40 @@ final class GarmentMeasurementStore: ObservableObject {
         .sorted { $0.createdAt > $1.createdAt }
     }
 
+    private func loadMeasurementPhotoArchives() {
+        let root = measurementPhotoRootURL
+        guard let directories = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            measurementPhotoArchives = []
+            return
+        }
+
+        measurementPhotoArchives = directories.compactMap { directory in
+            let metadataURL = directory.appendingPathComponent("metadata.json")
+            guard let data = try? Data(contentsOf: metadataURL) else { return nil }
+            return try? JSONDecoder.archiveDecoder.decode(MeasurementPhotoArchive.self, from: data)
+        }
+        .filter { archive in
+            FileManager.default.fileExists(atPath: measurementPhotoURL(for: archive).path)
+        }
+        .sorted { $0.createdAt > $1.createdAt }
+    }
+
+    private func writeMeasurementPhotoArchive(_ archive: MeasurementPhotoArchive, in directory: URL) throws {
+        let metadataURL = directory.appendingPathComponent("metadata.json")
+        let metadata = try JSONEncoder.archiveEncoder.encode(archive)
+        try metadata.write(to: metadataURL, options: [.atomic])
+    }
+
+    private func measurementPhotoURL(for archive: MeasurementPhotoArchive) -> URL {
+        measurementPhotoRootURL
+            .appendingPathComponent(archive.id, isDirectory: true)
+            .appendingPathComponent(archive.imageFileName)
+    }
+
     private func archiveModelURL(for archive: GarmentModelArchive) -> URL {
         archiveRootURL
             .appendingPathComponent(archive.id, isDirectory: true)
@@ -403,6 +544,13 @@ final class GarmentMeasurementStore: ObservableObject {
     private var archiveRootURL: URL {
         let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Garment3DHistory", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private var measurementPhotoRootURL: URL {
+        let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GarmentMeasurePhotos", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }

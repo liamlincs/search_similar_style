@@ -941,110 +941,348 @@ private extension PhotogrammetrySession.Output.ProcessingStage {
 private struct MeasureScreen: View {
     @EnvironmentObject private var garment: GarmentMeasurementStore
     let isActive: Bool
+    @State private var photoCaptureRequestID = 0
+    @State private var clearMeasurementRequestID = 0
+    @State private var retakeRequestID = 0
+    @State private var hasCapturedPhoto = false
+    @State private var restoredPhotoRevision = 0
+    @State private var showingPhotoHistory = false
+    @State private var isControlPanelCollapsed = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            ARMeasurementView(isActive: isActive) { distance in
+            ARMeasurementView(
+                isActive: isActive,
+                photoCaptureRequestID: photoCaptureRequestID,
+                clearMeasurementRequestID: clearMeasurementRequestID,
+                retakeRequestID: retakeRequestID,
+                restoredPhoto: garment.garmentPhoto,
+                restoredPhotoRevision: restoredPhotoRevision,
+                restoredMeasurementPlane: activeMeasurementPhotoArchive?.measurementPlane,
+                restoredProjection: activeMeasurementPhotoArchive?.projection
+            ) { photo, measurementPlane, projection in
+                garment.saveMeasurementPhoto(
+                    photo,
+                    measurementPlane: measurementPlane,
+                    projection: projection
+                )
+            } onPhotoStateChanged: { captured in
+                hasCapturedPhoto = captured
+                if captured {
+                    isControlPanelCollapsed = true
+                }
+            } onMeasurementCleared: {
+                garment.clearLatestDistance()
+            } onDistanceChanged: { distance in
                 garment.setLatestDistance(distance * 100)
             }
             .ignoresSafeArea()
 
             VStack(spacing: 12) {
-                Picker("尺寸", selection: $garment.selectedDimension) {
-                    ForEach(GarmentDimension.allCases) { dimension in
-                        Text(dimension.title).tag(dimension)
-                    }
+                if hasCapturedPhoto {
+                    dragHandle
                 }
-                .pickerStyle(.menu)
-                .tint(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
 
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(garment.selectedDimension.title)
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.75))
-
-                        Text(latestDistanceText)
-                            .font(.system(size: 28, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.white)
-                            .monospacedDigit()
-                    }
-
-                    Spacer()
-
-                    Button {
-                        garment.saveLatestDistance()
-                    } label: {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 20, weight: .bold))
-                            .frame(width: 48, height: 48)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
-                    .disabled(garment.latestDistanceCentimeters == nil)
-
-                    Button {
-                        garment.reset()
-                    } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 19, weight: .semibold))
-                            .frame(width: 48, height: 48)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
+                if !isControlPanelCollapsed || !hasCapturedPhoto {
+                    controlPanel
                 }
-                .padding(14)
-                .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 8))
 
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(GarmentDimension.allCases) { dimension in
-                            DimensionChip(
-                                title: dimension.title,
-                                value: garment.values[dimension]
-                            )
-                        }
-                    }
-                    .padding(.horizontal, 2)
-                }
+                dimensionSelector
             }
             .padding(.horizontal, 14)
             .padding(.bottom, 18)
+            .contentShape(Rectangle())
+            .gesture(panelDragGesture)
+
+            if hasCapturedPhoto {
+                VStack {
+                    HStack(spacing: 10) {
+                        Spacer()
+
+                        Button {
+                            garment.clearLatestDistance()
+                            clearMeasurementRequestID += 1
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 20, weight: .bold))
+                                .frame(width: 50, height: 50)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+
+                        Button {
+                            garment.saveLatestDistance()
+                        } label: {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 22, weight: .bold))
+                                .frame(width: 50, height: 50)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                        .disabled(garment.latestDistanceCentimeters == nil)
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.top, 58)
+
+                    Spacer()
+                }
+            }
+        }
+        .sheet(isPresented: $showingPhotoHistory) {
+            MeasurementPhotoHistorySheet { archive in
+                garment.selectMeasurementPhoto(archive)
+                garment.clearLatestDistance()
+                restoredPhotoRevision += 1
+                isControlPanelCollapsed = true
+                showingPhotoHistory = false
+            }
+            .environmentObject(garment)
         }
     }
 
     private var latestDistanceText: String {
         guard let value = garment.latestDistanceCentimeters else {
-            return "点选两点"
+            return hasCapturedPhoto ? "点选两点" : "先拍照"
         }
         return "\(value.formatted(.number.precision(.fractionLength(1)))) cm"
+    }
+
+    private var controlPanel: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(garment.selectedDimension.title)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.75))
+
+                Text(latestDistanceText)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .monospacedDigit()
+            }
+
+            Spacer()
+
+            Button {
+                showingPhotoHistory = true
+            } label: {
+                Image(systemName: "photo.on.rectangle")
+                    .font(.system(size: 19, weight: .semibold))
+                    .frame(width: 48, height: 48)
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+            .disabled(garment.measurementPhotoArchives.isEmpty)
+
+            if !hasCapturedPhoto {
+                Button {
+                    garment.clearLatestDistance()
+                    photoCaptureRequestID += 1
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 19, weight: .semibold))
+                        .frame(width: 48, height: 48)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+            }
+
+            Button {
+                garment.clearLatestDistance()
+                retakeRequestID += 1
+                isControlPanelCollapsed = false
+            } label: {
+                Image(systemName: "camera.rotate")
+                    .font(.system(size: 19, weight: .semibold))
+                    .frame(width: 48, height: 48)
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+
+        }
+        .padding(14)
+        .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var dragHandle: some View {
+        Capsule()
+            .fill(Color.white.opacity(0.72))
+            .frame(width: 48, height: 5)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 18)
+            .background(.black.opacity(0.32), in: Capsule())
+            .accessibilityLabel(isControlPanelCollapsed ? "上滑展开操作面板" : "下滑收起操作面板")
+    }
+
+    private var panelDragGesture: some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onEnded { value in
+                guard hasCapturedPhoto else { return }
+                let vertical = value.translation.height
+                let horizontal = value.translation.width
+                guard abs(vertical) > abs(horizontal) * 1.6 else { return }
+                if vertical < -22 {
+                    isControlPanelCollapsed = false
+                } else if vertical > 22 {
+                    isControlPanelCollapsed = true
+                }
+            }
+    }
+
+    private var dimensionSelector: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(GarmentDimension.allCases) { dimension in
+                    Button {
+                        garment.selectedDimension = dimension
+                        garment.clearLatestDistance()
+                        if hasCapturedPhoto {
+                            clearMeasurementRequestID += 1
+                        }
+                    } label: {
+                        DimensionChip(
+                            title: dimension.title,
+                            value: garment.values[dimension],
+                            isSelected: garment.selectedDimension == dimension
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    private var activeMeasurementPhotoArchive: MeasurementPhotoArchive? {
+        guard let activeMeasurementPhotoID = garment.activeMeasurementPhotoID else { return nil }
+        return garment.measurementPhotoArchives.first { $0.id == activeMeasurementPhotoID }
     }
 }
 
 private struct DimensionChip: View {
     let title: String
     let value: Double?
+    let isSelected: Bool
 
     var body: some View {
         VStack(spacing: 3) {
             Text(title)
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.7))
+                .font(.caption.weight(isSelected ? .bold : .regular))
+                .foregroundStyle(.white.opacity(isSelected ? 1 : 0.7))
             Text(valueText)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white)
                 .monospacedDigit()
         }
-        .frame(width: 72, height: 50)
-        .background(.black.opacity(0.56), in: RoundedRectangle(cornerRadius: 8))
+        .frame(width: 72, height: 46)
+        .background(.black.opacity(isSelected ? 0.76 : 0.56), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+        }
     }
 
     private var valueText: String {
         guard let value else { return "--" }
         return value.formatted(.number.precision(.fractionLength(1)))
+    }
+}
+
+private struct MeasurementPhotoHistorySheet: View {
+    @EnvironmentObject private var garment: GarmentMeasurementStore
+    @Environment(\.dismiss) private var dismiss
+    let onSelect: (MeasurementPhotoArchive) -> Void
+
+    var body: some View {
+        let archives = garment.measurementPhotoArchives
+        NavigationStack {
+            content(for: archives)
+            .navigationTitle("测量照片")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(for archives: [MeasurementPhotoArchive]) -> some View {
+        if archives.isEmpty {
+            List {
+                Text("还没有测量照片")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            List(archives, id: \MeasurementPhotoArchive.id) { archive in
+                Button {
+                    onSelect(archive)
+                } label: {
+                    MeasurementPhotoHistoryRow(
+                        archive: archive,
+                        thumbnail: garment.measurementPhoto(for: archive),
+                        isActive: archive.id == garment.activeMeasurementPhotoID
+                    )
+                }
+                .buttonStyle(.plain)
+                .swipeActions {
+                    Button(role: .destructive) {
+                        garment.deleteMeasurementPhoto(archive)
+                    } label: {
+                        Label("删除", systemImage: "trash")
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+private struct MeasurementPhotoHistoryRow: View {
+    let archive: MeasurementPhotoArchive
+    let thumbnail: UIImage?
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            thumbnailView
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(archive.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(archive.calibrationText)
+                    .font(.caption)
+                    .foregroundStyle(archive.canMeasureLater ? Color.secondary : Color.orange)
+            }
+
+            Spacer()
+
+            if isActive {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.blue)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var thumbnailView: some View {
+        if let thumbnail {
+            Image(uiImage: thumbnail)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 64, height: 86)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(.secondarySystemFill))
+                .frame(width: 64, height: 86)
+                .overlay {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
+        }
     }
 }
 

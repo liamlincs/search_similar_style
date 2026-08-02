@@ -365,7 +365,7 @@ def _scan_images(source_dir: Path) -> list[Path]:
     ]
 
 
-def _extract_style(path: Path, tesseract_bin: str | None) -> tuple[str, str]:
+def _extract_style(path: Path, tesseract_bin: str | None, recognition_mode: str = "ocr") -> tuple[str, str]:
     from extract_style_codes import (
         _prep_for_ocr,
         _run_rapidocr,
@@ -374,6 +374,8 @@ def _extract_style(path: Path, tesseract_bin: str | None) -> tuple[str, str]:
     )
 
     filename_code, filename_source = _style_from_filename(path)
+    if recognition_mode == "filename_first" and filename_code:
+        return filename_code, filename_source
 
     try:
         corner_crops = _corner_label_crops(path)
@@ -386,9 +388,6 @@ def _extract_style(path: Path, tesseract_bin: str | None) -> tuple[str, str]:
             logging.info("filename fallback after OCR read error: %s code=%s", path.name, filename_code)
             return filename_code, filename_source
         raise
-
-    if filename_code:
-        return filename_code, filename_source
 
     loose_texts: list[str] = []
     seen_texts = set()
@@ -416,6 +415,9 @@ def _extract_style(path: Path, tesseract_bin: str | None) -> tuple[str, str]:
             logging.info("hash-prefix fallback success: %s code=%s", path.name, code)
             return code, "hash_prefix"
 
+    if filename_code:
+        return filename_code, filename_source
+
     return "", ""
 
 
@@ -424,6 +426,7 @@ class ImportJob:
     job_id: str
     source_dir: Path
     target_dir: Path
+    recognition_mode: str = "ocr"
     status: str = "pending"
     message: str = "任务已创建"
     total: int = 0
@@ -439,8 +442,8 @@ class JobStore:
         self._lock = threading.Lock()
         self._jobs: dict[str, ImportJob] = {}
 
-    def create(self, source_dir: Path, target_dir: Path) -> ImportJob:
-        job = ImportJob(uuid.uuid4().hex, source_dir, target_dir)
+    def create(self, source_dir: Path, target_dir: Path, recognition_mode: str = "ocr") -> ImportJob:
+        job = ImportJob(uuid.uuid4().hex, source_dir, target_dir, recognition_mode)
         with self._lock:
             self._jobs[job.job_id] = job
         return job
@@ -463,6 +466,7 @@ class JobStore:
                 "job_id": job.job_id,
                 "source_dir": str(job.source_dir),
                 "target_dir": str(job.target_dir),
+                "recognition_mode": job.recognition_mode,
                 "status": job.status,
                 "message": job.message,
                 "total": job.total,
@@ -489,10 +493,10 @@ HTML = r"""<!doctype html>
     .progress-text { color: #64748b; font-size: 14px; font-weight: 900; text-align: right; }
     .progress-track { height: 8px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
     .progress-bar { width: 0%; height: 100%; border-radius: inherit; background: #2563eb; transition: width .18s ease; }
-    .path-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+    .path-grid { display: grid; grid-template-columns: 1fr 1fr 150px 150px auto; gap: 10px; align-items: end; }
     .scan-actions { display: flex; gap: 8px; align-items: center; }
     label { display: grid; gap: 5px; font-size: 12px; font-weight: 700; color: #4b5563; }
-    input[type="text"] { width: 100%; height: 42px; border: 1px solid #cfd5df; border-radius: 6px; padding: 9px 12px; font-size: 14px; background: #fff; }
+    input[type="text"], select { width: 100%; height: 42px; border: 1px solid #cfd5df; border-radius: 6px; padding: 9px 12px; font-size: 14px; background: #fff; }
     button { border: 0; border-radius: 6px; padding: 10px 14px; background: #111827; color: #fff; font-weight: 800; cursor: pointer; min-height: 40px; }
     button.secondary { background: #e5e7eb; color: #111827; }
     button:disabled { opacity: .52; cursor: not-allowed; }
@@ -545,9 +549,20 @@ HTML = r"""<!doctype html>
       <label>目标目录
         <input id="targetDir" type="text" />
       </label>
+      <label>模式
+        <select id="runMode">
+          <option value="scan_import" selected>扫描入库</option>
+          <option value="scan_only">扫描识别</option>
+        </select>
+      </label>
+      <label>识别方式
+        <select id="recognitionMode">
+          <option value="ocr" selected>OCR识别</option>
+          <option value="filename_first">文件名优先</option>
+        </select>
+      </label>
       <div class="scan-actions">
-        <button id="scanBtn" type="button">扫描识别</button>
-        <button id="scanImportBtn" type="button">扫描入库</button>
+        <button id="startBtn" type="button">执行</button>
         <button id="cancelScanBtn" type="button" class="secondary" disabled>停止扫描</button>
       </div>
     </div>
@@ -555,15 +570,15 @@ HTML = r"""<!doctype html>
   <main>
     <div id="status" class="status"></div>
     <div class="toolbar">
-      <button id="toggleBtn" type="button" class="secondary">全选/反选</button>
-      <button id="commitBtn" type="button">确认复制入库</button>
+      <button id="toggleBtn" type="button" class="secondary" data-manual-only>全选/反选</button>
+      <button id="commitBtn" type="button" data-manual-only>确认复制入库</button>
       <span class="muted" id="countText"></span>
     </div>
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
-            <th>导入</th>
+            <th data-manual-only>导入</th>
             <th>源文件</th>
             <th>款号</th>
             <th>导入后文件名</th>
@@ -593,7 +608,7 @@ HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     let currentJob = null;
     let pollTimer = null;
-    let autoCommitAfterScan = false;
+    let autoCommitAfterScan = true;
     let autoCommitRunning = false;
 
     const PATH_MEMORY_KEYS = {
@@ -603,6 +618,19 @@ HTML = r"""<!doctype html>
     $("sourceDir").value = localStorage.getItem(PATH_MEMORY_KEYS.source) || DEFAULT_SOURCE;
     $("targetDir").value = localStorage.getItem(PATH_MEMORY_KEYS.target) || DEFAULT_TARGET;
 
+    function isManualMode() {
+      return $("runMode").value === "scan_only";
+    }
+    function applyModeUI() {
+      const manual = isManualMode();
+      document.querySelectorAll("[data-manual-only]").forEach((el) => {
+        el.style.display = manual ? "" : "none";
+      });
+      $("startBtn").textContent = "执行";
+      if (currentJob && currentJob.items && currentJob.items.length) {
+        renderJob(currentJob);
+      }
+    }
     function rememberPaths() {
       const source = $("sourceDir").value.trim();
       const target = $("targetDir").value.trim();
@@ -661,12 +689,13 @@ HTML = r"""<!doctype html>
       $("progressBar").style.width = pct.toFixed(1) + "%";
     }
     function setScanning(active) {
-      $("scanBtn").disabled = !!active;
-      $("scanImportBtn").disabled = !!active;
-      $("scanBtn").textContent = active ? "扫描中..." : "扫描识别";
+      $("startBtn").disabled = !!active;
+      $("startBtn").textContent = active ? "执行中..." : "执行";
       $("cancelScanBtn").disabled = !active;
       $("sourceDir").disabled = !!active;
       $("targetDir").disabled = !!active;
+      $("runMode").disabled = !!active;
+      $("recognitionMode").disabled = !!active;
     }
     async function api(path, options = {}) {
       const resp = await fetch(path, options);
@@ -721,6 +750,7 @@ HTML = r"""<!doctype html>
         return;
       }
       $("rows").innerHTML = job.items.map((item, index) => {
+        const manual = isManualMode();
         const statusClass = item.status === "ok" ? "" : (item.status === "ocr_failed" || item.status === "invalid_style_code" ? "err" : "warn");
         const pillClass = item.status === "ok" ? "pill" : (statusClass === "err" ? "pill err" : "pill warn");
         const sourceLabels = {
@@ -734,7 +764,7 @@ HTML = r"""<!doctype html>
         const statusText = item.error || (item.status === "ok" ? sourceText : item.status);
         return `
           <tr class="${statusClass}" data-rel-path="${escapeHtml(item.source_rel_path || "")}" data-suffix="${escapeHtml(item.suffix || ".jpg")}">
-            <td><input data-role="selected" type="checkbox" checked></td>
+            ${manual ? '<td data-manual-only><input data-role="selected" type="checkbox" checked></td>' : ''}
             <td><div class="source"><button type="button" data-role="previewSource">${escapeHtml(item.source_name || "")}</button></div><div class="muted">${escapeHtml(item.source_rel_path || "")}</div></td>
             <td><input data-role="style" type="text" value="${escapeHtml(item.proposed_style_code || "")}"></td>
             <td><input data-role="filename" type="text" value="${escapeHtml(item.proposed_filename || "")}"></td>
@@ -755,6 +785,7 @@ HTML = r"""<!doctype html>
     async function startScan(autoCommit = false) {
       const source_dir = $("sourceDir").value.trim();
       const target_dir = $("targetDir").value.trim();
+      const recognition_mode = $("recognitionMode").value;
       if (!source_dir || !target_dir) return alertBox("请填写源目录和目标目录");
       rememberPaths();
       autoCommitAfterScan = !!autoCommit;
@@ -771,7 +802,7 @@ HTML = r"""<!doctype html>
         const job = await api("/api/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ source_dir, target_dir }),
+          body: JSON.stringify({ source_dir, target_dir, recognition_mode }),
         });
         renderJob(job);
         pollTimer = setInterval(pollJob, 1200);
@@ -789,6 +820,13 @@ HTML = r"""<!doctype html>
       const ok = await confirmBox(`确认扫描并直接入库？\n\n源目录：${source_dir}\n目标目录：${target_dir}\n\n扫描完成后会自动复制入库，不再停下来人工确认。`);
       if (!ok) return;
       await startScan(true);
+    }
+    async function startSelectedMode() {
+      if (isManualMode()) {
+        await startScan(false);
+      } else {
+        await startScanAndImport();
+      }
     }
     async function pollJob() {
       if (!currentJob) return;
@@ -843,7 +881,7 @@ HTML = r"""<!doctype html>
       if (!currentJob || currentJob.status !== "completed") return alertBox("请先等待扫描完成");
       if (!items.some((item) => item.selected)) return alertBox("请至少选择一张要导入的图片");
       $("commitBtn").disabled = true;
-      $("scanImportBtn").disabled = true;
+      $("startBtn").disabled = true;
       setStatus("正在复制到目标目录...");
       try {
         const result = await api("/api/jobs/" + encodeURIComponent(currentJob.job_id) + "/commit", {
@@ -863,11 +901,10 @@ HTML = r"""<!doctype html>
         await alertBox("导入失败：" + (err.message || "未知错误"));
       } finally {
         $("commitBtn").disabled = false;
-        $("scanImportBtn").disabled = false;
+        $("startBtn").disabled = false;
       }
     }
-    $("scanBtn").addEventListener("click", () => startScan(false));
-    $("scanImportBtn").addEventListener("click", startScanAndImport);
+    $("startBtn").addEventListener("click", startSelectedMode);
     $("cancelScanBtn").addEventListener("click", cancelScan);
     $("commitBtn").addEventListener("click", commitJob);
     $("toggleBtn").addEventListener("click", () => {
@@ -878,6 +915,8 @@ HTML = r"""<!doctype html>
     ["sourceDir", "targetDir"].forEach((id) => {
       $(id).addEventListener("blur", rememberPaths);
     });
+    $("runMode").addEventListener("change", applyModeUI);
+    applyModeUI();
   </script>
 </body>
 </html>
@@ -936,11 +975,14 @@ class ImportHandler(BaseHTTPRequestHandler):
                 payload = _read_json(self)
                 source_dir = Path(str(payload.get("source_dir") or "").strip())
                 target_dir = Path(str(payload.get("target_dir") or "").strip())
+                recognition_mode = str(payload.get("recognition_mode") or "ocr").strip()
+                if recognition_mode not in {"ocr", "filename_first"}:
+                    recognition_mode = "ocr"
                 if not source_dir.exists() or not source_dir.is_dir():
                     self._error(HTTPStatus.BAD_REQUEST, "源目录不存在")
                     return
                 target_dir.mkdir(parents=True, exist_ok=True)
-                job = self.server.jobs.create(source_dir, target_dir)
+                job = self.server.jobs.create(source_dir, target_dir, recognition_mode)
                 threading.Thread(target=self.server.prepare_job, args=(job.job_id,), daemon=True).start()
                 self._send_json(HTTPStatus.OK, self.server.jobs.snapshot(job))
                 return
@@ -1028,7 +1070,7 @@ class ImportServer(ThreadingHTTPServer):
                 source = ""
                 error = ""
                 try:
-                    code, source = _extract_style(path, self.tesseract_bin)
+                    code, source = _extract_style(path, self.tesseract_bin, job.recognition_mode)
                 except Exception as exc:
                     logging.warning("OCR failed: %s", path, exc_info=True)
                     error = f"OCR 失败：{exc}"
