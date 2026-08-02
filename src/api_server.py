@@ -5373,9 +5373,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .meter-photo-btn { position: absolute; right: 18px; bottom: 42px; z-index: 2; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 7px; display: grid; place-items: center; background: rgba(255,255,255,.94); color: #0f172a; box-shadow: 0 6px 16px rgba(0,0,0,.24); }
     .meter-preview-card.params-mode .meter-photo-btn { bottom: 18px; }
     .meter-photo-btn svg { width: 21px; height: 21px; display: block; stroke: currentColor; }
-    .meter-param-grid { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; gap: 8px; font-size: 18px; line-height: 1.75; }
+    .meter-param-grid { width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; gap: 8px; font-size: 18px; line-height: 1.55; transform: translateY(-10px); }
     .meter-param-grid > div:last-child { padding-right: 58px; }
-    .meter-param-title { font-size: 18px; margin-bottom: 12px; }
+    .meter-param-title { font-size: 18px; margin-bottom: 6px; }
     .color-compare-float { position: fixed; z-index: 130; width: 126px; height: 74px; border-radius: 8px; display: grid; place-items: center; color: #050505; font-size: 16px; font-weight: 700; box-shadow: 0 10px 28px rgba(0,0,0,.34); border: 2px solid rgba(255,255,255,.86); pointer-events: none; transform: translate(-50%, -50%); }
     .meter-dots { display: flex; justify-content: center; gap: 10px; padding: 8px 0 0; }
     .meter-dot { width: 10px; min-width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 999px; background: #8b8f98; cursor: pointer; }
