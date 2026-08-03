@@ -527,6 +527,84 @@ class CatalogStore:
         exclude_owner: bool = False,
         include_images: bool = True,
     ) -> List[Dict[str, Any]]:
+        from_clause, where_clause, base_params = self._product_filter_sql(style_code, tags, exclude_owner)
+        params = [
+            *base_params,
+            max(1, min(int(limit), 500)),
+            max(0, int(offset)),
+        ]
+
+        with self._connect() as conn:
+            product_rows = conn.execute(
+                f"""
+                SELECT p.style_code, p.cover_image, p.note, p.created_at, p.updated_at
+                {from_clause}
+                {where_clause}
+                ORDER BY p.style_code DESC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+            if not product_rows:
+                return []
+            codes = [str(row["style_code"]) for row in product_rows]
+            placeholders = ",".join(["?"] * len(codes))
+            if include_images:
+                image_rows = conn.execute(
+                    f"""
+                    SELECT style_code, image_name, sort_order
+                    FROM product_images
+                    WHERE style_code IN ({placeholders})
+                    ORDER BY style_code ASC, sort_order ASC, image_name ASC
+                    """,
+                    codes,
+                ).fetchall()
+            else:
+                image_rows = conn.execute(
+                    f"""
+                    SELECT style_code, COUNT(*) AS image_count
+                    FROM product_images
+                    WHERE style_code IN ({placeholders})
+                    GROUP BY style_code
+                    """,
+                    codes,
+                ).fetchall()
+            tag_rows = conn.execute(
+                f"""
+                SELECT pt.style_code, t.name
+                FROM product_tags pt
+                JOIN tags t ON t.id = pt.tag_id
+                WHERE pt.style_code IN ({placeholders})
+                ORDER BY pt.style_code ASC, t.name COLLATE NOCASE ASC
+                """,
+                codes,
+            ).fetchall()
+        return self._assemble_products(product_rows, image_rows, tag_rows)
+
+    def count_products(
+        self,
+        style_code: str = "",
+        tags: Iterable[str] | None = None,
+        exclude_owner: bool = False,
+    ) -> int:
+        from_clause, where_clause, params = self._product_filter_sql(style_code, tags, exclude_owner)
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                {from_clause}
+                {where_clause}
+                """,
+                params,
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def _product_filter_sql(
+        self,
+        style_code: str = "",
+        tags: Iterable[str] | None = None,
+        exclude_owner: bool = False,
+    ) -> tuple[str, str, List[Any]]:
         filters: List[str] = []
         filter_params: List[Any] = []
         join_params: List[Any] = []
@@ -585,59 +663,7 @@ class CatalogStore:
             """.format(" OR ".join(where_parts), " AND ".join(having_parts))
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
-        params = [
-            *join_params,
-            *filter_params,
-            max(1, min(int(limit), 500)),
-            max(0, int(offset)),
-        ]
-
-        with self._connect() as conn:
-            product_rows = conn.execute(
-                f"""
-                SELECT p.style_code, p.cover_image, p.note, p.created_at, p.updated_at
-                {from_clause}
-                {where_clause}
-                ORDER BY p.style_code DESC
-                LIMIT ? OFFSET ?
-                """,
-                params,
-            ).fetchall()
-            if not product_rows:
-                return []
-            codes = [str(row["style_code"]) for row in product_rows]
-            placeholders = ",".join(["?"] * len(codes))
-            if include_images:
-                image_rows = conn.execute(
-                    f"""
-                    SELECT style_code, image_name, sort_order
-                    FROM product_images
-                    WHERE style_code IN ({placeholders})
-                    ORDER BY style_code ASC, sort_order ASC, image_name ASC
-                    """,
-                    codes,
-                ).fetchall()
-            else:
-                image_rows = conn.execute(
-                    f"""
-                    SELECT style_code, COUNT(*) AS image_count
-                    FROM product_images
-                    WHERE style_code IN ({placeholders})
-                    GROUP BY style_code
-                    """,
-                    codes,
-                ).fetchall()
-            tag_rows = conn.execute(
-                f"""
-                SELECT pt.style_code, t.name
-                FROM product_tags pt
-                JOIN tags t ON t.id = pt.tag_id
-                WHERE pt.style_code IN ({placeholders})
-                ORDER BY pt.style_code ASC, t.name COLLATE NOCASE ASC
-                """,
-                codes,
-            ).fetchall()
-        return self._assemble_products(product_rows, image_rows, tag_rows)
+        return from_clause, where_clause, [*join_params, *filter_params]
 
     def _assemble_products(
         self,

@@ -5874,6 +5874,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       productTool: "view",
       productLimit: 9,
       productOffset: 0,
+      productTotal: 0,
       productHasMore: true,
       productLoading: false,
       productLoadSeq: 0,
@@ -7734,11 +7735,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           const data = await api("/api/v1/catalog/products?" + mineQuery.toString());
           if (loadSeq !== state.productLoadSeq || state.appMode !== loadAppMode || state.productMode !== loadProductMode) return;
           state.products = data.products || [];
+          state.productTotal = Number(data.total || state.products.length) || 0;
           state.productHasMore = false;
           state.productLoading = false;
           renderProducts();
           renderProductFilters();
-          setStatus(`已加载 ${state.products.length} 条`, false);
+          setStatus(`已加载 ${state.products.length} / 共 ${state.productTotal} 个款`, false);
         } finally {
           if (loadSeq === state.productLoadSeq) {
             state.productLoading = false;
@@ -7764,6 +7766,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const data = await api("/api/v1/catalog/products?" + query.toString());
         if (loadSeq !== state.productLoadSeq || state.appMode !== loadAppMode || state.productMode !== loadProductMode) return;
         const rows = data.products || [];
+        state.productTotal = Number(data.total || 0) || 0;
         if (state.productMode === "query") {
           state.products = reset ? rows : state.products.concat(rows);
           state.productOffset += rows.length;
@@ -7775,7 +7778,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         state.productLoading = false;
         renderProducts();
         renderProductFilters();
-        setStatus(`已加载 ${state.products.length} 条`, false);
+        setStatus(`已加载 ${state.products.length} / 共 ${state.productTotal} 个款`, false);
       } finally {
         if (loadSeq === state.productLoadSeq) {
           state.productLoading = false;
@@ -9182,6 +9185,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let currentProducts = [];
     let selectedFilterTags = [];
     let currentOffset = 0;
+    let totalProducts = 0;
     let pageSize = 12;
     let hasMore = true;
     let isLoadingMore = false;
@@ -9538,7 +9542,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         els.loadMore.textContent = '加载中...';
         return;
       }
-      els.loadMore.textContent = hasMore ? '继续下滑加载更多' : '已加载全部';
+      els.loadMore.textContent = hasMore ? `继续下滑加载更多（${currentProducts.length}/${totalProducts}）` : `已加载全部（${currentProducts.length}/${totalProducts}）`;
     }
 
     function buildProductQueryParams() {
@@ -9574,12 +9578,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (!resp.ok) throw new Error(await resp.text());
         const data = await resp.json();
         const rows = data.products || [];
+        totalProducts = Number(data.total || 0) || 0;
         currentProducts = reset ? rows : currentProducts.concat(rows);
         currentOffset = currentProducts.length;
-        hasMore = rows.length >= pageSize;
+        hasMore = currentProducts.length < totalProducts && rows.length > 0;
         renderCards(reset ? currentProducts : rows, reset);
         renderActiveFilterTags();
-        setStatus(`已加载 ${currentProducts.length} 个款`, false);
+        setStatus(`已加载 ${currentProducts.length} / 共 ${totalProducts} 个款`, false);
       } finally {
         isLoadingMore = false;
         setLoadMoreText();
@@ -10888,7 +10893,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             exclude_owner=bool(exclude_personal),
             include_images=bool(include_images),
         )
-        return {"products": [_serialize_catalog_product(base_url, item) for item in products]}
+        total = catalog_store.count_products(
+            style_code=style_code,
+            tags=tag_list,
+            exclude_owner=bool(exclude_personal),
+        )
+        return {
+            "products": [_serialize_catalog_product(base_url, item) for item in products],
+            "total": total,
+            "limit": max(1, min(int(limit), 500)),
+            "offset": max(0, int(offset)),
+        }
 
     @app.get("/api/v1/catalog/products/{style_code}")
     def api_get_catalog_product(request: Request, style_code: str) -> Dict[str, Any]:
