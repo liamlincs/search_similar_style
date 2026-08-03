@@ -5425,12 +5425,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .library-add-card, .library-delete-card { border-radius: 0; color: #fff; font-size: 16px; }
     .library-add-card { background: #1987d7; }
     .library-delete-card { border-radius: 0 5px 5px 0; background: #dc2626; }
-    .library-item { min-height: 62px; border-radius: 5px; background: #373b52; color: #fff; display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: center; gap: 8px; padding: 8px 12px; }
-    .library-item.active { background: linear-gradient(90deg, #5dc8e8, #64ded7); }
+    .library-item { min-height: 68px; border-radius: 5px; background: #fff8ec; color: #0b0f19; display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 10px; padding: 8px 14px; }
+    .library-item.active { background: linear-gradient(90deg, #5dc8e8, #64ded7); color: #07111c; }
     .library-swipe .library-item { position: relative; z-index: 1; width: 100%; transition: transform .18s ease; }
     .library-swipe.open .library-item { transform: translateX(-152px); }
-    .library-item-title { font-size: 17px; line-height: 1.25; word-break: break-word; font-weight: 600; }
-    .library-check { width: 24px; height: 24px; border-radius: 999px; border: 2px solid #fff; display: grid; place-items: center; font-weight: 900; }
+    .library-item-title { font-size: 20px; line-height: 1.25; word-break: break-word; font-weight: 850; text-align: center; }
+    .library-check { width: 28px; height: 28px; justify-self: center; border-radius: 999px; border: 3px solid currentColor; display: grid; place-items: center; color: #0b0f19; font-size: 25px; line-height: 1; font-weight: 900; box-sizing: border-box; }
     .library-confirm { position: fixed; left: 12px; right: 12px; bottom: calc(18px + env(safe-area-inset-bottom)); min-height: 48px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 17px; }
     .device-steps { display: grid; grid-template-columns: 96px minmax(0,1fr); gap: 10px; align-items: center; margin: -18px -12px 0; padding: 22px 18px; background: #202435; font-size: 17px; line-height: 1.6; }
     .device-mode-box { margin: 14px 0 14px; display: grid; gap: 8px; }
@@ -6797,7 +6797,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function activeColorLibraryIds() {
       if (state.colorLibraryIds.length) return state.colorLibraryIds.slice();
-      return (state.colorLibraries || []).map((lib) => lib.id).filter(Boolean);
+      return [];
     }
     function isVirtualFavoriteLibraryId(id) {
       return String(id || "") === "__favorites__";
@@ -7446,9 +7446,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const select = $("colorLibrarySelect");
       const libraries = normalizeColorLibraries(data.libraries || []);
       state.colorLibraries = libraries;
-      if (!state.colorLibraryIds.length) {
-        state.colorLibraryIds = selectedId ? [selectedId] : libraries.map((lib) => lib.id).filter(Boolean);
-      }
+      if (!state.colorLibraryIds.length && selectedId) state.colorLibraryIds = [selectedId];
       state.colorLibraryIds = state.colorLibraryIds.filter((id) => libraries.some((lib) => lib.id === id));
       select.innerHTML = libraries
         .filter((lib) => !isVirtualFavoriteLibraryId(lib.id))
@@ -7681,6 +7679,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       refreshColorSwatch();
       $("colorMatchStatus").textContent = "正在匹配近似色号...";
       const ids = activeColorLibraryIds().filter((id) => !isVirtualFavoriteLibraryId(id));
+      if (!ids.length) {
+        $("colorMatchStatus").textContent = "请先选择色彩库";
+        $("colorMatchList").innerHTML = "";
+        return;
+      }
       const allLibraryIds = (state.colorLibraries || []).filter((lib) => !isVirtualFavoriteLibraryId(lib.id)).map((lib) => lib.id).filter(Boolean);
       const selectedAllLibraries = ids.length > 0 && allLibraryIds.length > 0 && ids.length >= allLibraryIds.length;
       const data = await api("/api/v1/color-card/match", {
@@ -7815,7 +7818,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const tag = ownerTag();
         const ids = activeColorLibraryIds();
         const idsWithoutFavorites = ids.filter((id) => !isVirtualFavoriteLibraryId(id));
-        const favoritePromise = tag && (!ids.length || ids.some((id) => isVirtualFavoriteLibraryId(id)))
+        const favoritePromise = tag && ids.some((id) => isVirtualFavoriteLibraryId(id))
           ? api("/api/v1/color-card/favorites?" + new URLSearchParams({ limit: "1000", user_tag: tag }).toString())
           : Promise.resolve({ cards: [] });
         const libraryPromises = (idsWithoutFavorites.length ? idsWithoutFavorites : []).map((libraryId) => {
