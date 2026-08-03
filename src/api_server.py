@@ -5425,12 +5425,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .library-add-card, .library-delete-card { border-radius: 0; color: #fff; font-size: 16px; }
     .library-add-card { background: #1987d7; }
     .library-delete-card { border-radius: 0 5px 5px 0; background: #dc2626; }
-    .library-item { min-height: 68px; border-radius: 5px; background: #fff8ec; color: #0b0f19; display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 10px; padding: 8px 14px; }
+    .library-item { min-height: 62px; border-radius: 5px; background: #fff; color: #111827; display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 10px; padding: 8px 14px; box-shadow: 0 1px 0 rgba(255,255,255,.5); }
     .library-item.active { background: linear-gradient(90deg, #5dc8e8, #64ded7); color: #07111c; }
     .library-swipe .library-item { position: relative; z-index: 1; width: 100%; transition: transform .18s ease; }
     .library-swipe.open .library-item { transform: translateX(-152px); }
-    .library-item-title { font-size: 20px; line-height: 1.25; word-break: break-word; font-weight: 850; text-align: center; }
-    .library-check { width: 28px; height: 28px; justify-self: center; border-radius: 999px; border: 3px solid currentColor; display: grid; place-items: center; color: #0b0f19; font-size: 25px; line-height: 1; font-weight: 900; box-sizing: border-box; }
+    .library-item-title { font-size: 18px; line-height: 1.28; word-break: break-word; font-weight: 650; text-align: center; }
+    .library-check { position: relative; width: 26px; height: 26px; justify-self: center; border-radius: 999px; border: 2px solid currentColor; display: grid; place-items: center; color: #111827; font-size: 18px; line-height: 1; font-weight: 800; box-sizing: border-box; }
+    .library-check:not(.is-active)::before,
+    .library-check:not(.is-active)::after { content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 2px; border-radius: 999px; background: currentColor; transform: translate(-50%, -50%); }
+    .library-check:not(.is-active)::after { transform: translate(-50%, -50%) rotate(90deg); }
     .library-confirm { position: fixed; left: 12px; right: 12px; bottom: calc(18px + env(safe-area-inset-bottom)); min-height: 48px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 17px; }
     .device-steps { display: grid; grid-template-columns: 96px minmax(0,1fr); gap: 10px; align-items: center; margin: -18px -12px 0; padding: 22px 18px; background: #202435; font-size: 17px; line-height: 1.6; }
     .device-mode-box { margin: 14px 0 14px; display: grid; gap: 8px; }
@@ -5476,8 +5479,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-pick-actions { position: absolute; right: 18px; top: 18px; display: flex; gap: 18px; font-size: 28px; color: currentColor; }
     .color-pick-action-btn { min-width: 34px; min-height: 34px; padding: 0; border-radius: 8px; background: transparent; color: currentColor; font-size: 28px; }
     .my-color-list { display: grid; gap: 10px; padding-bottom: 80px; }
-    .my-color-filter { width: 100%; min-height: 54px; border-radius: 5px; background: #202435; display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 10px; padding: 0 14px; margin: 0 0 12px; color: #fff; font-size: 17px; text-align: left; }
-    .my-color-filter-icon { text-align: right; font-size: 24px; line-height: 1; }
+    .my-color-filter { width: 100%; min-height: 54px; border-radius: 5px; background: #fff; display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 10px; padding: 0 14px; margin: 0 0 12px; color: #111827; font-size: 18px; font-weight: 650; text-align: left; }
+    .my-color-filter-icon { text-align: right; font-size: 22px; line-height: 1; color: #111827; }
     .my-color-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
     .my-color-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 72px; border-radius: 0 5px 5px 0; background: #ef4444; color: #fff; font-size: 16px; z-index: 0; }
     .my-color-card { position: relative; z-index: 1; min-height: 98px; border-radius: 5px; padding: 14px 12px 14px 18px; display: grid; grid-template-columns: minmax(0,1fr) 40px; align-items: start; gap: 8px; color: #fff; transition: transform .18s ease; }
@@ -7473,7 +7476,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const itemHtml = `
         <button class="library-item ${activeIds.has(lib.id) ? "active" : ""}" type="button" data-library-id="${escapeHtml(lib.id || "")}">
           <span class="library-item-title">${escapeHtml(lib.name || lib.id || "")}${lib.year ? `<br>${escapeHtml(lib.year)}` : ""}</span>
-          <span class="library-check">${activeIds.has(lib.id) ? "✓" : "+"}</span>
+          <span class="library-check ${activeIds.has(lib.id) ? "is-active" : ""}">${activeIds.has(lib.id) ? "✓" : ""}</span>
         </button>`;
         return isEditableColorLibraryId(lib.id)
           ? `<div class="library-swipe" data-library-id="${escapeHtml(lib.id || "")}"><div class="library-row-actions"><button class="library-add-card" type="button">录入</button><button class="library-delete-card" type="button">删除</button></div>${itemHtml}</div>`
