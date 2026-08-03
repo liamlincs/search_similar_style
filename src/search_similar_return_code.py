@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # Silence known transformers/torch deprecation warnings that do not affect runtime results.
 warnings.filterwarnings(

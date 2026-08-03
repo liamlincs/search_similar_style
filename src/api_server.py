@@ -31,8 +31,10 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance, ImageFile, ImageOps
 from zoneinfo import ZoneInfo
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 try:
     import cv2
@@ -1415,8 +1417,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 with catalog_write_lock:
                     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
                     manifest_stats = _apply_nas_import_manifest()
+                    unused_tags_deleted = catalog_store.delete_unused_tags()
                 logging.info("catalog sync done: nightly maintenance: %s", sync_stats)
                 logging.info("nas import manifest done: nightly maintenance: %s", manifest_stats)
+                logging.info("unused catalog tags deleted: nightly maintenance: %d", unused_tags_deleted)
             except Exception:
                 logging.exception("catalog sync failed: nightly maintenance")
             _reload_search_assets_and_warm_caches(reason)
@@ -11088,7 +11092,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def api_list_catalog_tags(request: Request) -> Dict[str, Any]:
         _catalog_require_permission(request, "product:view")
         return {
-            "tags": catalog_store.list_tags(),
+            "tags": catalog_store.list_used_tags(),
             "tag_groups": catalog_store.list_tag_groups(),
         }
 
@@ -11409,7 +11413,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def api_sync_catalog(request: Request) -> Dict[str, Any]:
         _catalog_require_permission(request, "product:create")
         with catalog_write_lock:
-            return catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+            stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
+            stats["unused_tags_deleted"] = catalog_store.delete_unused_tags()
+            return stats
 
     @app.post("/api/v1/catalog/imports/prepare")
     def api_prepare_catalog_import(request: Request, payload: CatalogImportPrepareRequest) -> Dict[str, Any]:

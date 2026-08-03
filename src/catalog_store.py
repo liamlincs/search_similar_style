@@ -201,13 +201,14 @@ class CatalogStore:
             ).fetchall()
         return [str(row["name"]) for row in rows]
 
-    def list_tag_groups(self) -> Dict[str, List[str]]:
+    def list_tag_groups(self, *, used_only: bool = True) -> Dict[str, List[str]]:
         groups: Dict[str, List[str]] = {
             "year": [],
             "category": list(DEFAULT_CATEGORY_TAGS),
             "subcategory": list(DEFAULT_SUBCATEGORY_TAGS),
         }
-        for raw in self.list_tags():
+        source_tags = self.list_used_tags() if used_only else self.list_tags()
+        for raw in source_tags:
             parsed = parse_catalog_tag(raw)
             kind = parsed["type"]
             name = parsed["name"]
@@ -235,6 +236,21 @@ class CatalogStore:
             conn.execute("DELETE FROM tags WHERE name=?", (tag,))
             conn.commit()
         return tag
+
+    def delete_unused_tags(self) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM tags
+                WHERE id NOT IN (
+                    SELECT DISTINCT tag_id
+                    FROM product_tags
+                )
+                """
+            )
+            deleted = int(cur.rowcount or 0)
+            conn.commit()
+        return deleted
 
     def replace_product_tags(self, style_code: str, tags: Iterable[str]) -> List[str]:
         code = style_code.strip()
