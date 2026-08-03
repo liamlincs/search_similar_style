@@ -1347,6 +1347,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return {"files": 0, "rows": 0, "tag_rows": 0}
         rows = 0
         tag_rows = 0
+        style_manifest_tags: Dict[str, List[str]] = {}
+        style_manifest_types: Dict[str, set[str]] = {}
         for manifest_path in manifest_paths:
             for line in manifest_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                 raw = line.strip()
@@ -1364,8 +1366,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     style_code = filename_to_style_code(image_name).strip()
                 tags = _manifest_tags_from_item(item)
                 if style_code and tags:
-                    catalog_store.add_product_tags(style_code, tags)
+                    style_manifest_tags.setdefault(style_code, []).extend(tags)
+                    style_manifest_types.setdefault(style_code, set()).update(
+                        parsed["type"]
+                        for parsed in (parse_catalog_tag(tag) for tag in tags)
+                        if parsed.get("type") in {"year", "category", "subcategory"}
+                    )
                     tag_rows += 1
+        for style_code, tags in sorted(style_manifest_tags.items()):
+            replace_types = style_manifest_types.get(style_code) or set()
+            if replace_types:
+                catalog_store.replace_product_tags_by_types(style_code, tags, replace_types)
+            else:
+                catalog_store.add_product_tags(style_code, tags)
         logging.info("nas import manifest applied: files=%d rows=%d tag_rows=%d", len(manifest_paths), rows, tag_rows)
         return {"files": len(manifest_paths), "rows": rows, "tag_rows": tag_rows}
 
@@ -5269,7 +5282,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .filter-actions-bar button { min-height: 52px; border-radius: 999px; font-size: 17px; }
     .filter-actions-bar .reset { background: #f4f4f5; color: #0b77d8; }
     .filter-actions-bar .apply { background: #1683df; color: #fff; }
-    .card { background: #fff; border: 1px solid #edf0f3; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(15,23,42,.03); }
+    .card { background: #fff; border: 1px solid #edf0f3; border-radius: 8px; padding: 10px; box-shadow: 0 2px 8px rgba(15,23,42,.03); content-visibility: auto; contain-intrinsic-size: 150px; }
     .product-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
     .product-tile { min-width: 0; padding: 0; overflow: hidden; }
     .product-tile .thumb { width: 100%; height: auto; aspect-ratio: 1 / 1; border-radius: 0; }
@@ -6420,7 +6433,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         box.className = "product-grid";
         box.innerHTML = state.products.map((item) => `
           <div class="card product-tile" data-role="viewProductTile" data-code="${item.style_code || ""}">
-            <img class="thumb" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" />
+            <img class="thumb" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" decoding="async" />
             <div class="product-tile-body">
               <div class="title">${escapeHtml(productDisplayTitle(item))}</div>
               <div class="muted">${productImageCount(item)} 张</div>
@@ -6438,7 +6451,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productLoadMore").textContent = "";
       box.innerHTML = state.products.map((item) => `
         <div class="card product">
-          <img class="thumb" data-role="viewProduct" data-code="${item.style_code || ""}" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" />
+          <img class="thumb" data-role="viewProduct" data-code="${item.style_code || ""}" src="${thumbnailUrl(item.cover_image_url || "", 220)}" alt="${escapeHtml(productDisplayTitle(item))}" loading="lazy" decoding="async" />
           <div>
             <div class="title">${escapeHtml(productDisplayTitle(item))}</div>
             <div class="muted">图片数：${productImageCount(item)}</div>
@@ -6505,13 +6518,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("addPersonalBtn").classList.remove("hidden");
       $("galleryGrid").innerHTML = (product.images || []).map((img) => isPersonal ? `
         <div class="gallery-item selectable" data-image-name="${escapeHtml(img.image_name || "")}">
-          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(imageDisplayName(img.image_name || ""))}" />
+          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(imageDisplayName(img.image_name || ""))}" loading="lazy" decoding="async" />
           <button class="gallery-delete" data-role="deletePersonalImage" data-image-name="${escapeHtml(img.image_name || "")}" type="button">×</button>
           <div class="gallery-caption">${escapeHtml(imageDisplayName(img.image_name || ""))}</div>
         </div>
       ` : `
         <div class="gallery-item selectable" data-image-name="${escapeHtml(img.image_name || "")}">
-          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" />
+          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" loading="lazy" decoding="async" />
           <span class="gallery-check" data-role="toggleGalleryImage">＋</span>
           <div class="gallery-caption">${escapeHtml(imageDisplayName(img.image_name || ""))}</div>
         </div>
@@ -7699,7 +7712,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("productLoadMore").textContent = state.productMode === "query" ? "加载中..." : "";
       if (reset) renderProducts();
       setStatus("加载中...", false);
-      const limit = state.productMode === "query" ? state.productLimit : 80;
+      const limit = state.productMode === "query" ? state.productLimit : 24;
       if (state.appMode === "mine") {
         const tag = ownerTag();
         if (!tag) {
@@ -8775,7 +8788,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .filter-tag-wrap.active .filter-tag-delete { color: #e0e7ff; }
     .filter-tag-delete:hover { color: #b91c1c; background: rgba(255,255,255,0.5); }
     .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
-    .card { background: #fff; border-radius: 14px; padding: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); }
+    .card { background: #fff; border-radius: 14px; padding: 14px; box-shadow: 0 4px 18px rgba(0,0,0,0.06); content-visibility: auto; contain-intrinsic-size: 560px; }
     .thumb { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #e5e7eb; border-radius: 10px; cursor: pointer; }
     .code { font-weight: 700; margin: 10px 0 8px; }
     .card-meta { margin-bottom: 8px; }
@@ -9165,7 +9178,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     let currentProducts = [];
     let selectedFilterTags = [];
     let currentOffset = 0;
-    let pageSize = 24;
+    let pageSize = 12;
     let hasMore = true;
     let isLoadingMore = false;
     let observer = null;
@@ -10527,7 +10540,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const subcategoryList = (groups.subcategory || []).filter(tag => String(tag || '').trim() !== '暂无');
         const subcategoryValue = subcategoryList.join('、');
         card.innerHTML = `
-          <img class="thumb" src="${item.cover_image_url || ''}" loading="lazy" alt="${item.style_code}" title="点击查看该款全部图片" />
+          <img class="thumb" src="${item.cover_image_url || ''}" loading="lazy" decoding="async" alt="${item.style_code}" title="点击查看该款全部图片" />
           <div class="code">${item.style_code}</div>
           <div class="muted card-meta">图片数：${productImageCount(item)}</div>
           <div class="card-section-title">当前标签（点击可过滤）</div>
@@ -10847,7 +10860,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         subcategory_tags: str = "",
         exclude_personal: int = 1,
         include_images: int = 1,
-        limit: int = 200,
+        limit: int = 60,
         offset: int = 0,
     ) -> Dict[str, Any]:
         _catalog_require_permission(request, "product:view")

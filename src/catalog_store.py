@@ -177,27 +177,11 @@ class CatalogStore:
                     )
             conn.commit()
 
-        year_tags_added = 0
-        for style_code in sorted(touched_products):
-            year = derive_year_from_style_code(style_code)
-            typed_year = make_typed_tag("year", year)
-            if not typed_year:
-                continue
-            product_before = self.get_product(style_code)
-            before = set(product_before.get("raw_tags", []) if product_before else [])
-            if typed_year in before:
-                continue
-            self.add_product_tags(style_code, [typed_year])
-            product_after = self.get_product(style_code)
-            after = set(product_after.get("raw_tags", []) if product_after else [])
-            if typed_year not in before and typed_year in after:
-                year_tags_added += 1
-
         return {
             "products_total": len(touched_products),
             "products_added": added_products,
             "images_added_or_updated": added_images,
-            "year_tags_added": year_tags_added,
+            "year_tags_added": 0,
         }
 
     def list_tags(self) -> List[str]:
@@ -306,6 +290,38 @@ class CatalogStore:
             current_tags = [str(row["name"]) for row in current_rows]
         merged = self._normalize_tags([*current_tags, *extra_tags])
         return self.replace_product_tags(code, merged)
+
+    def replace_product_tags_by_types(self, style_code: str, tags: Iterable[str], types: Iterable[str]) -> List[str]:
+        code = style_code.strip()
+        if not code:
+            raise ValueError("style_code is empty")
+        replace_types = {str(item or "").strip() for item in types if str(item or "").strip()}
+        typed_tags = self._normalize_tags(
+            tag for tag in tags if parse_catalog_tag(tag).get("type") in replace_types
+        )
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM products WHERE style_code=? LIMIT 1",
+                (code,),
+            ).fetchone()
+            if not exists:
+                raise ValueError("style_code not found")
+            current_rows = conn.execute(
+                """
+                SELECT t.name
+                FROM product_tags pt
+                JOIN tags t ON t.id = pt.tag_id
+                WHERE pt.style_code=?
+                ORDER BY t.name COLLATE NOCASE ASC
+                """,
+                (code,),
+            ).fetchall()
+        preserved = [
+            str(row["name"])
+            for row in current_rows
+            if parse_catalog_tag(str(row["name"])).get("type") not in replace_types
+        ]
+        return self.replace_product_tags(code, [*preserved, *typed_tags])
 
     def upsert_product(
         self,
