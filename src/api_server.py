@@ -5476,8 +5476,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-pick-actions { position: absolute; right: 18px; top: 18px; display: flex; gap: 18px; font-size: 28px; color: currentColor; }
     .color-pick-action-btn { min-width: 34px; min-height: 34px; padding: 0; border-radius: 8px; background: transparent; color: currentColor; font-size: 28px; }
     .my-color-list { display: grid; gap: 10px; padding-bottom: 80px; }
-    .my-color-filter { width: 100%; min-height: 54px; border-radius: 5px; background: #202435; display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 10px; padding: 0 14px; margin: 0 0 12px; color: #fff; font-size: 17px; text-align: left; }
-    .my-color-filter-icon { text-align: right; font-size: 24px; line-height: 1; }
+    .my-color-filter { width: 100%; min-height: 60px; border-radius: 5px; background: #fff8ec; display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 10px; padding: 0 16px; margin: 0 0 12px; color: #0b0f19; font-size: 20px; font-weight: 800; text-align: left; }
+    .my-color-filter-icon { text-align: right; font-size: 26px; line-height: 1; color: #0b0f19; }
     .my-color-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
     .my-color-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 72px; border-radius: 0 5px 5px 0; background: #ef4444; color: #fff; font-size: 16px; z-index: 0; }
     .my-color-card { position: relative; z-index: 1; min-height: 98px; border-radius: 5px; padding: 14px 12px 14px 18px; display: grid; grid-template-columns: minmax(0,1fr) 40px; align-items: start; gap: 8px; color: #fff; transition: transform .18s ease; }
@@ -6797,7 +6797,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function activeColorLibraryIds() {
       if (state.colorLibraryIds.length) return state.colorLibraryIds.slice();
-      return (state.colorLibraries || []).map((lib) => lib.id).filter(Boolean);
+      return [];
     }
     function isVirtualFavoriteLibraryId(id) {
       return String(id || "") === "__favorites__";
@@ -7446,9 +7446,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const select = $("colorLibrarySelect");
       const libraries = normalizeColorLibraries(data.libraries || []);
       state.colorLibraries = libraries;
-      if (!state.colorLibraryIds.length) {
-        state.colorLibraryIds = selectedId ? [selectedId] : libraries.map((lib) => lib.id).filter(Boolean);
-      }
+      if (!state.colorLibraryIds.length && selectedId) state.colorLibraryIds = [selectedId];
       state.colorLibraryIds = state.colorLibraryIds.filter((id) => libraries.some((lib) => lib.id === id));
       select.innerHTML = libraries
         .filter((lib) => !isVirtualFavoriteLibraryId(lib.id))
@@ -7681,6 +7679,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       refreshColorSwatch();
       $("colorMatchStatus").textContent = "正在匹配近似色号...";
       const ids = activeColorLibraryIds().filter((id) => !isVirtualFavoriteLibraryId(id));
+      if (!ids.length) {
+        $("colorMatchStatus").textContent = "请先选择色彩库";
+        $("colorMatchList").innerHTML = "";
+        return;
+      }
       const allLibraryIds = (state.colorLibraries || []).filter((lib) => !isVirtualFavoriteLibraryId(lib.id)).map((lib) => lib.id).filter(Boolean);
       const selectedAllLibraries = ids.length > 0 && allLibraryIds.length > 0 && ids.length >= allLibraryIds.length;
       const data = await api("/api/v1/color-card/match", {
@@ -7815,7 +7818,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const tag = ownerTag();
         const ids = activeColorLibraryIds();
         const idsWithoutFavorites = ids.filter((id) => !isVirtualFavoriteLibraryId(id));
-        const favoritePromise = tag && (!ids.length || ids.some((id) => isVirtualFavoriteLibraryId(id)))
+        const favoritePromise = tag && ids.some((id) => isVirtualFavoriteLibraryId(id))
           ? api("/api/v1/color-card/favorites?" + new URLSearchParams({ limit: "1000", user_tag: tag }).toString())
           : Promise.resolve({ cards: [] });
         const libraryPromises = (idsWithoutFavorites.length ? idsWithoutFavorites : []).map((libraryId) => {
