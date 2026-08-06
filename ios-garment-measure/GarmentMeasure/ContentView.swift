@@ -6,36 +6,145 @@ import SceneKit
 import _RealityKit_SwiftUI
 
 struct ContentView: View {
-    @EnvironmentObject private var garment: GarmentMeasurementStore
-    @State private var selectedTab = AppTab.measure
+    @State private var selectedTab = MainTab.home
+    @State private var showsMainTabBar = true
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            MeasureScreen(isActive: selectedTab == .measure)
-                .tabItem {
-                    Label("测量", systemImage: "camera.viewfinder")
+        ZStack(alignment: .bottom) {
+            Group {
+                switch selectedTab {
+                case .home:
+                    BusinessHomeScreen(showsMainTabBar: $showsMainTabBar)
+                case .measure:
+                    MeasureScreen(isActive: selectedTab == .measure)
+                        .onAppear { showsMainTabBar = false }
+                case .scan:
+                    ScanModelScreen()
+                        .onAppear { showsMainTabBar = false }
+                case .model3D:
+                    GarmentPreviewScreen()
+                        .onAppear { showsMainTabBar = false }
                 }
-                .tag(AppTab.measure)
+            }
+            .ignoresSafeArea(.keyboard)
 
-            ScanModelScreen()
-                .tabItem {
-                    Label("扫描", systemImage: "viewfinder")
+            if selectedTab != .home {
+                FloatingHomeButton {
+                    selectedTab = .home
+                    showsMainTabBar = true
                 }
-                .tag(AppTab.scan)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.top, 12)
+                .padding(.trailing, 12)
+            }
 
-            GarmentPreviewScreen()
-                .tabItem {
-                    Label("3D", systemImage: "tshirt")
-                }
-                .tag(AppTab.preview)
+            if showsMainTabBar {
+                MainTabBar(
+                    selectedTab: $selectedTab,
+                    showsMainTabBar: $showsMainTabBar
+                )
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 18)
+            }
+        }
+    }
+
+}
+
+private enum MainTab: CaseIterable {
+    case home
+    case measure
+    case scan
+    case model3D
+
+    var title: String {
+        switch self {
+        case .home: return "首页"
+        case .measure: return "测量"
+        case .scan: return "扫描"
+        case .model3D: return "3D"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .home: return "house.fill"
+        case .measure: return "ruler"
+        case .scan: return "camera.viewfinder"
+        case .model3D: return "cube.transparent"
         }
     }
 }
 
-private enum AppTab {
-    case measure
-    case scan
-    case preview
+private struct MainTabBar: View {
+    @Binding var selectedTab: MainTab
+    @Binding var showsMainTabBar: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(MainTab.allCases, id: \.self) { tab in
+                Button {
+                    select(tab)
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 26, weight: .semibold))
+                            .frame(width: 54, height: 48)
+                            .background(
+                                Group {
+                                    if selectedTab == tab {
+                                        RoundedRectangle(cornerRadius: 31)
+                                            .fill(Color.black.opacity(0.10))
+                                    }
+                                }
+                            )
+                        Circle()
+                            .fill(selectedTab == tab ? Color(red: 0.31, green: 0.39, blue: 1.0) : Color.clear)
+                            .frame(width: 6, height: 6)
+                    }
+                    .foregroundStyle(Color(red: 0.04, green: 0.08, blue: 0.11))
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 520)
+        .frame(height: 76)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color.white.opacity(0.72), lineWidth: 1)
+        )
+        .contentShape(Capsule())
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
+    }
+
+    private func select(_ tab: MainTab) {
+        selectedTab = tab
+        showsMainTabBar = tab == .home
+    }
+
+}
+
+private struct FloatingHomeButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "house.fill")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(width: 48, height: 48)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(0.62), lineWidth: 1))
+                .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("返回首页")
+    }
 }
 
 private struct ScanModelScreen: View {

@@ -16,6 +16,7 @@
 		1A0000290000000000000001 /* GarmentTextureProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000300000000000000001 /* GarmentTextureProcessor.swift */; };
 		1A0000310000000000000001 /* GarmentAIGenerationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000320000000000000001 /* GarmentAIGenerationClient.swift */; };
 		1A0000330000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000340000000000000001 /* Assets.xcassets */; };
+		1A0000350000000000000001 /* BusinessHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000360000000000000001 /* BusinessHomeView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 		1A0000300000000000000001 /* GarmentTextureProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarmentTextureProcessor.swift; sourceTree = "<group>"; };
 		1A0000320000000000000001 /* GarmentAIGenerationClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarmentAIGenerationClient.swift; sourceTree = "<group>"; };
 		1A0000340000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1A0000360000000000000001 /* BusinessHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessHomeView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +58,7 @@
 			children = (
 				1A0000020000000000000001 /* GarmentMeasureApp.swift */,
 				1A0000040000000000000001 /* ContentView.swift */,
+				1A0000360000000000000001 /* BusinessHomeView.swift */,
 				1A0000060000000000000001 /* ARMeasurementView.swift */,
 				1A0000080000000000000001 /* GarmentModel.swift */,
 				1A0000100000000000000001 /* GarmentPreviewView.swift */,
@@ -153,6 +156,7 @@
 				1A0000270000000000000001 /* ImagePicker.swift in Sources */,
 				1A0000290000000000000001 /* GarmentTextureProcessor.swift in Sources */,
 				1A0000310000000000000001 /* GarmentAIGenerationClient.swift in Sources */,
+				1A0000350000000000000001 /* BusinessHomeView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
