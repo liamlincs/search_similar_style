@@ -5397,12 +5397,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .meter-dots { display: flex; justify-content: center; gap: 10px; padding: 8px 0 0; }
     .meter-dot { width: 10px; min-width: 10px; height: 10px; min-height: 10px; padding: 0; border-radius: 999px; background: #8b8f98; cursor: pointer; }
     .meter-dot.active { background: #59d1e9; }
-    .meter-row-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: center; margin: 10px 12px; }
+    .meter-row-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; margin: 10px 12px; }
     .meter-pill { min-height: 32px; border-radius: 999px; background: #3a3f58; color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .library-select-pill { width: 100%; border: 0; gap: 6px; min-width: 0; }
-    .library-select-pill span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .library-chevron { flex: none; color: #5fd9e9; font-size: 24px; line-height: 1; font-weight: 500; }
-    .meter-cyan-btn { min-height: 34px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 15px; font-weight: 500; }
+    .meter-library-strip { min-width: 0; min-height: 34px; padding: 0 10px; justify-content: flex-start; overflow-x: auto; overflow-y: hidden; white-space: nowrap; gap: 8px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+    .meter-library-strip::-webkit-scrollbar { display: none; }
+    .meter-library-chip { flex: none; min-height: 24px; padding: 0 12px; border-radius: 999px; background: rgba(95,199,234,.18); color: #fff; display: inline-flex; align-items: center; font-size: 14px; }
+    .meter-cyan-btn { min-height: 34px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 15px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; text-align: center; }
     .meter-connect-btn { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 80; width: 56px; height: 56px; min-height: 56px; padding: 0; border-radius: 999px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 12px; line-height: 1.1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
     .color-bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 75; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 8px 8px calc(10px + env(safe-area-inset-bottom)); background: #080b16; }
     body.color-h5.color-library-view .color-bottom-nav { display: none; }
@@ -5427,12 +5427,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .library-add-card, .library-delete-card { border-radius: 0; color: #fff; font-size: 16px; }
     .library-add-card { background: #1987d7; }
     .library-delete-card { border-radius: 0 5px 5px 0; background: #dc2626; }
-    .library-item { min-height: 62px; border-radius: 5px; background: #fff; color: #111827; display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 10px; padding: 8px 14px; box-shadow: 0 1px 0 rgba(255,255,255,.5); }
-    .library-item.active { background: linear-gradient(90deg, #5dc8e8, #64ded7); color: #07111c; }
+    .library-item { min-height: 62px; border-radius: 5px; background: #373d55; color: #fff; display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 10px; padding: 8px 14px; box-shadow: none; }
+    .library-item.active { background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; }
     .library-swipe .library-item { position: relative; z-index: 1; width: 100%; transition: transform .18s ease; }
     .library-swipe.open .library-item { transform: translateX(-152px); }
     .library-item-title { font-size: 18px; line-height: 1.28; word-break: break-word; font-weight: 650; text-align: center; }
-    .library-check { position: relative; width: 26px; height: 26px; justify-self: center; border-radius: 999px; border: 2px solid currentColor; display: grid; place-items: center; color: #111827; font-size: 18px; line-height: 1; font-weight: 800; box-sizing: border-box; }
+    .library-check { position: relative; width: 26px; height: 26px; justify-self: center; border-radius: 999px; border: 2px solid currentColor; display: grid; place-items: center; color: #fff; font-size: 18px; line-height: 1; font-weight: 800; box-sizing: border-box; }
     .library-check:not(.is-active)::before,
     .library-check:not(.is-active)::after { content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 2px; border-radius: 999px; background: currentColor; transform: translate(-50%, -50%); }
     .library-check:not(.is-active)::after { transform: translate(-50%, -50%) rotate(90deg); }
@@ -5649,8 +5649,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <input id="meterImageLabCamera" class="hidden" type="file" accept="image/*" capture="environment" />
             <input id="meterImageLabFile" class="hidden" type="file" accept="image/*" />
             <div class="meter-row-actions">
-              <button class="meter-pill library-select-pill" id="chooseColorLibraryBtn" type="button"><span id="selectedColorLibraryName">请选择色彩库</span><span class="library-chevron">›</span></button>
-              <button class="meter-cyan-btn" id="matchColorQuickBtn" type="button">返回相似色号</button>
+              <div class="meter-pill meter-library-strip" id="selectedColorLibraryName">请选择色彩库</div>
+              <button class="meter-cyan-btn" id="chooseColorLibraryBtn" type="button">选择色彩库</button>
             </div>
             <div class="color-status hidden" id="colorMeterStatus"></div>
             <div class="grid3 hidden">
@@ -6848,9 +6848,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (ids.length === 1) return libraries.find((lib) => lib.id === ids[0])?.name || ids[0];
       return `已选 ${ids.length} 个色彩库`;
     }
+    function activeColorLibraryNames() {
+      const ids = activeColorLibraryIds();
+      const libraries = state.colorLibraries || [];
+      return ids.map((id) => libraries.find((lib) => lib.id === id)?.name || id).filter(Boolean);
+    }
     function updateColorLibraryLabels() {
       const label = colorLibraryLabel();
-      if ($("selectedColorLibraryName")) $("selectedColorLibraryName").textContent = label;
+      if ($("selectedColorLibraryName")) {
+        const names = activeColorLibraryNames();
+        $("selectedColorLibraryName").innerHTML = names.length
+          ? names.map((name) => `<span class="meter-library-chip">${escapeHtml(name)}</span>`).join("")
+          : "请选择色彩库";
+      }
       if ($("colorMineLibraryName")) $("colorMineLibraryName").textContent = label;
       if ($("colorLibrarySelect")) {
         const realId = activeColorLibraryIds().find((id) => !isVirtualFavoriteLibraryId(id)) || "";
@@ -8388,7 +8398,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       switchColorView(state.previousColorView || "instrument");
       if (state.colorView === "mine") loadColors().catch((err) => setStatus(err.message || "加载失败", true));
     });
-    $("matchColorQuickBtn")?.addEventListener("click", () => matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true)));
     $("confirmAddColorLibraryBtn")?.addEventListener("click", () => addColorLibrary().catch((err) => setStatus(err.message || "新增色彩库失败", true)));
     $("cancelAddColorLibraryBtn")?.addEventListener("click", closeColorLibraryAddSheet);
     $("colorLibraryAddSheet")?.addEventListener("click", (event) => {
