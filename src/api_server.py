@@ -5504,6 +5504,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-action-sheet { position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.45); display: grid; align-items: end; }
     .color-action-sheet.hidden { display: none; }
     .color-action-panel { background: #fff; color: #111827; border-radius: 16px 16px 0 0; overflow: hidden; text-align: center; font-size: 18px; }
+    .color-action-title { padding: 16px 18px 14px; background: #f8fafc; color: #0f172a; text-align: left; font-size: 16px; line-height: 1.45; font-weight: 700; word-break: break-word; border-bottom: 1px solid #edf0f4; }
+    .color-action-title.hidden { display: none; }
     .color-action-panel button { min-height: 58px; width: 100%; border-radius: 0; background: #fff; color: #111827; border-bottom: 1px solid #edf0f4; font-size: 18px; font-weight: 500; }
     .color-action-panel button:last-child { border-bottom: 0; margin-top: 8px; }
     .color-form-panel { padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); text-align: left; display: grid; gap: 10px; }
@@ -5717,6 +5719,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           </div>
           <div class="color-action-sheet hidden" id="colorPickActionSheet">
             <div class="color-action-panel">
+              <div class="color-action-title hidden" id="colorPickActionTitle"></div>
               <button id="savePickedColorBtn" type="button">保存到我的色彩</button>
               <button id="findPickedColorBtn" type="button">找接近色</button>
               <button id="cancelPickedColorActionBtn" type="button">取消</button>
@@ -7208,11 +7211,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       await matchColorCards();
     }
+    function setColorPickActionTitle(target) {
+      const box = $("colorPickActionTitle");
+      if (!box) return;
+      const title = String(target?.name || "").trim();
+      box.textContent = title;
+      box.classList.toggle("hidden", !title);
+    }
     function openColorPickActions(target = null) {
       state.colorActionTarget = target;
+      setColorPickActionTitle(target);
       $("colorPickActionSheet")?.classList.remove("hidden");
     }
     function closeColorPickActions() {
+      setColorPickActionTitle(null);
       state.colorActionTarget = null;
       $("colorPickActionSheet")?.classList.add("hidden");
     }
