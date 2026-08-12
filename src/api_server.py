@@ -5398,6 +5398,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .meter-dot.active { background: #59d1e9; }
     .meter-row-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: center; margin: 10px 12px; }
     .meter-pill { min-height: 32px; border-radius: 999px; background: #3a3f58; color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .library-select-pill { width: 100%; border: 0; gap: 6px; min-width: 0; }
+    .library-select-pill span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .library-chevron { flex: none; color: #5fd9e9; font-size: 24px; line-height: 1; font-weight: 500; }
     .meter-cyan-btn { min-height: 34px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 15px; font-weight: 500; }
     .meter-connect-btn { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 80; width: 56px; height: 56px; min-height: 56px; padding: 0; border-radius: 999px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 12px; line-height: 1.1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
     .color-bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 75; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 8px 8px calc(10px + env(safe-area-inset-bottom)); background: #080b16; }
@@ -5410,10 +5413,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .library-hero-text { font-size: 16px; line-height: 1.5; color: #f8fafc; }
     .library-device { display: flex; align-items: center; justify-content: flex-end; gap: 10px; font-size: 17px; line-height: 1.25; }
     .library-device-img { width: 62px; height: 62px; border-radius: 999px; background: #fff; display: grid; place-items: center; font-size: 28px; }
-    .color-screen-back { position: fixed; right: 14px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 82; width: 52px; height: 52px; min-height: 52px; padding: 0; border-radius: 14px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 12px; line-height: 1.05; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
-    .color-screen-back::before { content: "↩"; display: block; font-size: 22px; line-height: 1; }
-    .color-screen-back span { display: none; }
-    .color-screen-add { position: fixed; right: 14px; bottom: calc(144px + env(safe-area-inset-bottom)); z-index: 82; width: 52px; height: 52px; min-height: 52px; padding: 0; border-radius: 14px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 28px; line-height: 1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
+    .color-screen-add { position: fixed; right: 14px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 82; width: 52px; height: 52px; min-height: 52px; padding: 0; border-radius: 14px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 28px; line-height: 1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
     .library-search { display: grid; grid-template-columns: 42px minmax(0, 1fr) 54px; align-items: center; min-height: 42px; border: 1px solid #8c91a1; border-radius: 999px; margin-bottom: 14px; color: #fff; }
     .library-search input { min-height: 38px; border: 0; background: transparent; color: #fff; padding: 0; }
     .library-search button { min-height: 38px; padding: 0; border-radius: 999px; background: transparent; color: #fff; }
@@ -5479,8 +5479,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-pick-actions { position: absolute; right: 18px; top: 18px; display: flex; gap: 18px; font-size: 28px; color: currentColor; }
     .color-pick-action-btn { min-width: 34px; min-height: 34px; padding: 0; border-radius: 8px; background: transparent; color: currentColor; font-size: 28px; }
     .my-color-list { display: grid; gap: 10px; padding-bottom: 80px; }
-    .my-color-filter { width: 100%; min-height: 54px; border-radius: 5px; background: #fff; display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 10px; padding: 0 14px; margin: 0 0 12px; color: #111827; font-size: 18px; font-weight: 650; text-align: left; }
-    .my-color-filter-icon { text-align: right; font-size: 22px; line-height: 1; color: #111827; }
+    .my-color-toolbar { display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 8px; margin: 0 0 12px; }
+    .my-color-library-btn { min-width: 0; width: 100%; min-height: 54px; border-radius: 5px; background: #fff; display: grid; grid-template-columns: minmax(0,1fr) 24px; align-items: center; gap: 6px; padding: 0 14px; color: #111827; font-size: 18px; font-weight: 650; text-align: left; }
+    .my-color-library-btn > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .my-color-search-btn { width: 48px; min-width: 48px; min-height: 54px; padding: 0; border-radius: 5px; background: #fff; color: #111827; font-size: 25px; line-height: 1; }
+    .color-name-search { display: grid; grid-template-columns: minmax(0,1fr) 70px; gap: 8px; margin: -2px 0 12px; }
+    .color-name-search input { min-height: 44px; border: 1px solid #8c91a1; border-radius: 999px; background: transparent; color: #fff; padding: 0 16px; }
+    .color-name-search button { min-height: 44px; border-radius: 999px; background: transparent; color: #5fd9e9; border: 1px solid #5fd9e9; }
     .my-color-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
     .my-color-delete { position: absolute; right: 0; top: 0; bottom: 0; width: 72px; border-radius: 0 5px 5px 0; background: #ef4444; color: #fff; font-size: 16px; z-index: 0; }
     .my-color-card { position: relative; z-index: 1; min-height: 98px; border-radius: 5px; padding: 14px 12px 14px 18px; display: grid; grid-template-columns: minmax(0,1fr) 40px; align-items: start; gap: 8px; color: #fff; transition: transform .18s ease; }
@@ -5642,8 +5647,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <input id="meterImageLabCamera" class="hidden" type="file" accept="image/*" capture="environment" />
             <input id="meterImageLabFile" class="hidden" type="file" accept="image/*" />
             <div class="meter-row-actions">
-              <div class="meter-pill" id="selectedColorLibraryName">请选择色彩库</div>
-              <button class="meter-cyan-btn" id="chooseColorLibraryBtn" type="button">选择色彩库</button>
+              <button class="meter-pill library-select-pill" id="chooseColorLibraryBtn" type="button"><span id="selectedColorLibraryName">请选择色彩库</span><span class="library-chevron">›</span></button>
+              <button class="meter-cyan-btn" id="matchColorQuickBtn" type="button">返回相似色号</button>
             </div>
             <div class="color-status hidden" id="colorMeterStatus"></div>
             <div class="grid3 hidden">
@@ -5667,7 +5672,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             <div class="library-list" id="colorLibraryList"></div>
             <button class="library-confirm" id="confirmColorLibraryBtn" type="button">确认选择</button>
             <button class="color-screen-add" id="colorLibraryAddBtn" type="button" aria-label="新增色彩库">+</button>
-            <button class="color-screen-back" id="colorLibraryBackBtn" type="button" aria-label="返回"><span>返回</span></button>
           </section>
           <section class="color-screen" id="colorScreenImage">
             <div class="color-screen-title">图片取色</div>
@@ -5685,7 +5689,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           </section>
           <section class="color-screen" id="colorScreenMine">
             <div class="color-screen-title">我的色彩</div>
-            <button class="my-color-filter" id="colorMineLibraryBtn" type="button"><span>当前色卡库：<span id="colorMineLibraryName">请选择色彩库</span></span><span class="my-color-filter-icon">⌕</span></button>
+            <div class="my-color-toolbar">
+              <button class="my-color-library-btn" id="colorMineLibraryBtn" type="button"><span>当前色卡库：<span id="colorMineLibraryName">请选择色彩库</span></span><span class="library-chevron">›</span></button>
+              <button class="my-color-search-btn" id="colorNameSearchToggleBtn" type="button" aria-label="按名称搜索">⌕</button>
+            </div>
+            <div class="color-name-search hidden" id="colorNameSearchBar">
+              <input id="colorNameSearchInput" placeholder="按名称搜索" />
+              <button id="colorNameSearchBtn" type="button">搜索</button>
+            </div>
             <div class="my-color-list" id="colorList"></div>
           </section>
           <div class="color-action-sheet hidden" id="colorImageMenuSheet">
@@ -6212,7 +6223,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("filterBtn").classList.toggle("hidden", !(state.type === "product" && state.appMode === "category"));
       renderProductFilters();
       $("filterSummary").classList.toggle("hidden", state.appMode === "image");
-      $("keyword").placeholder = state.type === "product" ? "输入款号" : "输入色号或名称";
+      $("keyword").placeholder = state.type === "product" ? "输入款号" : "按名称搜索";
       const nextParams = new URLSearchParams(location.search);
       nextParams.set("type", state.type);
       nextParams.set("mode", state.appMode);
@@ -7817,15 +7828,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return;
       }
       setStatus("加载中...", false);
+      const colorNameKeyword = String($("colorNameSearchInput")?.value || $("keyword")?.value || "").trim();
       if (state.colorView === "mine") {
         const tag = ownerTag();
         const ids = activeColorLibraryIds();
         const idsWithoutFavorites = ids.filter((id) => !isVirtualFavoriteLibraryId(id));
         const favoritePromise = tag && ids.some((id) => isVirtualFavoriteLibraryId(id))
-          ? api("/api/v1/color-card/favorites?" + new URLSearchParams({ limit: "1000", user_tag: tag }).toString())
+          ? api("/api/v1/color-card/favorites?" + new URLSearchParams({ limit: "1000", user_tag: tag, keyword: colorNameKeyword }).toString())
           : Promise.resolve({ cards: [] });
         const libraryPromises = (idsWithoutFavorites.length ? idsWithoutFavorites : []).map((libraryId) => {
-          const query = new URLSearchParams({ limit: "1000", keyword: "" });
+          const query = new URLSearchParams({ limit: "1000", keyword: colorNameKeyword });
           if (libraryId) query.set("library_id", libraryId);
           return api("/api/v1/color-card/cards?" + query.toString());
         });
@@ -7841,12 +7853,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return true;
           });
         renderColors();
-        setStatus(`已加载 ${state.colors.length} 条`, false);
+        setStatus(colorNameKeyword ? `按名称找到 ${state.colors.length} 条` : `已加载 ${state.colors.length} 条`, false);
         return;
       }
       const ids = activeColorLibraryIds();
       const idsWithoutFavorites = ids.filter((id) => !isVirtualFavoriteLibraryId(id));
-      const keyword = $("keyword").value.trim();
+      const keyword = colorNameKeyword;
       const batches = await Promise.all((idsWithoutFavorites.length ? idsWithoutFavorites : [""]).map((libraryId) => {
         const query = new URLSearchParams({ limit: "100", keyword });
         if (libraryId) query.set("library_id", libraryId);
@@ -8334,6 +8346,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function openColorLibraryView() {
       state.previousColorView = state.colorView === "library" ? (state.previousColorView || "instrument") : state.colorView;
       switchColorView("library");
+      if ($("colorLibrarySearch")) $("colorLibrarySearch").value = "";
       loadColorLibraries().catch((err) => setStatus(err.message || "加载色彩库失败", true));
     }
     $("chooseColorLibraryBtn")?.addEventListener("click", () => {
@@ -8342,14 +8355,37 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("colorMineLibraryBtn")?.addEventListener("click", () => {
       openColorLibraryView();
     });
-    $("colorLibraryBackBtn")?.addEventListener("click", () => {
-      switchColorView(state.previousColorView || "instrument");
+    function runColorNameSearch() {
+      const input = $("colorNameSearchInput");
+      if ($("keyword") && input) $("keyword").value = input.value.trim();
+      loadColors().catch((err) => setStatus(err.message || "加载失败", true));
+    }
+    $("colorNameSearchToggleBtn")?.addEventListener("click", () => {
+      const bar = $("colorNameSearchBar");
+      if (!bar) return;
+      const willOpen = bar.classList.contains("hidden");
+      bar.classList.toggle("hidden", !willOpen);
+      if (willOpen) {
+        $("colorNameSearchInput")?.focus();
+      } else {
+        if ($("colorNameSearchInput")) $("colorNameSearchInput").value = "";
+        if ($("keyword")) $("keyword").value = "";
+        loadColors().catch((err) => setStatus(err.message || "加载失败", true));
+      }
+    });
+    $("colorNameSearchBtn")?.addEventListener("click", runColorNameSearch);
+    $("colorNameSearchInput")?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      runColorNameSearch();
     });
     $("colorLibraryAddBtn")?.addEventListener("click", openColorLibraryAddSheet);
     $("confirmColorLibraryBtn")?.addEventListener("click", () => {
       updateColorLibraryLabels();
       switchColorView(state.previousColorView || "instrument");
+      if (state.colorView === "mine") loadColors().catch((err) => setStatus(err.message || "加载失败", true));
     });
+    $("matchColorQuickBtn")?.addEventListener("click", () => matchColorCards().catch((err) => setStatus(err.message || "匹配失败", true)));
     $("confirmAddColorLibraryBtn")?.addEventListener("click", () => addColorLibrary().catch((err) => setStatus(err.message || "新增色彩库失败", true)));
     $("cancelAddColorLibraryBtn")?.addEventListener("click", closeColorLibraryAddSheet);
     $("colorLibraryAddSheet")?.addEventListener("click", (event) => {
