@@ -5481,10 +5481,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-pick-actions { position: absolute; right: 18px; top: 18px; display: flex; gap: 18px; font-size: 28px; color: currentColor; }
     .color-pick-action-btn { min-width: 34px; min-height: 34px; padding: 0; border-radius: 8px; background: transparent; color: currentColor; font-size: 28px; }
     .my-color-list { display: grid; gap: 10px; padding-bottom: 80px; }
-    .my-color-toolbar { display: grid; grid-template-columns: minmax(0,1fr) 48px; align-items: center; gap: 8px; margin: 0 0 12px; }
-    .my-color-library-btn { min-width: 0; width: 100%; min-height: 54px; border-radius: 5px; background: #fff; display: grid; grid-template-columns: minmax(0,1fr) 24px; align-items: center; gap: 6px; padding: 0 14px; color: #111827; font-size: 18px; font-weight: 650; text-align: left; }
+    .my-color-toolbar { display: grid; grid-template-columns: minmax(0,1fr) 72px; align-items: center; gap: 10px; margin: 0 0 12px; }
+    .my-color-library-btn { min-width: 0; width: 100%; min-height: 54px; border-radius: 8px; background: #232638; display: grid; grid-template-columns: minmax(0,1fr) 24px; align-items: center; gap: 10px; padding: 0 18px; color: #fff; font-size: 18px; font-weight: 500; text-align: left; }
     .my-color-library-btn > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .my-color-search-btn { width: 48px; min-width: 48px; min-height: 54px; padding: 0; border-radius: 5px; background: #fff; color: #111827; font-size: 25px; line-height: 1; }
+    .my-color-library-btn .library-chevron { color: #5fd9e9; font-size: 22px; font-weight: 500; }
+    .my-color-search-btn { width: 72px; min-width: 72px; min-height: 54px; padding: 0; border-radius: 8px; background: #232638; color: #fff; font-size: 25px; line-height: 1; }
     .color-name-search { display: grid; grid-template-columns: minmax(0,1fr) 70px; gap: 8px; margin: -2px 0 12px; }
     .color-name-search input { min-height: 44px; border: 1px solid #8c91a1; border-radius: 999px; background: transparent; color: #fff; padding: 0 16px; }
     .color-name-search button { min-height: 44px; border-radius: 999px; background: transparent; color: #5fd9e9; border: 1px solid #5fd9e9; }
