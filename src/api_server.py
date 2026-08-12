@@ -1350,7 +1350,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         rows = 0
         tag_rows = 0
         style_manifest_tags: Dict[str, List[str]] = {}
-        style_manifest_types: Dict[str, set[str]] = {}
         for manifest_path in manifest_paths:
             for line in manifest_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                 raw = line.strip()
@@ -1369,18 +1368,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 tags = _manifest_tags_from_item(item)
                 if style_code and tags:
                     style_manifest_tags.setdefault(style_code, []).extend(tags)
-                    style_manifest_types.setdefault(style_code, set()).update(
-                        parsed["type"]
-                        for parsed in (parse_catalog_tag(tag) for tag in tags)
-                        if parsed.get("type") in {"year", "category", "subcategory"}
-                    )
                     tag_rows += 1
         for style_code, tags in sorted(style_manifest_tags.items()):
-            replace_types = style_manifest_types.get(style_code) or set()
-            if replace_types:
-                catalog_store.replace_product_tags_by_types(style_code, tags, replace_types)
-            else:
-                catalog_store.add_product_tags(style_code, tags)
+            catalog_store.add_product_tags(style_code, tags)
         logging.info("nas import manifest applied: files=%d rows=%d tag_rows=%d", len(manifest_paths), rows, tag_rows)
         return {"files": len(manifest_paths), "rows": rows, "tag_rows": tag_rows}
 

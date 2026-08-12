@@ -46,8 +46,7 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 def _clean_style_code(value: str) -> str:
     code = str(value or "").strip().upper()
-    if code.endswith("#"):
-        code = code[:-1]
+    code = re.sub(r"[#＃]+$", "", code)
     return SAFE_STEM_RE.sub("_", code).strip("_")
 
 
@@ -138,8 +137,7 @@ def _next_target_name(prefix: str, suffix: str, used_names: set[str], next_seq: 
 
 def _code_to_filename_prefix(code: str) -> str:
     core = str(code or "")
-    if core.endswith("#"):
-        core = core[:-1]
+    core = re.sub(r"[#＃]+$", "", core)
     core = SAFE_STEM_RE.sub("_", core).strip("_")
     return core if core else "UNKNOWN"
 
