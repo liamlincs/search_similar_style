@@ -5375,6 +5375,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     body.color-h5 .app { background: #080b16; color: #fff; min-height: 100vh; }
     body.color-h5 .top { display: none; }
     body.color-h5 .body { padding: 0 0 calc(118px + env(safe-area-inset-bottom)); min-height: 100vh; background: #080b16; }
+    body.color-h5.color-library-view .body { padding-bottom: 0; }
     .color-home { display: none; min-height: 100vh; padding: 22px 12px 0; color: #f8fafc; font-family: -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif; font-weight: 400; }
     body.color-h5 .color-home { display: block; }
     body.color-h5 #colorPanel { display: block; }
@@ -5404,6 +5405,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .meter-cyan-btn { min-height: 34px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 15px; font-weight: 500; }
     .meter-connect-btn { position: fixed; right: 18px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 80; width: 56px; height: 56px; min-height: 56px; padding: 0; border-radius: 999px; background: linear-gradient(135deg, #5fc7ea, #65ded7); color: #fff; font-size: 12px; line-height: 1.1; display: grid; place-items: center; box-shadow: 0 8px 20px rgba(0,0,0,.22); }
     .color-bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 75; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 8px 8px calc(10px + env(safe-area-inset-bottom)); background: #080b16; }
+    body.color-h5.color-library-view .color-bottom-nav { display: none; }
     .color-nav-btn { min-height: 58px; padding: 4px 0; border-radius: 0; background: transparent; color: #fff; display: grid; place-items: center; gap: 2px; font-size: 14px; font-weight: 400; }
     .color-nav-btn.active { color: #35d7e8; }
     .color-nav-icon { font-size: 25px; line-height: 1; }
@@ -5419,7 +5421,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .library-search button { min-height: 38px; padding: 0; border-radius: 999px; background: transparent; color: #fff; }
     .library-section-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 0 12px; border-radius: 5px; background: #202435; color: #5fd9e9; }
     .library-section-title { color: #fff; font-size: 18px; }
-    .library-list { display: grid; gap: 8px; max-height: calc(100vh - 250px); overflow: auto; padding: 0 12px 168px; }
+    .library-list { display: grid; gap: 8px; max-height: calc(100vh - 190px); overflow: auto; padding: 0 12px 92px; }
     .library-swipe { position: relative; overflow: hidden; border-radius: 5px; touch-action: pan-y; }
     .library-row-actions { position: absolute; right: 0; top: 0; bottom: 0; width: 152px; display: grid; grid-template-columns: 1fr 1fr; z-index: 0; }
     .library-add-card, .library-delete-card { border-radius: 0; color: #fff; font-size: 16px; }
@@ -5434,7 +5436,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .library-check:not(.is-active)::before,
     .library-check:not(.is-active)::after { content: ""; position: absolute; left: 50%; top: 50%; width: 13px; height: 2px; border-radius: 999px; background: currentColor; transform: translate(-50%, -50%); }
     .library-check:not(.is-active)::after { transform: translate(-50%, -50%) rotate(90deg); }
-    .library-confirm { position: fixed; left: 12px; right: 12px; bottom: calc(18px + env(safe-area-inset-bottom)); min-height: 48px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 17px; }
+    .library-confirm { position: fixed; left: 12px; right: 12px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 90; min-height: 48px; border-radius: 999px; background: linear-gradient(90deg, #5fc7ea, #65ded7); color: #fff; font-size: 17px; }
     .device-steps { display: grid; grid-template-columns: 96px minmax(0,1fr); gap: 10px; align-items: center; margin: -18px -12px 0; padding: 22px 18px; background: #202435; font-size: 17px; line-height: 1.6; }
     .device-mode-box { margin: 14px 0 14px; display: grid; gap: 8px; }
     .device-mode-title { color: #fff; font-size: 16px; }
@@ -6353,6 +6355,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         library: "colorScreenLibrary",
       };
       Object.values(screens).forEach((id) => $(id)?.classList.toggle("active", id === screens[state.colorView]));
+      document.body.classList.toggle("color-library-view", state.type === "color" && state.colorView === "library");
       syncColorPageTitle();
       document.querySelectorAll("[data-color-view]").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.colorView === state.colorView);
