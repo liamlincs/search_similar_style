@@ -304,7 +304,7 @@
       "stripe": 0.35
     },
     "feature_backend": "clip",
-    "secondary_feature_backend": "hybrid",
+    "secondary_feature_backend": "",
     "secondary_recall_weight": 0.94,
     "hybrid_weights": {
       "clip": 0.82,
