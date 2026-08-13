@@ -377,6 +377,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     secondary_recall_weight = float(search_cfg.get("secondary_recall_weight", 0.92))
     feature_cache_enabled = bool(search_cfg.get("feature_cache_enabled", True))
     db_feature_dtype = str(search_cfg.get("db_feature_dtype", "float32")).lower()
+    sync_search_feature_dir_on_startup = bool(search_cfg.get("sync_search_feature_dir_on_startup", False))
     warm_enhancement_caches_on_startup = bool(search_cfg.get("warm_enhancement_caches_on_startup", True))
     lazy_warm_enhancement_caches_on_search = bool(search_cfg.get("lazy_warm_enhancement_caches_on_search", True))
     auto_reload_search_assets_on_catalog_change = bool(search_cfg.get("auto_reload_search_assets_on_catalog_change", True))
@@ -933,19 +934,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return views
 
     def _sync_search_feature_dir() -> Path:
+        t0 = time.perf_counter()
+        logging.info("search feature dir sync start: standard_dir=%s target=%s", standard_dir, search_feature_dir)
         src_files = [
             fp
             for fp in collect_images(standard_dir, standard_pattern, image_exts)
             if not fp.name.upper().startswith("MY-")
         ]
+        logging.info("search feature dir sync listed: total=%d in %.2fs", len(src_files), time.perf_counter() - t0)
         search_feature_dir.mkdir(parents=True, exist_ok=True)
         wanted = {fp.name for fp in src_files}
+        removed = 0
         for stale in search_feature_dir.iterdir():
             if stale.is_file() and stale.name not in wanted:
                 try:
                     stale.unlink()
+                    removed += 1
                 except Exception:
                     logging.warning("failed to remove stale search feature file: %s", stale)
+        synced = 0
+        cached = 0
+        failed = 0
         for src in src_files:
             dst = search_feature_dir / src.name
             try:
@@ -953,14 +962,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if dst.exists():
                     dst_stat = dst.stat()
                     if dst_stat.st_size == src_stat.st_size and int(dst_stat.st_mtime) == int(src_stat.st_mtime):
+                        cached += 1
                         continue
                     dst.unlink()
                 try:
                     os.link(src, dst)
                 except OSError:
                     shutil.copy2(src, dst)
+                synced += 1
             except Exception:
+                failed += 1
                 logging.warning("failed to sync search feature file: %s", src)
+            if (synced + cached + failed) % 500 == 0:
+                logging.info(
+                    "search feature dir sync progress: %d/%d synced=%d cached=%d failed=%d removed=%d",
+                    synced + cached + failed,
+                    len(src_files),
+                    synced,
+                    cached,
+                    failed,
+                    removed,
+                )
+        logging.info(
+            "search feature dir sync done: total=%d synced=%d cached=%d failed=%d removed=%d in %.2fs",
+            len(src_files),
+            synced,
+            cached,
+            failed,
+            removed,
+            time.perf_counter() - t0,
+        )
         return search_feature_dir
 
     def _build_region_feature_db_with_cache(feature_dir: Path) -> tuple[List[str], np.ndarray]:
@@ -1056,7 +1087,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         nonlocal rerank_candidate_cache, label_memory_refs, scene_text_index
         nonlocal standard_image_by_code_key
         t_reload = time.perf_counter()
-        feature_dir = _sync_search_feature_dir()
+        if reason == "startup" and not sync_search_feature_dir_on_startup:
+            feature_dir = search_feature_dir
+            feature_dir.mkdir(parents=True, exist_ok=True)
+            logging.info("search feature dir sync skipped on startup: %s", feature_dir)
+        else:
+            feature_dir = _sync_search_feature_dir()
         next_names, next_feats = build_feature_db_with_cache(
             feature_dir,
             standard_pattern,

@@ -332,6 +332,7 @@
     "strict_small_dark_motif_full_presence_boost": 0.1,
     "strict_small_dark_motif_rescue_weight": 0.14,
     "strict_small_dark_motif_rescue_max_rows": 9,
+    "sync_search_feature_dir_on_startup": false,
     "warm_enhancement_caches_on_startup": false,
     "lazy_warm_enhancement_caches_on_search": false,
     "auto_reload_search_assets_on_catalog_change": false
