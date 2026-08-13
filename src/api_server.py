@@ -933,25 +933,51 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 views.append((f"top_comp{idx}", img.crop(key)))
         return views
 
-    def _sync_search_feature_dir() -> Path:
+    def _sync_search_feature_dir(manifest_image_names: set[str] | None = None) -> Path:
         t0 = time.perf_counter()
-        logging.info("search feature dir sync start: standard_dir=%s target=%s", standard_dir, search_feature_dir)
-        src_files = [
-            fp
-            for fp in collect_images(standard_dir, standard_pattern, image_exts)
-            if not fp.name.upper().startswith("MY-")
-        ]
-        logging.info("search feature dir sync listed: total=%d in %.2fs", len(src_files), time.perf_counter() - t0)
+        logging.info(
+            "search feature dir sync start: standard_dir=%s target=%s manifest_images=%s",
+            standard_dir,
+            search_feature_dir,
+            len(manifest_image_names) if manifest_image_names is not None else "full",
+        )
+        if manifest_image_names:
+            allowed_suffixes = {f".{str(ext).lower().lstrip('.')}" for ext in image_exts}
+            src_files = []
+            seen_src = set()
+            for image_name in sorted(manifest_image_names):
+                clean_name = Path(str(image_name or "").replace("\\", "/")).name
+                if not clean_name or clean_name.upper().startswith("MY-"):
+                    continue
+                if Path(clean_name).suffix.lower() not in allowed_suffixes:
+                    continue
+                if clean_name in seen_src:
+                    continue
+                seen_src.add(clean_name)
+                src = standard_dir / clean_name
+                if src.is_file():
+                    src_files.append(src)
+                else:
+                    logging.warning("manifest search feature image missing: %s", src)
+            logging.info("search feature dir sync manifest listed: total=%d in %.2fs", len(src_files), time.perf_counter() - t0)
+        else:
+            src_files = [
+                fp
+                for fp in collect_images(standard_dir, standard_pattern, image_exts)
+                if not fp.name.upper().startswith("MY-")
+            ]
+            logging.info("search feature dir sync listed: total=%d in %.2fs", len(src_files), time.perf_counter() - t0)
         search_feature_dir.mkdir(parents=True, exist_ok=True)
-        wanted = {fp.name for fp in src_files}
         removed = 0
-        for stale in search_feature_dir.iterdir():
-            if stale.is_file() and stale.name not in wanted:
-                try:
-                    stale.unlink()
-                    removed += 1
-                except Exception:
-                    logging.warning("failed to remove stale search feature file: %s", stale)
+        if not manifest_image_names:
+            wanted = {fp.name for fp in src_files}
+            for stale in search_feature_dir.iterdir():
+                if stale.is_file() and stale.name not in wanted:
+                    try:
+                        stale.unlink()
+                        removed += 1
+                    except Exception:
+                        logging.warning("failed to remove stale search feature file: %s", stale)
         synced = 0
         cached = 0
         failed = 0
@@ -984,12 +1010,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     removed,
                 )
         logging.info(
-            "search feature dir sync done: total=%d synced=%d cached=%d failed=%d removed=%d in %.2fs",
+            "search feature dir sync done: total=%d synced=%d cached=%d failed=%d removed=%d mode=%s in %.2fs",
             len(src_files),
             synced,
             cached,
             failed,
             removed,
+            "manifest" if manifest_image_names else "full",
             time.perf_counter() - t0,
         )
         return search_feature_dir
@@ -1082,7 +1109,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_index: Dict[str, Any] | None = None
     standard_image_by_code_key: Dict[str, str] = {}
 
-    def _reload_search_assets(reason: str = "startup") -> None:
+    def _reload_search_assets(reason: str = "startup", manifest_image_names: set[str] | None = None) -> None:
         nonlocal names, feats, secondary_names, secondary_feats, region_names, region_feats
         nonlocal rerank_candidate_cache, label_memory_refs, scene_text_index
         nonlocal standard_image_by_code_key
@@ -1092,7 +1119,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             feature_dir.mkdir(parents=True, exist_ok=True)
             logging.info("search feature dir sync skipped on startup: %s", feature_dir)
         else:
-            feature_dir = _sync_search_feature_dir()
+            feature_dir = _sync_search_feature_dir(manifest_image_names)
         next_names, next_feats = build_feature_db_with_cache(
             feature_dir,
             standard_pattern,
@@ -1242,14 +1269,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_upload_dir.mkdir(parents=True, exist_ok=True)
     wechat_access_token_cache: Dict[str, Any] = {"token": "", "expires_at": 0.0}
 
-    def _reload_search_assets_and_warm_caches(reason: str) -> None:
+    def _reload_search_assets_and_warm_caches(reason: str, manifest_image_names: set[str] | None = None) -> None:
         with search_assets_reload_lock:
             with search_assets_lock:
                 has_existing_assets = bool(names) and feats is not None
             app.state.search_ready = bool(has_existing_assets)
             app.state.search_ready_detail = f"reloading search assets: {reason}" if has_existing_assets else f"loading search assets: {reason}"
             try:
-                _reload_search_assets(reason)
+                _reload_search_assets(reason, manifest_image_names)
                 with search_assets_lock:
                     warm_names = list(names)
                 app.state.search_ready = True
@@ -1369,7 +1396,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raw_tags.append(subcategory if str(subcategory).startswith("subcategory:") else f"subcategory:{subcategory}")
         return _normalize_import_tags(raw_tags)
 
-    def _apply_nas_import_manifest() -> Dict[str, int]:
+    def _apply_nas_import_manifest() -> Dict[str, Any]:
         manifest_paths: List[Path] = []
         legacy_manifest_path = standard_dir / "_nas_import_manifest.jsonl"
         if legacy_manifest_path.exists() and legacy_manifest_path.is_file():
@@ -1386,6 +1413,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         rows = 0
         tag_rows = 0
         style_manifest_tags: Dict[str, List[str]] = {}
+        manifest_image_names: set[str] = set()
         for manifest_path in manifest_paths:
             for line in manifest_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                 raw = line.strip()
@@ -1398,8 +1426,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     logging.warning("nas import manifest row is not json: path=%s row=%s", manifest_path, raw[:200])
                     continue
                 style_code = str(item.get("style_code") or "").strip()
+                image_name = Path(str(item.get("target_filename") or item.get("image_name") or "")).name
+                if image_name:
+                    manifest_image_names.add(image_name)
                 if not style_code:
-                    image_name = Path(str(item.get("image_name") or "")).name
                     style_code = filename_to_style_code(image_name).strip()
                 tags = _manifest_tags_from_item(item)
                 if style_code and tags:
@@ -1407,8 +1437,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     tag_rows += 1
         for style_code, tags in sorted(style_manifest_tags.items()):
             catalog_store.add_product_tags(style_code, tags)
-        logging.info("nas import manifest applied: files=%d rows=%d tag_rows=%d", len(manifest_paths), rows, tag_rows)
-        return {"files": len(manifest_paths), "rows": rows, "tag_rows": tag_rows}
+        logging.info(
+            "nas import manifest applied: files=%d rows=%d tag_rows=%d image_names=%d",
+            len(manifest_paths),
+            rows,
+            tag_rows,
+            len(manifest_image_names),
+        )
+        return {
+            "files": len(manifest_paths),
+            "rows": rows,
+            "tag_rows": tag_rows,
+            "image_names": sorted(manifest_image_names),
+        }
 
     def _active_nas_import_locks() -> List[Path]:
         now = time.time()
@@ -1434,6 +1475,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             }
 
         def _run() -> None:
+            manifest_image_names: set[str] | None = None
             try:
                 active_locks = _active_nas_import_locks()
                 if active_locks:
@@ -1444,12 +1486,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     sync_stats = catalog_store.sync_from_standard_dir(standard_dir, image_exts)
                     manifest_stats = _apply_nas_import_manifest()
                     unused_tags_deleted = catalog_store.delete_unused_tags()
+                raw_manifest_names = manifest_stats.get("image_names") if isinstance(manifest_stats, dict) else None
+                if isinstance(raw_manifest_names, list) and raw_manifest_names:
+                    manifest_image_names = {str(name) for name in raw_manifest_names if str(name).strip()}
                 logging.info("catalog sync done: nightly maintenance: %s", sync_stats)
-                logging.info("nas import manifest done: nightly maintenance: %s", manifest_stats)
+                manifest_log_stats = dict(manifest_stats)
+                manifest_log_stats["image_names"] = len(manifest_image_names or set())
+                logging.info("nas import manifest done: nightly maintenance: %s", manifest_log_stats)
                 logging.info("unused catalog tags deleted: nightly maintenance: %d", unused_tags_deleted)
             except Exception:
                 logging.exception("catalog sync failed: nightly maintenance")
-            _reload_search_assets_and_warm_caches(reason)
+            _reload_search_assets_and_warm_caches(reason, manifest_image_names)
 
         threading.Thread(target=_run, daemon=True).start()
         return {
