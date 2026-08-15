@@ -28,6 +28,7 @@ from catalog_store import filename_to_style_code
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_-]+")
 KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+JC_CODE_RE = re.compile(r"\bJ[C0][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 UNRECOGNIZED_DIR = Path(__file__).resolve().parent / "未识别"
 HASH_INDEX_NAME = "_nas_image_hash_index.jsonl"
 
@@ -60,6 +61,13 @@ def _looks_like_style_code(value: str) -> bool:
     if len(code) < 3:
         return False
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]*", code))
+
+
+def _looks_like_alpha_style_code(value: str) -> bool:
+    code = _clean_style_code(value)
+    if len(code) < 3:
+        return False
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9_-]*", code))
 
 
 def _sanitize_filename(filename: str, fallback_suffix: str = ".jpg") -> str:
@@ -151,20 +159,34 @@ def _normalize_kf_candidate(value: str) -> str:
     return code
 
 
-def _extract_kf_from_text(text: str) -> str:
+def _normalize_jc_candidate(value: str) -> str:
+    code = str(value or "").upper()
+    code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+    code = re.sub(r"^J0", "JC", code)
+    code = re.sub(r"^J-C", "JC", code)
+    code = re.sub(r"-+", "-", code)
+    return code
+
+
+def _extract_prefixed_style_from_text(text: str) -> str:
     if not text:
         return ""
     expanded = str(text).upper()
-    expanded = expanded.replace("Ｋ", "K").replace("Ｆ", "F")
+    expanded = expanded.replace("Ｋ", "K").replace("Ｆ", "F").replace("Ｊ", "J").replace("Ｃ", "C")
     expanded = re.sub(r"\bK\s+F\b", "KF", expanded)
+    expanded = re.sub(r"\bJ\s+C\b", "JC", expanded)
     expanded = expanded.replace("O", "0")
     expanded = expanded.replace("＃", "#")
     candidates: list[str] = []
     for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
         candidates.extend(m.group(0) for m in KF_CODE_RE.finditer(raw))
+        candidates.extend(m.group(0) for m in JC_CODE_RE.finditer(raw))
     for candidate in candidates:
         code = _normalize_kf_candidate(candidate)
         if re.fullmatch(r"KF[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2}[A-Z]?)?", code):
+            return code
+        code = _normalize_jc_candidate(candidate)
+        if re.fullmatch(r"JC[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2}[A-Z]?)?", code):
             return code
     return ""
 
@@ -176,7 +198,7 @@ def _style_before_hash(text: str) -> str:
     lines = [ln.strip() for ln in before.splitlines() if ln.strip()]
     raw = lines[-1] if lines else before
     code = _clean_style_code(raw)
-    return code if _looks_like_style_code(code) else ""
+    return code if _looks_like_alpha_style_code(code) else ""
 
 
 def _style_from_top_left_text(text: str) -> str:
@@ -379,7 +401,7 @@ def _extract_style(path: Path, tesseract_bin: str | None, recognition_mode: str 
         corner_crops = _corner_label_crops(path)
         for crop in corner_crops:
             code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
-            if code and _looks_like_style_code(code):
+            if code and _looks_like_alpha_style_code(code):
                 return code, "normal"
     except Exception:
         if filename_code:
@@ -390,6 +412,15 @@ def _extract_style(path: Path, tesseract_bin: str | None, recognition_mode: str 
     loose_texts: list[str] = []
     seen_texts = set()
     for crop in corner_crops:
+        raw_crop = _run_rapidocr(crop).strip()
+        if raw_crop and raw_crop not in seen_texts:
+            seen_texts.add(raw_crop)
+            loose_texts.append(raw_crop)
+        if tesseract_bin:
+            raw_crop_t = _run_tesseract(crop, tesseract_bin).strip()
+            if raw_crop_t and raw_crop_t not in seen_texts:
+                seen_texts.add(raw_crop_t)
+                loose_texts.append(raw_crop_t)
         for variant in _prep_for_ocr(crop):
             raw = _run_rapidocr(variant).strip()
             if raw and raw not in seen_texts:
@@ -402,10 +433,10 @@ def _extract_style(path: Path, tesseract_bin: str | None, recognition_mode: str 
                     loose_texts.append(raw_t)
 
     for raw in loose_texts:
-        code = _extract_kf_from_text(raw)
+        code = _extract_prefixed_style_from_text(raw)
         if code:
-            logging.info("kf fallback label success: %s code=%s", path.name, code)
-            return code, "kf_fallback"
+            logging.info("prefixed fallback label success: %s code=%s", path.name, code)
+            return code, "prefixed_fallback"
 
     for raw in loose_texts:
         code = _style_before_hash(raw)
