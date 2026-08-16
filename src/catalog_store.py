@@ -17,6 +17,7 @@ MAX_AUTO_YEAR_AHEAD = 3
 
 def filename_to_style_code(img_name: str) -> str:
     stem = Path(img_name).stem
+    stem = re.sub(r"(?:_\d{3})+$", "", stem)
     if "_" in stem:
         return stem.rsplit("_", 1)[0]
     return stem
