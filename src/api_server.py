@@ -1021,6 +1021,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         )
         return search_feature_dir
 
+    def _catalog_image_names_for_search_feature_sync() -> set[str]:
+        try:
+            names_from_db = set(catalog_store.list_image_names())
+        except Exception:
+            logging.exception("failed to list catalog image names for search feature sync")
+            return set()
+        logging.info("search feature dir sync using catalog db image names: total=%d", len(names_from_db))
+        return names_from_db
+
     def _build_region_feature_db_with_cache(feature_dir: Path) -> tuple[List[str], np.ndarray]:
         files = collect_images(feature_dir, standard_pattern, image_exts)
         sigs = []
@@ -1398,6 +1407,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     def _apply_nas_import_manifest() -> Dict[str, Any]:
         manifest_paths: List[Path] = []
+        manifest_done_dir = standard_dir / "_nas_import_manifests_done"
+        done_manifest_count = 0
+        if manifest_done_dir.exists() and manifest_done_dir.is_dir():
+            done_manifest_count = len(
+                [
+                    p
+                    for p in manifest_done_dir.glob("_nas_import_manifest*.jsonl")
+                    if p.is_file()
+                ]
+            )
         legacy_manifest_path = standard_dir / "_nas_import_manifest.jsonl"
         if legacy_manifest_path.exists() and legacy_manifest_path.is_file():
             manifest_paths.append(legacy_manifest_path)
@@ -1408,8 +1427,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if p.is_file()
             )
         )
+        logging.info(
+            "nas import manifest scan: pending_files=%d done_files=%d done_dir=%s",
+            len(manifest_paths),
+            done_manifest_count,
+            manifest_done_dir,
+        )
         if not manifest_paths:
-            return {"files": 0, "rows": 0, "tag_rows": 0}
+            return {"files": 0, "rows": 0, "tag_rows": 0, "done_files": done_manifest_count, "image_names": []}
         rows = 0
         tag_rows = 0
         style_manifest_tags: Dict[str, List[str]] = {}
@@ -1437,17 +1462,33 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     tag_rows += 1
         for style_code, tags in sorted(style_manifest_tags.items()):
             catalog_store.add_product_tags(style_code, tags)
+        archived = 0
+        manifest_done_dir.mkdir(parents=True, exist_ok=True)
+        for manifest_path in manifest_paths:
+            try:
+                dest = manifest_done_dir / manifest_path.name
+                if dest.exists():
+                    stem = manifest_path.stem
+                    suffix = manifest_path.suffix
+                    dest = manifest_done_dir / f"{stem}_{int(time.time())}{suffix}"
+                shutil.move(str(manifest_path), str(dest))
+                archived += 1
+            except Exception:
+                logging.warning("failed to archive nas import manifest: %s", manifest_path, exc_info=True)
         logging.info(
-            "nas import manifest applied: files=%d rows=%d tag_rows=%d image_names=%d",
+            "nas import manifest applied: files=%d rows=%d tag_rows=%d image_names=%d archived=%d",
             len(manifest_paths),
             rows,
             tag_rows,
             len(manifest_image_names),
+            archived,
         )
         return {
             "files": len(manifest_paths),
             "rows": rows,
             "tag_rows": tag_rows,
+            "done_files": done_manifest_count,
+            "archived": archived,
             "image_names": sorted(manifest_image_names),
         }
 
@@ -1489,6 +1530,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 raw_manifest_names = manifest_stats.get("image_names") if isinstance(manifest_stats, dict) else None
                 if isinstance(raw_manifest_names, list) and raw_manifest_names:
                     manifest_image_names = {str(name) for name in raw_manifest_names if str(name).strip()}
+                else:
+                    manifest_image_names = _catalog_image_names_for_search_feature_sync()
                 logging.info("catalog sync done: nightly maintenance: %s", sync_stats)
                 manifest_log_stats = dict(manifest_stats)
                 manifest_log_stats["image_names"] = len(manifest_image_names or set())

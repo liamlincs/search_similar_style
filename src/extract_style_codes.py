@@ -1,4 +1,5 @@
 import argparse
+import datetime as dt
 import json
 import logging
 import re
@@ -17,6 +18,7 @@ SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 SCENE_TOKEN_RE = re.compile(r"[A-Z0-9]{4,}")
 KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 JC_CODE_RE = re.compile(r"\bJ[C0][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+GENERIC_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]?\d{2,4}(?:[-_ ]?\d{1,4})+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 DEFAULT_CONFIG = Path("config/search_config.json")
 OCR_ENGINE = None
 OCR_IMPORT_ERROR: Exception | None = None
@@ -271,6 +273,13 @@ def _extract_prefixed_style_from_text(text: str) -> str:
         code = _normalize_jc_candidate(candidate)
         if re.fullmatch(r"JC[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2}[A-Z]?)?", code):
             return f"{code}#"
+    for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
+        for match in GENERIC_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper()
+            code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+            code = re.sub(r"-+", "-", code)
+            if re.fullmatch(r"[A-Z][A-Z0-9]?\d{2,4}(?:-\d{1,4})+(?:-\d{1,2}[A-Z]?)?", code):
+                return f"{code}#"
     return ""
 
 
@@ -343,6 +352,17 @@ def _style_from_filename(path: Path) -> str:
     return code if _looks_like_alpha_style_code(code) else ""
 
 
+def _is_already_renamed(path: Path) -> bool:
+    stem = path.stem.strip()
+    if "_" not in stem:
+        return False
+    prefix, suffix_num = stem.rsplit("_", 1)
+    if not suffix_num.isdigit():
+        return False
+    code = _style_from_filename(path)
+    return bool(code and prefix.strip() == code)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="递归提取左上角款号并原地重命名为 款号_000.jpg（本地OCR）")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -351,14 +371,22 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-
     cfg = {}
     if args.config.exists():
         cfg = json.loads(args.config.read_text(encoding="utf-8"))
         path_cfg = cfg.get("paths", {})
         if args.standard_dir == Path("data/standard_samples") and path_cfg.get("standard_dir"):
             args.standard_dir = Path(path_cfg["standard_dir"])
+    log_path = args.standard_dir / f"_extract_style_codes_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_path, encoding="utf-8"),
+        ],
+    )
+    logging.info("log file: %s", log_path)
 
     tesseract_bin = shutil.which("tesseract")
     if tesseract_bin:
@@ -368,20 +396,35 @@ def main() -> None:
 
     exts = cfg.get("paths", {}).get("image_exts", ["png", "jpg", "jpeg"]) if args.config.exists() else ["png", "jpg", "jpeg"]
     if str(args.pattern or "").strip():
-        files = collect_images(args.standard_dir, args.pattern, exts)
+        all_files = collect_images(args.standard_dir, args.pattern, exts)
     else:
-        files = collect_images_recursive(args.standard_dir, exts)
-    if not files:
+        all_files = collect_images_recursive(args.standard_dir, exts)
+    if not all_files:
         raise RuntimeError(f"no standard images found in {args.standard_dir}")
+    skipped_existing = [path for path in all_files if _is_already_renamed(path)]
+    files = [path for path in all_files if not _is_already_renamed(path)]
+    if not files:
+        logging.info(
+            "scan skipped: all files already renamed. total=%d already_renamed=%d",
+            len(all_files),
+            len(skipped_existing),
+        )
+        return
     total = len(files)
     progress_every = 50
-    logging.info("scan start: total=%d root=%s", total, args.standard_dir)
+    logging.info(
+        "scan start: total=%d pending=%d already_renamed=%d root=%s",
+        len(all_files),
+        total,
+        len(skipped_existing),
+        args.standard_dir,
+    )
 
     plan = []
-    skipped = []
+    failed = []
     seq = defaultdict(int)
     existing_by_dir: dict[Path, set[str]] = defaultdict(set)
-    for path in files:
+    for path in all_files:
         existing_by_dir[path.parent].add(path.name.lower())
         style_code = _style_from_filename(path)
         if style_code:
@@ -410,7 +453,17 @@ def main() -> None:
                 raise RuntimeError("no valid style code matched regex or filename fallback")
         except Exception as e:
             logging.warning("ocr failed: %s err=%s", p.name, e)
-            skipped.append(p.name)
+            failed.append(p.name)
+            if index == total or index == 1 or index % progress_every == 0:
+                logging.info(
+                    "scan progress: %d/%d success=%d failed=%d already_renamed=%d current=%s",
+                    index,
+                    total,
+                    len(plan),
+                    len(failed),
+                    len(skipped_existing),
+                    p.name,
+                )
             continue
 
         prefix = code_to_filename_prefix(code)
@@ -421,40 +474,46 @@ def main() -> None:
             idx += 1
             new_name = f"{prefix}_{idx:03d}{p.suffix.lower()}"
         seq[(dir_key, prefix)] = idx + 1
-        plan.append((p, p.with_name(new_name), code))
+        target = p.with_name(new_name)
+        plan.append((p, target, code))
+        if not args.dry_run and target != p:
+            p.rename(target)
+            logging.info("%s -> %s (code=%s)", p.name, target.name, code)
         existing_by_dir[dir_key].discard(p.name.lower())
         existing_by_dir[dir_key].add(new_name.lower())
         if index == total or index == 1 or index % progress_every == 0:
             logging.info(
-                "scan progress: %d/%d success=%d failed=%d current=%s",
+                "scan progress: %d/%d success=%d failed=%d already_renamed=%d current=%s",
                 index,
                 total,
                 len(plan),
-                len(skipped),
+                len(failed),
+                len(skipped_existing),
                 p.name,
             )
 
     if args.dry_run:
         for old, new, code in plan:
             logging.info("DRY %s -> %s (code=%s)", old.name, new.name, code)
-        if skipped:
-            logging.info("DRY skipped (ocr failed): %s", ", ".join(skipped))
-        logging.info("DRY summary: success=%d skipped=%d", len(plan), len(skipped))
+        if failed:
+            logging.info("DRY failed (ocr/file-name fallback failed): %s", ", ".join(failed))
+        logging.info(
+            "DRY summary: success=%d failed=%d already_renamed=%d",
+            len(plan),
+            len(failed),
+            len(skipped_existing),
+        )
         return
 
-    temp_paths = []
-    for i, (old, _, _) in enumerate(plan):
-        tmp = old.with_name(f".__tmp_rename_{i:05d}{old.suffix.lower()}")
-        old.rename(tmp)
-        temp_paths.append(tmp)
-
-    for tmp, (_, new, code) in zip(temp_paths, plan):
-        tmp.rename(new)
-        logging.info("%s -> %s (code=%s)", tmp.name, new.name, code)
-
-    if skipped:
-        logging.info("skipped (ocr failed): %s", ", ".join(skipped))
-    logging.info("rename done. success=%d skipped=%d", len(plan), len(skipped))
+    if failed:
+        logging.info("failed (ocr/file-name fallback failed): %s", ", ".join(failed))
+    logging.info(
+        "rename done. success=%d failed=%d already_renamed=%d log=%s",
+        len(plan),
+        len(failed),
+        len(skipped_existing),
+        log_path,
+    )
 
 
 if __name__ == "__main__":

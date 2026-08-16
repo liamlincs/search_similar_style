@@ -29,6 +29,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9_-]+")
 KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 JC_CODE_RE = re.compile(r"\bJ[C0][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+GENERIC_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]?\d{2,4}(?:[-_ ]?\d{1,4})+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 UNRECOGNIZED_DIR = Path(__file__).resolve().parent / "未识别"
 HASH_INDEX_NAME = "_nas_image_hash_index.jsonl"
 
@@ -188,6 +189,13 @@ def _extract_prefixed_style_from_text(text: str) -> str:
         code = _normalize_jc_candidate(candidate)
         if re.fullmatch(r"JC[A-Z]?\d{2}-?\d{3,4}(?:-?\d{1,2}[A-Z]?)?", code):
             return code
+    for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
+        for match in GENERIC_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper()
+            code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+            code = re.sub(r"-+", "-", code)
+            if re.fullmatch(r"[A-Z][A-Z0-9]?\d{2,4}(?:-\d{1,4})+(?:-\d{1,2}[A-Z]?)?", code):
+                return code
     return ""
 
 
