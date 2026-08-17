@@ -6055,6 +6055,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     const COLOR_METER_DEVICES_KEY = "openfire_color_meter_devices";
     const COLOR_METER_MODE_KEY = "openfire_color_meter_measure_mode";
     const COLOR_METER_CONNECTED_KEY = "openfire_color_meter_connected_device";
+    const COLOR_LIBRARY_SELECTION_KEY_PREFIX = "openfire_color_library_selection_";
     const $ = (id) => document.getElementById(id);
     const COLOR_SERVICE_UUID = 0xFFE0;
     const COLOR_CHARACTERISTIC_UUID = 0xFFE1;
@@ -6901,6 +6902,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>
       `}).join("");
     }
+    function colorLibrarySelectionKey() {
+      const suffix = encodeURIComponent(String(userId || SERVER_USER_ID || "anonymous")).replace(/%/g, "_");
+      return COLOR_LIBRARY_SELECTION_KEY_PREFIX + suffix;
+    }
+    function readColorLibrarySelection() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(colorLibrarySelectionKey()) || "[]");
+        return Array.isArray(raw) ? raw.map((id) => String(id || "").trim()).filter(Boolean) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+    function writeColorLibrarySelection(ids) {
+      const clean = Array.from(new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean)));
+      localStorage.setItem(colorLibrarySelectionKey(), JSON.stringify(clean));
+    }
     function renderSelectedColorLibraries() {
       const box = $("colorList");
       if (!box) return;
@@ -6923,6 +6940,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       box.querySelectorAll("[data-library-id]").forEach((btn) => {
         btn.addEventListener("click", () => {
           state.colorLibraryIds = [btn.dataset.libraryId].filter(Boolean);
+          writeColorLibrarySelection(state.colorLibraryIds);
           updateColorLibraryLabels();
           switchColorView("instrument");
         });
@@ -7601,9 +7619,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const data = await api("/api/v1/color-card/libraries");
       const select = $("colorLibrarySelect");
       const libraries = normalizeColorLibraries(data.libraries || []);
+      const rememberedIds = readColorLibrarySelection();
       state.colorLibraries = libraries;
-      if (!state.colorLibraryIds.length && selectedId) state.colorLibraryIds = [selectedId];
+      if (selectedId) {
+        state.colorLibraryIds = [selectedId];
+      } else if (!state.colorLibraryIds.length && rememberedIds.length) {
+        state.colorLibraryIds = rememberedIds;
+      }
       state.colorLibraryIds = state.colorLibraryIds.filter((id) => libraries.some((lib) => lib.id === id));
+      if (selectedId || rememberedIds.length) writeColorLibrarySelection(state.colorLibraryIds);
       select.innerHTML = libraries
         .filter((lib) => !isVirtualFavoriteLibraryId(lib.id))
         .map((lib) => `<option value="${escapeHtml(lib.id)}">${escapeHtml(lib.name)} (${lib.color_count || 0})</option>`)
@@ -7645,6 +7669,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           } else {
             state.colorLibraryIds = state.colorLibraryIds.concat(id);
           }
+          writeColorLibrarySelection(state.colorLibraryIds);
           updateColorLibraryLabels();
           renderColorLibraryList(list, state.colorLibraryIds);
         });
@@ -7732,6 +7757,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       });
       closeColorLibraryAddSheet();
       state.colorLibraryIds = Array.from(new Set(state.colorLibraryIds.concat([data.library?.id || id])));
+      writeColorLibrarySelection(state.colorLibraryIds);
       await loadColorLibraries(data.library?.id || id);
       setStatus("色彩库已新增", false);
     }
@@ -7741,6 +7767,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!(await appConfirm(`删除色彩库“${lib.name || libraryId}”及其中色卡？`))) return;
       await api(`/api/v1/color-card/libraries/${encodeURIComponent(libraryId)}`, { method: "DELETE" });
       state.colorLibraryIds = state.colorLibraryIds.filter((id) => id !== libraryId);
+      writeColorLibrarySelection(state.colorLibraryIds);
       await loadColorLibraries();
       if (state.colorView === "mine") await loadColors();
       setStatus("色彩库已删除", false);
@@ -8826,6 +8853,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("colorLibrarySelect").addEventListener("change", () => {
       const id = $("colorLibrarySelect").value;
       state.colorLibraryIds = id ? [id] : [];
+      writeColorLibrarySelection(state.colorLibraryIds);
       updateColorLibraryLabels();
       maybeFillColorNamePrefix($("colorLibrarySelect").options[$("colorLibrarySelect").selectedIndex]?.textContent || "");
     });
@@ -9443,6 +9471,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorMatchStatus: document.getElementById('colorMatchStatus'),
       colorMatchList: document.getElementById('colorMatchList'),
     };
+    const COLOR_CARD_MODAL_LIBRARY_KEY_PREFIX = 'openfire_color_card_modal_library_';
+
+    function colorCardModalLibraryKey() {
+      const user = localStorage.getItem('openfire_catalog_user_id') || 'anonymous';
+      return COLOR_CARD_MODAL_LIBRARY_KEY_PREFIX + encodeURIComponent(String(user)).replace(/%/g, '_');
+    }
+
+    function readRememberedColorCardModalLibrary() {
+      return String(localStorage.getItem(colorCardModalLibraryKey()) || '').trim();
+    }
+
+    function writeRememberedColorCardModalLibrary(libraryId) {
+      const clean = String(libraryId || '').trim();
+      if (clean) localStorage.setItem(colorCardModalLibraryKey(), clean);
+      else localStorage.removeItem(colorCardModalLibraryKey());
+    }
 
     function setStatus(msg, isError) {
       if (!els.status) return;
@@ -10298,6 +10342,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const resp = await fetch('/api/v1/color-card/libraries');
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
+      const rememberedId = selectedId || readRememberedColorCardModalLibrary();
       els.colorLibrarySelect.innerHTML = '';
       (data.libraries || [])
         .filter((library) => {
@@ -10309,9 +10354,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const option = document.createElement('option');
         option.value = library.id;
         option.textContent = `${library.name} (${library.color_count || 0})`;
-        if (selectedId && selectedId === library.id) option.selected = true;
+        if (rememberedId && rememberedId === library.id) option.selected = true;
         els.colorLibrarySelect.appendChild(option);
       });
+      writeRememberedColorCardModalLibrary(els.colorLibrarySelect.value);
       updateColorLibraryDeleteButton();
     }
 
@@ -10370,6 +10416,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!resp.ok) throw new Error(await resp.text());
       const data = await resp.json();
       els.colorNewLibrary.value = '';
+      writeRememberedColorCardModalLibrary(data.card.library_id);
       await loadColorLibraries(data.card.library_id);
       await matchColorCards();
       incrementColorNameNumber();
@@ -10441,6 +10488,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const failed = results.filter((item) => !item.ok);
         const success = results.filter((item) => item.ok);
         await loadColorLibraries(lastLibrary.id || '');
+        if (lastLibrary.id) writeRememberedColorCardModalLibrary(lastLibrary.id);
         if (els.colorXlsxFile) els.colorXlsxFile.value = '';
         const message = failed.length
           ? `部分导入完成：成功 ${success.length} 个文件、${totalCount} 个色号；失败 ${failed.length} 个文件`
@@ -10850,6 +10898,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     });
     els.colorLibrarySelect.addEventListener('change', () => {
       const label = els.colorLibrarySelect.options[els.colorLibrarySelect.selectedIndex]?.textContent || '';
+      writeRememberedColorCardModalLibrary(els.colorLibrarySelect.value);
       maybeFillColorNamePrefix(label);
       updateColorLibraryDeleteButton();
     });
