@@ -19,6 +19,7 @@ SCENE_TOKEN_RE = re.compile(r"[A-Z0-9]{4,}")
 KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 JC_CODE_RE = re.compile(r"\bJ[C0][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 GENERIC_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]?\d{2,4}(?:[-_ ]?\d{1,4})+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+ALPHA_DASH_NUM_CODE_RE = re.compile(r"\b[A-Z]{1,4}(?:[-_ ]?\d{1,4}[A-Z]?)+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 DEFAULT_CONFIG = Path("config/search_config.json")
 OCR_ENGINE = None
 OCR_IMPORT_ERROR: Exception | None = None
@@ -279,6 +280,13 @@ def _extract_prefixed_style_from_text(text: str) -> str:
             code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
             code = re.sub(r"-+", "-", code)
             if re.fullmatch(r"[A-Z][A-Z0-9]?\d{2,4}(?:-\d{1,4})+(?:-\d{1,2}[A-Z]?)?", code):
+                return f"{code}#"
+    for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
+        for match in ALPHA_DASH_NUM_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper()
+            code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+            code = re.sub(r"-+", "-", code)
+            if re.fullmatch(r"[A-Z]{1,4}(?:-\d{1,4}[A-Z]?)+(?:-\d{1,2}[A-Z]?)?", code):
                 return f"{code}#"
     return ""
 
