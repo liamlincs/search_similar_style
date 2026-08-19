@@ -4442,25 +4442,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         logging.info("catalog image cache prewarm start: total=%d edge=%d quality=%d", total, edge, quality)
         for index, image_name in enumerate(image_names, start=1):
             safe = Path(image_name).name
-            out_fp = _cached_preview_path(safe, edge, quality)
-            if catalog_trust_image_cache and out_fp.exists():
-                skipped += 1
-                if index == total or index % 20 == 0:
-                    app.state.image_cache_prewarm_detail = (
-                        f"{index}/{total} built={built} cached={skipped} failed={failed}"
-                    )
-                    logging.info("catalog image cache prewarm progress: %s", app.state.image_cache_prewarm_detail)
-                continue
-            fp = standard_dir / safe
-            if not fp.exists() or not fp.is_file():
-                failed += 1
-                continue
             try:
-                if out_fp.exists() and out_fp.stat().st_mtime >= fp.stat().st_mtime:
+                out_fp = _cached_preview_path(safe, edge, quality)
+                if catalog_trust_image_cache and out_fp.exists():
                     skipped += 1
                 else:
-                    _ensure_preview(fp, edge, quality)
-                    built += 1
+                    fp = standard_dir / safe
+                    if not fp.exists() or not fp.is_file():
+                        failed += 1
+                        continue
+                    if out_fp.exists() and out_fp.stat().st_mtime >= fp.stat().st_mtime:
+                        skipped += 1
+                    else:
+                        _ensure_preview(fp, edge, quality)
+                        built += 1
             except Exception:
                 failed += 1
                 logging.warning("catalog image cache prewarm failed: %s", safe, exc_info=True)
@@ -4484,15 +4479,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cached = 0
         failed = 0
         for image_name in sorted({Path(str(name or "")).name for name in image_names if str(name or "").strip()}):
-            out_fp = _cached_preview_path(image_name, edge, quality)
-            if catalog_trust_image_cache and out_fp.exists():
-                cached += 1
-                continue
-            fp = standard_dir / image_name
-            if not fp.exists() or not fp.is_file():
-                failed += 1
-                continue
             try:
+                out_fp = _cached_preview_path(image_name, edge, quality)
+                if catalog_trust_image_cache and out_fp.exists():
+                    cached += 1
+                    continue
+                fp = standard_dir / image_name
+                if not fp.exists() or not fp.is_file():
+                    failed += 1
+                    continue
                 _ensure_preview(fp, edge, quality)
                 built += 1
             except Exception:
