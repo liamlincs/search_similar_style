@@ -31,6 +31,9 @@ KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]
 JC_CODE_RE = re.compile(r"\bJ[C0][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 GENERIC_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]?\d{2,4}(?:[-_ ]?\d{1,4})+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 ALPHA_DASH_NUM_CODE_RE = re.compile(r"\b[A-Z]{1,4}(?:[-_ ]?\d{1,4}[A-Z]?)+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+ALNUM_PREFIX_CODE_RE = re.compile(r"\b[A-Z]{1,5}\d{1,4}(?:[-_ ]?[A-Z0-9]{1,4})*\b", re.IGNORECASE)
+ALPHA_ONLY_CODE_RE = re.compile(r"\b[A-Z]{3,6}\b", re.IGNORECASE)
+NUMERIC_HASH_CODE_RE = re.compile(r"^\d{3,4}(?:-\d{1,2})?$")
 UNRECOGNIZED_DIR = Path(__file__).resolve().parent / "未识别"
 HASH_INDEX_NAME = "_nas_image_hash_index.jsonl"
 
@@ -50,6 +53,7 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 def _clean_style_code(value: str) -> str:
     code = str(value or "").strip().upper()
     code = re.split(r"[#＃]+", code, maxsplit=1)[0]
+    code = re.sub(r"[*+]+", "-", code)
     return SAFE_STEM_RE.sub("_", code).strip("_")
 
 
@@ -70,6 +74,15 @@ def _looks_like_alpha_style_code(value: str) -> bool:
     if len(code) < 3:
         return False
     return bool(re.fullmatch(r"[A-Z][A-Z0-9_-]*", code))
+
+
+def _looks_like_numeric_hash_style(value: str) -> bool:
+    code = _clean_style_code(value)
+    return bool(NUMERIC_HASH_CODE_RE.fullmatch(code))
+
+
+def _looks_like_effective_style_code(value: str) -> bool:
+    return _looks_like_alpha_style_code(value) or _looks_like_numeric_hash_style(value)
 
 
 def _sanitize_filename(filename: str, fallback_suffix: str = ".jpg") -> str:
@@ -148,6 +161,7 @@ def _next_target_name(prefix: str, suffix: str, used_names: set[str], next_seq: 
 def _code_to_filename_prefix(code: str) -> str:
     core = str(code or "")
     core = re.split(r"[#＃]+", core, maxsplit=1)[0]
+    core = re.sub(r"[*+]+", "-", core)
     core = SAFE_STEM_RE.sub("_", core).strip("_")
     return core if core else "UNKNOWN"
 
@@ -179,6 +193,7 @@ def _extract_prefixed_style_from_text(text: str) -> str:
     expanded = re.sub(r"\bJ\s+C\b", "JC", expanded)
     expanded = expanded.replace("O", "0")
     expanded = expanded.replace("＃", "#")
+    expanded = re.sub(r"[*+]+", "-", expanded)
     candidates: list[str] = []
     for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
         candidates.extend(m.group(0) for m in KF_CODE_RE.finditer(raw))
@@ -204,6 +219,24 @@ def _extract_prefixed_style_from_text(text: str) -> str:
             code = re.sub(r"-+", "-", code)
             if re.fullmatch(r"[A-Z]{1,4}(?:-\d{1,4}[A-Z]?)+(?:-\d{1,2}[A-Z]?)?", code):
                 return code
+    for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
+        for match in ALNUM_PREFIX_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper()
+            code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+            code = re.sub(r"-+", "-", code)
+            if re.fullmatch(r"[A-Z]{1,5}\d{1,4}(?:-[A-Z0-9]{1,4})*", code):
+                return code
+    for raw in (expanded, re.sub(r"\s+", "", expanded)):
+        if "#" in raw:
+            before = re.split(r"[#＃]", raw, maxsplit=1)[0].strip()
+            before = re.sub(r"[^A-Z0-9]+", "-", before).strip("-")
+            if NUMERIC_HASH_CODE_RE.fullmatch(before):
+                return before
+    for raw in (expanded, re.sub(r"\s+", "", expanded)):
+        for match in ALPHA_ONLY_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper().strip()
+            if re.fullmatch(r"[A-Z]{3,6}", code):
+                return code
     return ""
 
 
@@ -214,7 +247,7 @@ def _style_before_hash(text: str) -> str:
     lines = [ln.strip() for ln in before.splitlines() if ln.strip()]
     raw = lines[-1] if lines else before
     code = _clean_style_code(raw)
-    return code if _looks_like_alpha_style_code(code) else ""
+    return code if _looks_like_effective_style_code(code) else ""
 
 
 def _style_from_top_left_text(text: str) -> str:
@@ -234,7 +267,7 @@ def _style_from_filename(path: Path) -> tuple[str, str]:
         return code, "filename_hash"
     stem = re.sub(r"(?:_\d{3})+$", "", stem).strip()
     code = _clean_style_code(stem)
-    if _looks_like_style_code(code):
+    if _looks_like_effective_style_code(code):
         return code, "filename"
     return "", ""
 
@@ -418,7 +451,7 @@ def _extract_style(path: Path, tesseract_bin: str | None, recognition_mode: str 
         corner_crops = _corner_label_crops(path)
         for crop in corner_crops:
             code = str(try_extract_code_from_image(crop, tesseract_bin) or "").strip()
-            if code and _looks_like_alpha_style_code(code):
+            if code and _looks_like_effective_style_code(code):
                 return code, "normal"
     except Exception:
         if filename_code:

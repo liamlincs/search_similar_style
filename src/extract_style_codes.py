@@ -13,13 +13,16 @@ from typing import Optional
 import numpy as np
 from PIL import Image, ImageEnhance, ImageOps
 
-STYLE_RE = re.compile(r"([A-Za-z0-9_-]+#)")
+STYLE_RE = re.compile(r"([A-Za-z0-9_+*\-]+#)")
 SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
 SCENE_TOKEN_RE = re.compile(r"[A-Z0-9]{4,}")
 KF_CODE_RE = re.compile(r"\bK[FEP8][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 JC_CODE_RE = re.compile(r"\bJ[C0][A-Z]?\d{2}[-_ ]?\d{3,4}(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 GENERIC_CODE_RE = re.compile(r"\b[A-Z][A-Z0-9]?\d{2,4}(?:[-_ ]?\d{1,4})+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
 ALPHA_DASH_NUM_CODE_RE = re.compile(r"\b[A-Z]{1,4}(?:[-_ ]?\d{1,4}[A-Z]?)+(?:[-_ ]?\d{1,2}[A-Z]?)?\b", re.IGNORECASE)
+ALNUM_PREFIX_CODE_RE = re.compile(r"\b[A-Z]{1,5}\d{1,4}(?:[-_ ]?[A-Z0-9]{1,4})*\b", re.IGNORECASE)
+ALPHA_ONLY_CODE_RE = re.compile(r"\b[A-Z]{3,6}\b", re.IGNORECASE)
+NUMERIC_HASH_CODE_RE = re.compile(r"^\d{3,4}(?:-\d{1,2})?$")
 DEFAULT_CONFIG = Path("config/search_config.json")
 OCR_ENGINE = None
 OCR_IMPORT_ERROR: Exception | None = None
@@ -226,6 +229,7 @@ def _extract_code(text: str) -> Optional[str]:
 def _clean_style_code(value: str) -> str:
     code = str(value or "").strip().upper()
     code = re.sub(r"[#＃]+$", "", code)
+    code = re.sub(r"[*+]+", "-", code)
     return SAFE_RE.sub("_", code).strip("_")
 
 
@@ -234,6 +238,15 @@ def _looks_like_alpha_style_code(value: str) -> bool:
     if len(code) < 3:
         return False
     return bool(re.fullmatch(r"[A-Z][A-Z0-9_-]*", code))
+
+
+def _looks_like_numeric_hash_style(value: str) -> bool:
+    code = _clean_style_code(value)
+    return bool(NUMERIC_HASH_CODE_RE.fullmatch(code))
+
+
+def _looks_like_effective_style_code(value: str) -> bool:
+    return _looks_like_alpha_style_code(value) or _looks_like_numeric_hash_style(value)
 
 
 def _normalize_kf_candidate(value: str) -> str:
@@ -263,6 +276,7 @@ def _extract_prefixed_style_from_text(text: str) -> str:
     expanded = re.sub(r"\bJ\s+C\b", "JC", expanded)
     expanded = expanded.replace("O", "0")
     expanded = expanded.replace("＃", "#")
+    expanded = re.sub(r"[*+]+", "-", expanded)
     candidates: list[str] = []
     for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
         candidates.extend(m.group(0) for m in KF_CODE_RE.finditer(raw))
@@ -288,6 +302,24 @@ def _extract_prefixed_style_from_text(text: str) -> str:
             code = re.sub(r"-+", "-", code)
             if re.fullmatch(r"[A-Z]{1,4}(?:-\d{1,4}[A-Z]?)+(?:-\d{1,2}[A-Z]?)?", code):
                 return f"{code}#"
+    for raw in (expanded, re.sub(r"\s+", "", expanded), re.sub(r"[^A-Z0-9]+", "-", expanded)):
+        for match in ALNUM_PREFIX_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper()
+            code = re.sub(r"[^A-Z0-9]+", "-", code).strip("-")
+            code = re.sub(r"-+", "-", code)
+            if re.fullmatch(r"[A-Z]{1,5}\d{1,4}(?:-[A-Z0-9]{1,4})*", code):
+                return f"{code}#"
+    for raw in (expanded, re.sub(r"\s+", "", expanded)):
+        if "#" in raw:
+            before = re.split(r"[#＃]", raw, maxsplit=1)[0].strip()
+            before = re.sub(r"[^A-Z0-9]+", "-", before).strip("-")
+            if NUMERIC_HASH_CODE_RE.fullmatch(before):
+                return f"{before}#"
+    for raw in (expanded, re.sub(r"\s+", "", expanded)):
+        for match in ALPHA_ONLY_CODE_RE.finditer(raw):
+            code = str(match.group(0) or "").upper().strip()
+            if re.fullmatch(r"[A-Z]{3,6}", code):
+                return f"{code}#"
     return ""
 
 
@@ -311,7 +343,7 @@ def try_extract_code_from_image(header_crop_rgb: Image.Image, tesseract_bin: Opt
             seen.add(raw)
             raw_candidates.append(raw)
         code = _extract_code(raw)
-        if code and _looks_like_alpha_style_code(code):
+        if code and _looks_like_effective_style_code(code):
             return code
 
         if tesseract_bin:
@@ -321,7 +353,7 @@ def try_extract_code_from_image(header_crop_rgb: Image.Image, tesseract_bin: Opt
                 seen.add(raw_t)
                 raw_candidates.append(raw_t)
             code_t = _extract_code(raw_t)
-            if code_t and _looks_like_alpha_style_code(code_t):
+            if code_t and _looks_like_effective_style_code(code_t):
                 return code_t
     for raw in raw_candidates:
         code = _extract_prefixed_style_from_text(raw)
@@ -343,7 +375,7 @@ def _style_before_hash(text: str) -> str:
     lines = [ln.strip() for ln in before.splitlines() if ln.strip()]
     raw = lines[-1] if lines else before
     code = _clean_style_code(raw)
-    return code if _looks_like_alpha_style_code(code) else ""
+    return code if _looks_like_effective_style_code(code) else ""
 
 
 def _style_from_filename(path: Path) -> str:
@@ -357,7 +389,7 @@ def _style_from_filename(path: Path) -> str:
     if code:
         return code
     code = _clean_style_code(stem)
-    return code if _looks_like_alpha_style_code(code) else ""
+    return code if _looks_like_effective_style_code(code) else ""
 
 
 def _is_already_renamed(path: Path) -> bool:
