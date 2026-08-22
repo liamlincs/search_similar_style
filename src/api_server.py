@@ -6013,7 +6013,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       colorView: "instrument",
       previousColorView: "instrument",
       colorLibraries: [],
-      colorLibraryIds: [],
+      instrumentColorLibraryIds: [],
+      mineColorLibraryIds: [],
       colorPickPreviewUrl: "",
       pickedColorLab: null,
       pickedColorHex: "",
@@ -6476,6 +6477,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       document.querySelectorAll("[data-color-view]").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.colorView === state.colorView);
       });
+      updateColorLibraryLabels();
       if ($("colorMatchBox")) $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorView === "instrument"));
       if ($("colorList")) $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorView === "mine"));
       if (state.colorView === "mine") {
@@ -6897,21 +6899,43 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>
       `}).join("");
     }
-    function colorLibrarySelectionKey() {
+    function colorLibrarySelectionScope(view = "") {
+      const target = view || (state.colorView === "library" ? state.previousColorView : state.colorView);
+      return target === "mine" ? "mine" : "instrument";
+    }
+    function colorLibrarySelectionKey(scope = "") {
+      const scoped = colorLibrarySelectionScope(scope);
+      const suffix = encodeURIComponent(String(userId || SERVER_USER_ID || "anonymous")).replace(/%/g, "_");
+      return COLOR_LIBRARY_SELECTION_KEY_PREFIX + scoped + "_" + suffix;
+    }
+    function legacyColorLibrarySelectionKey() {
       const suffix = encodeURIComponent(String(userId || SERVER_USER_ID || "anonymous")).replace(/%/g, "_");
       return COLOR_LIBRARY_SELECTION_KEY_PREFIX + suffix;
     }
-    function readColorLibrarySelection() {
+    function readColorLibrarySelection(scope = "") {
       try {
-        const raw = JSON.parse(localStorage.getItem(colorLibrarySelectionKey()) || "[]");
+        const scoped = colorLibrarySelectionScope(scope);
+        const rawText = localStorage.getItem(colorLibrarySelectionKey(scoped))
+          || (scoped === "instrument" ? localStorage.getItem(legacyColorLibrarySelectionKey()) : "")
+          || "[]";
+        const raw = JSON.parse(rawText);
         return Array.isArray(raw) ? raw.map((id) => String(id || "").trim()).filter(Boolean) : [];
       } catch (_) {
         return [];
       }
     }
-    function writeColorLibrarySelection(ids) {
+    function writeColorLibrarySelection(ids, scope = "") {
       const clean = Array.from(new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean)));
-      localStorage.setItem(colorLibrarySelectionKey(), JSON.stringify(clean));
+      localStorage.setItem(colorLibrarySelectionKey(scope), JSON.stringify(clean));
+    }
+    function selectedColorLibraryIds(scope = "") {
+      return colorLibrarySelectionScope(scope) === "mine" ? state.mineColorLibraryIds : state.instrumentColorLibraryIds;
+    }
+    function setSelectedColorLibraryIds(ids, scope = "") {
+      const clean = Array.from(new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean)));
+      if (colorLibrarySelectionScope(scope) === "mine") state.mineColorLibraryIds = clean;
+      else state.instrumentColorLibraryIds = clean;
+      return clean;
     }
     function renderSelectedColorLibraries() {
       const box = $("colorList");
@@ -6934,8 +6958,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       `).join("");
       box.querySelectorAll("[data-library-id]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          state.colorLibraryIds = [btn.dataset.libraryId].filter(Boolean);
-          writeColorLibrarySelection(state.colorLibraryIds);
+          const ids = setSelectedColorLibraryIds([btn.dataset.libraryId].filter(Boolean), "instrument");
+          writeColorLibrarySelection(ids, "instrument");
           updateColorLibraryLabels();
           switchColorView("instrument");
         });
@@ -6946,8 +6970,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       return /^[0-9a-fA-F]{6}$/.test(text) ? text.toUpperCase() : "CCCCCC";
     }
     function activeColorLibraryIds() {
-      if (state.colorLibraryIds.length) return state.colorLibraryIds.slice();
-      return [];
+      return selectedColorLibraryIds().slice();
     }
     function isVirtualFavoriteLibraryId(id) {
       return String(id || "") === "__favorites__";
@@ -7614,21 +7637,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const data = await api("/api/v1/color-card/libraries");
       const select = $("colorLibrarySelect");
       const libraries = normalizeColorLibraries(data.libraries || []);
-      const rememberedIds = readColorLibrarySelection();
+      const scope = colorLibrarySelectionScope();
+      const rememberedIds = readColorLibrarySelection(scope);
+      let selectedIds = selectedColorLibraryIds(scope);
       state.colorLibraries = libraries;
       if (selectedId) {
-        state.colorLibraryIds = [selectedId];
-      } else if (!state.colorLibraryIds.length && rememberedIds.length) {
-        state.colorLibraryIds = rememberedIds;
+        selectedIds = setSelectedColorLibraryIds([selectedId], scope);
+      } else if (!selectedIds.length && rememberedIds.length) {
+        selectedIds = setSelectedColorLibraryIds(rememberedIds, scope);
       }
-      state.colorLibraryIds = state.colorLibraryIds.filter((id) => libraries.some((lib) => lib.id === id));
-      if (selectedId || rememberedIds.length) writeColorLibrarySelection(state.colorLibraryIds);
+      selectedIds = setSelectedColorLibraryIds(selectedIds.filter((id) => libraries.some((lib) => lib.id === id)), scope);
+      if (selectedId || rememberedIds.length) writeColorLibrarySelection(selectedIds, scope);
       select.innerHTML = libraries
         .filter((lib) => !isVirtualFavoriteLibraryId(lib.id))
         .map((lib) => `<option value="${escapeHtml(lib.id)}">${escapeHtml(lib.name)} (${lib.color_count || 0})</option>`)
         .join("");
       updateColorLibraryLabels();
-      renderColorLibraryList(libraries, state.colorLibraryIds);
+      renderColorLibraryList(libraries, selectedIds);
       maybeFillColorNamePrefix(select.options[select.selectedIndex]?.textContent || "");
     }
     function renderColorLibraryList(libraries, selectedIds = []) {
@@ -7659,14 +7684,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
           if (btn.classList.contains("library-swipe")) return;
           const id = btn.dataset.libraryId || "";
           if (!id) return;
-          if (state.colorLibraryIds.includes(id)) {
-            state.colorLibraryIds = state.colorLibraryIds.filter((item) => item !== id);
+          const scope = colorLibrarySelectionScope();
+          let ids = selectedColorLibraryIds(scope);
+          if (ids.includes(id)) {
+            ids = ids.filter((item) => item !== id);
           } else {
-            state.colorLibraryIds = state.colorLibraryIds.concat(id);
+            ids = ids.concat(id);
           }
-          writeColorLibrarySelection(state.colorLibraryIds);
+          ids = setSelectedColorLibraryIds(ids, scope);
+          writeColorLibrarySelection(ids, scope);
           updateColorLibraryLabels();
-          renderColorLibraryList(list, state.colorLibraryIds);
+          renderColorLibraryList(list, ids);
         });
       });
       box.querySelectorAll(".library-add-card").forEach((btn) => {
@@ -7751,8 +7779,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         body: JSON.stringify({ id, name }),
       });
       closeColorLibraryAddSheet();
-      state.colorLibraryIds = Array.from(new Set(state.colorLibraryIds.concat([data.library?.id || id])));
-      writeColorLibrarySelection(state.colorLibraryIds);
+      const scope = colorLibrarySelectionScope();
+      const ids = setSelectedColorLibraryIds(selectedColorLibraryIds(scope).concat([data.library?.id || id]), scope);
+      writeColorLibrarySelection(ids, scope);
       await loadColorLibraries(data.library?.id || id);
       setStatus("色彩库已新增", false);
     }
@@ -7761,8 +7790,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!lib || !isEditableColorLibraryId(libraryId)) return setStatus("只能删除自建色彩库", true);
       if (!(await appConfirm(`删除色彩库“${lib.name || libraryId}”及其中色卡？`))) return;
       await api(`/api/v1/color-card/libraries/${encodeURIComponent(libraryId)}`, { method: "DELETE" });
-      state.colorLibraryIds = state.colorLibraryIds.filter((id) => id !== libraryId);
-      writeColorLibrarySelection(state.colorLibraryIds);
+      ["instrument", "mine"].forEach((scope) => {
+        const ids = setSelectedColorLibraryIds(selectedColorLibraryIds(scope).filter((id) => id !== libraryId), scope);
+        writeColorLibrarySelection(ids, scope);
+      });
       await loadColorLibraries();
       if (state.colorView === "mine") await loadColors();
       setStatus("色彩库已删除", false);
@@ -8847,8 +8878,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     $("colorLibrary").addEventListener("input", () => maybeFillColorNamePrefix($("colorLibrary").value));
     $("colorLibrarySelect").addEventListener("change", () => {
       const id = $("colorLibrarySelect").value;
-      state.colorLibraryIds = id ? [id] : [];
-      writeColorLibrarySelection(state.colorLibraryIds);
+      const scope = colorLibrarySelectionScope();
+      const ids = setSelectedColorLibraryIds(id ? [id] : [], scope);
+      writeColorLibrarySelection(ids, scope);
       updateColorLibraryLabels();
       maybeFillColorNamePrefix($("colorLibrarySelect").options[$("colorLibrarySelect").selectedIndex]?.textContent || "");
     });
