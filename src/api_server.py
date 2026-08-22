@@ -5480,7 +5480,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-match-list { display: grid; gap: 6px; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .color-match-list * { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
     .color-match-item { border-radius: 7px; padding: 7px 10px; border: 1px solid rgba(15,23,42,.12); font-size: 14px; line-height: 1.35; }
-    .color-match-item .title { font-size: 15px; line-height: 1.25; font-weight: 700; margin-bottom: 2px; }
+    .color-match-title-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 2px; }
+    .color-match-item .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; line-height: 1.25; font-weight: 700; }
+    .color-match-delta { flex: none; white-space: nowrap; font-size: 13px; line-height: 1.2; font-weight: 700; opacity: .96; }
     .color-match-item.compare-target { outline: 3px solid rgba(95,216,233,.95); outline-offset: 2px; }
     body.color-h5 { background: #080b16; color: #fff; overscroll-behavior: none; }
     body.color-h5 .app { background: #080b16; color: #fff; min-height: 100vh; }
@@ -7907,9 +7909,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("colorMatchList").innerHTML = matches.map((item) => {
         const hex = normalizeHex(item.hex || "CCCCCC");
         return `<div class="color-match-item" data-match-name="${escapeHtml(item.name || "")}" data-match-hex="${hex}" data-match-l="${Number(item.l) || 0}" data-match-a="${Number(item.a) || 0}" data-match-b="${Number(item.b) || 0}" style="background:#${hex};color:#fff;">
-          <div class="title">${escapeHtml(item.name || "")}</div>
+          <div class="color-match-title-row"><div class="title">${escapeHtml(item.name || "")}</div><div class="color-match-delta">dE ${Number(item.delta_e_00 || 0).toFixed(2)}</div></div>
           <div>色卡库：${escapeHtml(item.library_name || "")}</div>
-          <div>dE*00：${Number(item.delta_e_00 || 0).toFixed(2)} · L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div>
+          <div>L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div>
         </div>`;
       }).join("");
     }
@@ -9161,7 +9163,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-meter-status.err { background: #fee2e2; color: #b91c1c; }
     .color-match-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
     .color-match-item { min-height: 78px; border-radius: 12px; padding: 12px; display: flex; justify-content: space-between; gap: 12px; box-shadow: inset 0 0 0 1px rgba(15,23,42,.14); }
-    .color-match-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 620px; }
+    .color-match-main { min-width: 0; flex: 1 1 auto; }
+    .color-match-title-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+    .color-match-name { min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .color-match-delta { flex: none; white-space: nowrap; font-size: 12px; line-height: 1.2; font-weight: 700; opacity: .95; }
     .color-match-meta { margin-top: 4px; font-size: 12px; opacity: .9; }
     .input-pop-wrap { position: relative; width: 100%; }
     .input-pop-wrap > input { width: 100%; }
@@ -10409,9 +10414,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       els.colorMatchList.innerHTML = (data.matches || []).map((item) => {
         const textColor = Number(item.l) < 55 ? '#fff' : '#0f172a';
         return `<div class="color-match-item" style="background:#${item.hex || 'CCCCCC'};color:${textColor};">
-          <div><div class="color-match-name">名称：${escapeHtml(item.name || '')}</div>
+          <div class="color-match-main"><div class="color-match-title-row"><div class="color-match-name">名称：${escapeHtml(item.name || '')}</div><div class="color-match-delta">dE ${Number(item.delta_e_00 || 0).toFixed(2)}</div></div>
           <div class="color-match-meta">色彩库：${escapeHtml(item.library_name || '')}</div>
-          <div class="color-match-meta">dE*00：${Number(item.delta_e_00 || 0).toFixed(2)} · L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div></div>
+          <div class="color-match-meta">L ${Number(item.l).toFixed(1)} / a ${Number(item.a).toFixed(1)} / b ${Number(item.b).toFixed(1)}</div></div>
           <div class="tag">#${escapeHtml(item.hex || '')}</div>
         </div>`;
       }).join('');
