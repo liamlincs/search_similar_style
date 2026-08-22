@@ -6480,6 +6480,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       document.querySelectorAll("[data-color-view]").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.colorView === state.colorView);
       });
+      if (state.colorView === "instrument" || state.colorView === "mine") ensureColorLibrarySelectionLoaded(state.colorView);
       updateColorLibraryLabels();
       if ($("colorMatchBox")) $("colorMatchBox").classList.toggle("hidden", !(state.type === "color" && state.colorView === "instrument"));
       if ($("colorList")) $("colorList").classList.toggle("hidden", !(state.type === "color" && state.colorView === "mine"));
@@ -6939,6 +6940,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (colorLibrarySelectionScope(scope) === "mine") state.mineColorLibraryIds = clean;
       else state.instrumentColorLibraryIds = clean;
       return clean;
+    }
+    function ensureColorLibrarySelectionLoaded(scope = "") {
+      const scoped = colorLibrarySelectionScope(scope);
+      const current = selectedColorLibraryIds(scoped);
+      if (current.length) return current;
+      const remembered = readColorLibrarySelection(scoped);
+      const valid = state.colorLibraries.length
+        ? remembered.filter((id) => state.colorLibraries.some((lib) => lib.id === id))
+        : remembered;
+      return setSelectedColorLibraryIds(valid, scoped);
     }
     function renderSelectedColorLibraries() {
       const box = $("colorList");
@@ -8018,6 +8029,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       }
       if (state.colorView === "mine" && !state.colorLibraries.length) {
         await loadColorLibraries();
+      } else if (state.colorView === "mine") {
+        ensureColorLibrarySelectionLoaded("mine");
+        updateColorLibraryLabels();
       }
       if (state.colorView !== "mine") {
         state.colors = [];
