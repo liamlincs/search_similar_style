@@ -11,6 +11,10 @@
     {
       "query_image": "data/test_samples/T03.jpg",
       "style_code": "GB26-0203"
+    },
+    {
+      "query_image": "outputs/debug_queries/20260823_155648_463997__catalog-token_external_96ee7c15a9614b45__212.jpg",
+      "style_code": "GZ24-0450"
     }
   ]
 }
