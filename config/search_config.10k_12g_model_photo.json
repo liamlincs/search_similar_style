@@ -271,7 +271,7 @@
     "region_primary_when_crop": true,
     "exact_region_code_prior_scale": 0.45,
     "exact_region_rescue_enabled": false,
-    "region_crop_recall_enabled": false,
+    "region_crop_recall_enabled": true,
     "region_crop_recall_backend": "hybrid",
     "region_crop_recall_weight": 1.12,
     "region_crop_recall_topn_cap": 1200,
