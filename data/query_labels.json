@@ -15,6 +15,10 @@
     {
       "query_image": "data/test_samples/GZ24-0450_region_212.jpg",
       "style_code": "GZ24-0450"
+    },
+    {
+      "query_image": "data/test_samples/KFB24-0119_region_288.jpg",
+      "style_code": "KFB24-0119"
     }
   ]
 }
