@@ -12278,6 +12278,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 search_strategy,
                 str(debug_saved or ""),
             )
+            t_after_upload_log = time.perf_counter()
 
             with search_assets_lock:
                 req_names = names
@@ -12316,6 +12317,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_order_debug = ""
             q_pattern_sig: np.ndarray | None = None
             q_dark_motif_sig: np.ndarray | None = None
+            t_label_memory0 = time.perf_counter()
             base_code_prior_boost = (
                 build_label_memory_prior_from_refs(
                     query_path,
@@ -12327,6 +12329,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if label_memory_enabled
                 else {}
             )
+            t_label_memory = time.perf_counter() - t_label_memory0
             code_prior_boost = dict(base_code_prior_boost)
             if base_code_prior_boost:
                 region_boost_debug = "label_memory=" + ",".join(
@@ -14299,6 +14302,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 t_post_local = time.perf_counter() - t2
                 return ranked, rows_local, t_recall_local, t_rerank_local, t_post_local
 
+            t_query_setup0 = time.perf_counter()
             q_shape = _extract_fg_shape(query_path)
             use_strip_mode = False
             if strip_mode_enabled and q_shape is not None:
@@ -14338,6 +14342,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 w_shape_pass = w_shape
                 w_color_pass = w_color
                 w_stripe_pass = w_stripe
+            t_query_setup = time.perf_counter() - t_query_setup0
 
             ranked_images, rows, t_recall, t_rerank, t_post = _run_search_pass(
                 cand_multiplier=candidate_multiplier,
@@ -14409,6 +14414,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     t_rerank += t2_rerank
                     t_post += t2_post
                     second_pass_used = True
+            t_consistency0 = time.perf_counter()
             if shape_consistency_enabled and q_shape is not None and not (strict_small_region_crop and strict_small_disable_consistency):
                 ranked_images = _apply_shape_consistency(ranked_images, q_shape)
                 rows = topk_style_codes(
@@ -14842,8 +14848,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             # region crops, but do not let it override strong full-image accent candidates.
             suppress_sleeve_for_accent_query = (
                 sleeve_pattern_skip_when_full_accent
-                and not crop_active
-                and bool(accent_candidates_debug)
+                and q_accent_sig is not None
+                and (not crop_active or strict_small_region_crop)
             )
             suppress_sleeve_for_checker_query = (
                 crop_active
@@ -15029,7 +15035,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if low_conf and len(rows) > 1:
                     rows[1]["low_confidence"] = True
                     rows[1]["confidence_gap"] = round(gap, 4)
+            t_consistency = time.perf_counter() - t_consistency0
 
+        t_enrich0 = time.perf_counter()
         base_url = _external_base_url(request)
         for row in rows:
             row.pop("_force_keep", None)
@@ -15096,6 +15104,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if len(similar_images) >= max_n:
                 break
         similar_images = _enrich_similar_images(base_url, similar_images[:max_n])
+        t_enrich = time.perf_counter() - t_enrich0
 
         if include_image_base64:
             n = len(rows) if base64_topn <= 0 else min(len(rows), base64_topn)
@@ -15106,12 +15115,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s region_order=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs extra=label:%.3f setup:%.3f consistency:%.3f enrich:%.3f gap:%.3f second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s region_order=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
             t_rerank,
             t_post,
+            t_label_memory,
+            t_query_setup,
+            t_consistency,
+            t_enrich,
+            max(
+                0.0,
+                time.perf_counter()
+                - t_after_upload_log
+                - t_label_memory
+                - t_query_setup
+                - t_recall
+                - t_rerank
+                - t_post
+                - t_consistency
+                - t_enrich,
+            ),
             second_pass_used,
             use_strip_mode,
             search_strategy,
