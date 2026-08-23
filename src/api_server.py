@@ -661,6 +661,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     low_conf_region_candidate_rescue_min_hits = int(search_cfg.get("low_conf_region_candidate_rescue_min_hits", 2))
     low_conf_region_candidate_rescue_max_rows = int(search_cfg.get("low_conf_region_candidate_rescue_max_rows", 3))
     low_conf_region_candidate_rescue_hit_weight = float(search_cfg.get("low_conf_region_candidate_rescue_hit_weight", 0.006))
+    low_conf_region_candidate_rescue_rank_boost = float(search_cfg.get("low_conf_region_candidate_rescue_rank_boost", 0.04))
     similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
     region_similar_images_topn = int(search_cfg.get("region_similar_images_topn", max(8, similar_images_topn)))
     confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
@@ -13050,7 +13051,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 scan_n = max(top_k, min(len(ranked_in), max(1, int(low_conf_region_candidate_rescue_scan_images))))
                 min_candidate_score = float(low_conf_region_candidate_rescue_min_score)
                 grouped: Dict[str, Dict[str, Any]] = {}
-                for image_name, score in ranked_in[:scan_n]:
+                for rank_idx, (image_name, score) in enumerate(ranked_in[:scan_n], start=1):
                     file_name = image_name.split("@", 1)[0]
                     code = filename_to_style_code(file_name)
                     key = _code_prior_key(code)
@@ -13063,6 +13064,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             "code": code,
                             "best_image": file_name,
                             "best_score": score_f,
+                            "best_rank": rank_idx,
                             "scores": [],
                             "above_min": 0,
                         },
@@ -13073,6 +13075,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if score_f > float(item.get("best_score", -1e9)):
                         item["best_score"] = score_f
                         item["best_image"] = file_name
+                        item["best_rank"] = rank_idx
 
                 min_hits = max(1, int(low_conf_region_candidate_rescue_min_hits))
                 candidates: List[tuple[float, Dict[str, Any]]] = []
@@ -13087,6 +13090,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         code_agg_alpha * best_score
                         + (1.0 - code_agg_alpha) * mean_score
                         + max(0.0, float(low_conf_region_candidate_rescue_hit_weight)) * min(hit_count, 5)
+                        + max(0.0, float(low_conf_region_candidate_rescue_rank_boost))
+                        * max(0.0, 1.0 - (float(item.get("best_rank", scan_n)) / max(1.0, float(scan_n))))
                     )
                     candidates.append((rescue_score, item))
                 if not candidates:
@@ -13108,12 +13113,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             "_region_rescue_keep": True,
                             "_low_conf_candidate_hits": int(item.get("above_min", 0)),
                             "_low_conf_candidate_best": round(float(item.get("best_score", 0.0)), 6),
+                            "_low_conf_candidate_rank": int(item.get("best_rank", 0)),
                         }
                     )
                 if not rescue_rows:
                     return rows_in
                 rescue_debug = ",".join(
-                    f"{row.get('style_code', '')}:{float(row.get('_low_conf_candidate_best', 0.0)):.3f}/h{int(row.get('_low_conf_candidate_hits', 0))}"
+                    f"{row.get('style_code', '')}:{float(row.get('_low_conf_candidate_best', 0.0)):.3f}/h{int(row.get('_low_conf_candidate_hits', 0))}/r{int(row.get('_low_conf_candidate_rank', 0))}"
                     for row in rescue_rows
                 )
                 region_rescue_debug = (
