@@ -3396,8 +3396,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         min_score_local: float | None = None,
         fallback_min_score: float | None = None,
     ) -> tuple[List[tuple[str, float]], str]:
-        if not ranked or query_sig is None or not accent_pattern_cache:
+        if not ranked or query_sig is None:
             return ranked, ""
+        if not accent_pattern_cache:
+            return ranked, "no-cache"
         min_score = accent_pattern_min_score if min_score_local is None else float(min_score_local)
         all_scored: List[tuple[str, float]] = []
         for file_name, sig in accent_pattern_cache.items():
@@ -3416,7 +3418,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             scored = [(file_name, sim) for file_name, sim in all_scored if sim >= fallback_floor]
             fallback_used = True
             if not scored:
-                return ranked, ""
+                top_debug = ",".join(
+                    f"{filename_to_style_code(file_name)}:{sim:.3f}"
+                    for file_name, sim in all_scored[: min(8, len(all_scored))]
+                )
+                return ranked, f"fallback-empty>{fallback_floor:.3f}:{top_debug}"
         scored.sort(key=lambda x: x[1], reverse=True)
         injected = scored[: max(1, accent_pattern_max_injected)]
 

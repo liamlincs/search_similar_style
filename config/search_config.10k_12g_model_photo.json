@@ -197,7 +197,7 @@
     "accent_pattern_boost_scale": 0.36,
     "accent_pattern_min_score": 0.42,
     "accent_pattern_strip_min_score": 0.26,
-    "accent_pattern_strip_fallback_min_score": 0.08,
+    "accent_pattern_strip_fallback_min_score": -1.0,
     "accent_pattern_max_injected": 40,
     "accent_pattern_min_pixels": 80,
     "accent_pattern_max_edge": 192,
