@@ -23,6 +23,10 @@
     {
       "query_image": "data/test_samples/KF22-0151_region_117.png",
       "style_code": "KF22-0151"
+    },
+    {
+      "query_image": "data/test_samples/KFZ24-0213_region_264.jpg",
+      "style_code": "KFZ24-0213"
     }
   ]
 }
