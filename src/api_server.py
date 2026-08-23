@@ -364,6 +364,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     label_memory_sim_threshold = float(search_cfg.get("label_memory_sim_threshold", 0.78))
     label_memory_max_boost = float(search_cfg.get("label_memory_max_boost", 0.14))
     label_memory_min_boost = float(search_cfg.get("label_memory_min_boost", 0.1))
+    label_memory_promote_min_delta = float(search_cfg.get("label_memory_promote_min_delta", 0.004))
     hybrid_weights = search_cfg.get("hybrid_weights", {})
     w_clip = float(hybrid_weights.get("clip", 0.55))
     w_shape = float(hybrid_weights.get("shape", 0.30))
@@ -13164,6 +13165,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     return rows_in
                 target_n = max(top_k, len(rows_in))
                 best_code_key, best_boost = max(base_code_prior_boost.items(), key=lambda item: float(item[1]))
+                if float(best_boost) < float(label_memory_min_boost) + max(0.0, float(label_memory_promote_min_delta)):
+                    return rows_in
                 existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
                 if best_code_key in existing_keys:
                     promoted: List[Dict[str, Any]] = []
