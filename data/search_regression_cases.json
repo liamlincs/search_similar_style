@@ -1,0 +1,10 @@
+{
+  "cases": [
+    {
+      "id": "gz24_0450_region_212",
+      "query_image": "data/test_samples/GZ24-0450_region_212.jpg",
+      "expected_style_code": "GZ24-0450",
+      "description": "Model-photo region crop with two knitted patches on plaid shirt. Regression for GZ24-0450 recall."
+    }
+  ]
+}
