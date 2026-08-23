@@ -15006,21 +15006,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             elif scene_text_hint_enabled and scene_text_blocked_by_region:
                 scene_text_tokens = [f"skip-region:{region_best_score:.3f}"]
 
-            _apply_sleeve_region_rescue()
-            rows = _rescue_region_rows(rows, ranked_images)
-            rows = _rescue_sleeve_region_rows(rows, ranked_images)
-            rows = _rescue_hat_from_sleeve_region_rows(rows, ranked_images)
-            rows = _force_top_region_rows(rows)
-            rows = _rescue_pattern_region_rows(rows, ranked_images)
-            rows = _rescue_dark_motif_region_rows(rows)
-            rows = _order_region_primary_rows(rows)
-            rows = _rescue_hat_region_rows(rows, ranked_images)
-            rows = _rescue_hat_family_region_rows(rows)
-            rows = _rescue_checker_region_rows(rows, ranked_images)
-            rows = _rescue_accent_region_rows(rows, ranked_images)
-            rows = _rescue_scene_text_region_rows(rows, ranked_images)
-            rows = _rescue_label_memory_rows(rows, ranked_images)
-            rows = _rescue_low_conf_region_candidate_rows(rows, ranked_images)
+            t_rescue_chain0 = time.perf_counter()
+            skip_heavy_region_rescues = bool(
+                strict_small_region_crop
+                and q_accent_sig is not None
+                and not accent_pattern_cache
+            )
+            if skip_heavy_region_rescues:
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|skip-heavy-accent-no-cache"
+                    if region_rescue_debug
+                    else "skip-heavy-accent-no-cache"
+                )
+                rows = _rescue_label_memory_rows(rows, ranked_images)
+            else:
+                _apply_sleeve_region_rescue()
+                rows = _rescue_region_rows(rows, ranked_images)
+                rows = _rescue_sleeve_region_rows(rows, ranked_images)
+                rows = _rescue_hat_from_sleeve_region_rows(rows, ranked_images)
+                rows = _force_top_region_rows(rows)
+                rows = _rescue_pattern_region_rows(rows, ranked_images)
+                rows = _rescue_dark_motif_region_rows(rows)
+                rows = _order_region_primary_rows(rows)
+                rows = _rescue_hat_region_rows(rows, ranked_images)
+                rows = _rescue_hat_family_region_rows(rows)
+                rows = _rescue_checker_region_rows(rows, ranked_images)
+                rows = _rescue_accent_region_rows(rows, ranked_images)
+                rows = _rescue_scene_text_region_rows(rows, ranked_images)
+                rows = _rescue_label_memory_rows(rows, ranked_images)
+                rows = _rescue_low_conf_region_candidate_rows(rows, ranked_images)
+            t_rescue_chain = time.perf_counter() - t_rescue_chain0
             _make_display_scores_follow_order(rows)
 
             rows = _dedupe_search_rows(rows, top_k)
@@ -15115,7 +15130,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 rows[i]["best_standard_image_mime"] = mime
 
         logging.info(
-            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs extra=label:%.3f setup:%.3f consistency:%.3f enrich:%.3f gap:%.3f second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s region_order=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
+            "search timing user=%s file=%s recall=%.3fs rerank=%.3fs post=%.3fs extra=label:%.3f setup:%.3f consistency:%.3f rescue:%.3f enrich:%.3f gap:%.3f second_pass=%s strip_mode=%s strategy=%s result_codes=%s similar_codes=%s region=%s region_boost=%s region_rescue=%s region_order=%s checker=%s checker_candidates=%s accent=%s accent_candidates=%s sleeve=%s sleeve_candidates=%s accessory=%s accessory_candidates=%s scene_tokens=%s total=%.3fs",
             getattr(request.state, "api_user", "unknown"),
             file.filename,
             t_recall,
@@ -15124,6 +15139,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             t_label_memory,
             t_query_setup,
             t_consistency,
+            t_rescue_chain,
             t_enrich,
             max(
                 0.0,
