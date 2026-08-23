@@ -767,7 +767,9 @@ def precompute_label_memory_refs(labels_path: Path) -> List[Tuple[str, np.ndarra
         if not p.exists() or not code:
             continue
         try:
-            r = extract_feature_clip(Image.open(p).convert("RGB"))
+            img = Image.open(p).convert("RGB")
+            views = _build_query_views(img, query_multicrop=True, query_crop_ratio=0.72, component_views=True)
+            r = np.vstack([extract_feature_clip(v) for v in views]).astype(np.float32)
             refs.append((code, r))
         except Exception:
             continue
@@ -784,13 +786,18 @@ def build_label_memory_prior_from_refs(
     if not refs:
         return {}
     try:
-        q = extract_feature_clip(Image.open(query_img).convert("RGB"))
+        q_img = Image.open(query_img).convert("RGB")
+        q_views = _build_query_views(q_img, query_multicrop=True, query_crop_ratio=0.72, component_views=True)
+        q = np.vstack([extract_feature_clip(v) for v in q_views]).astype(np.float32)
     except Exception:
         return {}
 
     prior: Dict[str, float] = {}
     for code, r in refs:
-        sim = float(q @ r)
+        r_mat = np.asarray(r, dtype=np.float32)
+        if r_mat.ndim == 1:
+            r_mat = r_mat.reshape(1, -1)
+        sim = float(np.max(q @ r_mat.T))
         if sim >= sim_threshold:
             t = min(1.0, (sim - sim_threshold) / max(1e-6, 1.0 - sim_threshold))
             boost = max(float(min_boost), max_boost * t)

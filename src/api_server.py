@@ -12296,6 +12296,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 else {}
             )
             code_prior_boost = dict(base_code_prior_boost)
+            if base_code_prior_boost:
+                region_boost_debug = "label_memory=" + ",".join(
+                    f"{code}:{float(boost):.3f}"
+                    for code, boost in sorted(base_code_prior_boost.items(), key=lambda item: item[1], reverse=True)
+                )
 
             def _code_prior_key(code: str) -> str:
                 return _style_code_key(code)
@@ -12339,7 +12344,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
                     boosted_codes.append(f"{code}:{float(score):.3f}/{boost:.3f}")
                 if boosted_codes:
-                    region_boost_debug = ",".join(boosted_codes)
+                    prior_debug = ",".join(boosted_codes)
+                    region_boost_debug = (
+                        f"{region_boost_debug}|region_prior={prior_debug}"
+                        if region_boost_debug
+                        else prior_debug
+                    )
 
             def _large_weak_region_rescue_mode() -> bool:
                 return bool(
