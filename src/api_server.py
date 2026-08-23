@@ -3396,35 +3396,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         min_score_local: float | None = None,
         fallback_min_score: float | None = None,
     ) -> tuple[List[tuple[str, float]], str]:
-        nonlocal accent_pattern_cache
         if not ranked or query_sig is None:
             return ranked, ""
         if not accent_pattern_cache:
-            with search_assets_lock:
-                current_names = list(names)
-            if current_names:
-                if not accent_pattern_cache_load_lock.locked():
-                    def _load_accent_pattern_cache_bg(load_names: List[str]) -> None:
-                        nonlocal accent_pattern_cache
-                        with accent_pattern_cache_load_lock:
-                            if accent_pattern_cache:
-                                return
-                            t0 = time.perf_counter()
-                            accent_pattern_cache = _load_or_build_accent_pattern_cache(load_names)
-                            logging.info(
-                                "api lazy loaded accent pattern cache: %d in %.2fs",
-                                len(accent_pattern_cache),
-                                time.perf_counter() - t0,
-                            )
-
-                    threading.Thread(
-                        target=_load_accent_pattern_cache_bg,
-                        args=(current_names,),
-                        daemon=True,
-                    ).start()
-                return ranked, "loading-cache"
-            if not accent_pattern_cache:
-                return ranked, "no-cache"
+            return ranked, "no-cache"
         min_score = accent_pattern_min_score if min_score_local is None else float(min_score_local)
         all_scored: List[tuple[str, float]] = []
         for file_name, sig in accent_pattern_cache.items():
@@ -5213,7 +5188,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     pattern_sig_cache: Dict[str, np.ndarray] = {}
     checker_profile_cache: Dict[str, Dict[str, float]] = {}
     accent_pattern_cache: Dict[str, np.ndarray] = {}
-    accent_pattern_cache_load_lock = threading.Lock()
     dark_motif_cache: Dict[str, np.ndarray] = {}
     collar_contour_cache: Dict[str, np.ndarray] = {}
     collar_chevron_cache: Dict[str, float] = {}
