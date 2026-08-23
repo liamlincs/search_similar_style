@@ -13156,6 +13156,62 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 promoted_rows = kept_rows[:insert_after] + rescue_rows + kept_rows[insert_after:]
                 return promoted_rows[:target_n]
 
+            def _rescue_label_memory_rows(
+                rows_in: List[Dict[str, Any]],
+                ranked_in: List[tuple[str, float]],
+            ) -> List[Dict[str, Any]]:
+                if not (base_code_prior_boost and rows_in):
+                    return rows_in
+                target_n = max(top_k, len(rows_in))
+                best_code_key, best_boost = max(base_code_prior_boost.items(), key=lambda item: float(item[1]))
+                existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
+                if best_code_key in existing_keys:
+                    promoted: List[Dict[str, Any]] = []
+                    rest: List[Dict[str, Any]] = []
+                    for row in rows_in:
+                        if _code_prior_key(str(row.get("style_code", ""))) == best_code_key:
+                            row_copy = dict(row)
+                            row_copy["_label_memory_keep"] = True
+                            promoted.append(row_copy)
+                        else:
+                            rest.append(row)
+                    return (promoted + rest)[:target_n]
+
+                best_image = ""
+                best_ranked_score = 0.0
+                for image_name, score in ranked_in:
+                    file_name = image_name.split("@", 1)[0]
+                    if _code_prior_key(filename_to_style_code(file_name)) != best_code_key:
+                        continue
+                    if not best_image or float(score) > best_ranked_score:
+                        best_image = file_name
+                        best_ranked_score = float(score)
+                if not best_image:
+                    for candidate in sorted(standard_dir.glob(f"{best_code_key}_*")):
+                        if candidate.is_file() and candidate.suffix.lower().lstrip(".") in image_exts:
+                            best_image = candidate.name
+                            break
+                if not best_image:
+                    return rows_in
+
+                raw_score = max(float(rows_in[0].get("rank_score", 0.0)) + 1e-4, best_ranked_score + float(best_boost))
+                z = float(display_score_scale) * (float(raw_score) - float(display_score_bias))
+                disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                disp = min(0.9999, max(0.0, float(disp)))
+                label_row = {
+                    "style_code": best_code_key,
+                    "best_standard_image": best_image,
+                    "score": round(disp, 4),
+                    "rank_score": round(float(raw_score), 6),
+                    "_label_memory_keep": True,
+                }
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) != best_code_key
+                ]
+                return ([label_row] + kept_rows)[:target_n]
+
             def _apply_sleeve_region_rescue() -> None:
                 if not (
                     crop_active
@@ -14909,6 +14965,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_checker_region_rows(rows, ranked_images)
             rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
+            rows = _rescue_label_memory_rows(rows, ranked_images)
             rows = _rescue_low_conf_region_candidate_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
 
