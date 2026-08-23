@@ -662,6 +662,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     low_conf_region_candidate_rescue_max_rows = int(search_cfg.get("low_conf_region_candidate_rescue_max_rows", 3))
     low_conf_region_candidate_rescue_hit_weight = float(search_cfg.get("low_conf_region_candidate_rescue_hit_weight", 0.006))
     low_conf_region_candidate_rescue_rank_boost = float(search_cfg.get("low_conf_region_candidate_rescue_rank_boost", 0.04))
+    low_conf_region_candidate_rescue_min_rank = int(search_cfg.get("low_conf_region_candidate_rescue_min_rank", 80))
     similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
     region_similar_images_topn = int(search_cfg.get("region_similar_images_topn", max(8, similar_images_topn)))
     confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
@@ -13082,6 +13083,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 for item in grouped.values():
                     best_score = float(item.get("best_score", 0.0))
                     hit_count = int(item.get("above_min", 0))
+                    best_rank = int(item.get("best_rank", scan_n))
+                    if best_rank < max(1, int(low_conf_region_candidate_rescue_min_rank)):
+                        continue
                     if best_score < min_candidate_score or hit_count < min_hits:
                         continue
                     scores = [float(x) for x in item.get("scores", [])[: max(1, code_agg_top_n)]]
@@ -13091,7 +13095,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         + (1.0 - code_agg_alpha) * mean_score
                         + max(0.0, float(low_conf_region_candidate_rescue_hit_weight)) * min(hit_count, 5)
                         + max(0.0, float(low_conf_region_candidate_rescue_rank_boost))
-                        * max(0.0, 1.0 - (float(item.get("best_rank", scan_n)) / max(1.0, float(scan_n))))
+                        * max(0.0, 1.0 - (float(best_rank) / max(1.0, float(scan_n))))
                     )
                     candidates.append((rescue_score, item))
                 if not candidates:
