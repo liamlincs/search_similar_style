@@ -663,6 +663,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     low_conf_region_candidate_rescue_hit_weight = float(search_cfg.get("low_conf_region_candidate_rescue_hit_weight", 0.006))
     low_conf_region_candidate_rescue_rank_boost = float(search_cfg.get("low_conf_region_candidate_rescue_rank_boost", 0.0))
     low_conf_region_candidate_rescue_min_rank = int(search_cfg.get("low_conf_region_candidate_rescue_min_rank", 120))
+    low_conf_region_candidate_rescue_insert_after = int(search_cfg.get("low_conf_region_candidate_rescue_insert_after", 9))
     similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
     region_similar_images_topn = int(search_cfg.get("region_similar_images_topn", max(8, similar_images_topn)))
     confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
@@ -13138,8 +13139,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
                 ]
                 target_n = max(top_k, len(rows_in))
-                keep_n = max(0, target_n - len(rescue_rows))
-                return (kept_rows[:keep_n] + rescue_rows)[:target_n]
+                insert_after = max(0, min(target_n, int(low_conf_region_candidate_rescue_insert_after)))
+                promoted_rows = kept_rows[:insert_after] + rescue_rows + kept_rows[insert_after:]
+                return promoted_rows[:target_n]
 
             def _apply_sleeve_region_rescue() -> None:
                 if not (
