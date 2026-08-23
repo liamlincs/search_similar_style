@@ -361,8 +361,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     rerank_candidate_views_max = int(search_cfg.get("rerank_candidate_views_max", 1))
     label_memory_enabled = bool(search_cfg.get("label_memory_enabled", True))
     label_memory_path = Path(search_cfg.get("label_memory_path", "data/query_labels.json"))
-    label_memory_sim_threshold = float(search_cfg.get("label_memory_sim_threshold", 0.9))
-    label_memory_max_boost = float(search_cfg.get("label_memory_max_boost", 0.09))
+    label_memory_sim_threshold = float(search_cfg.get("label_memory_sim_threshold", 0.82))
+    label_memory_max_boost = float(search_cfg.get("label_memory_max_boost", 0.14))
+    label_memory_min_boost = float(search_cfg.get("label_memory_min_boost", 0.06))
     hybrid_weights = search_cfg.get("hybrid_weights", {})
     w_clip = float(hybrid_weights.get("clip", 0.55))
     w_shape = float(hybrid_weights.get("shape", 0.30))
@@ -12289,6 +12290,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     req_label_memory_refs,
                     sim_threshold=label_memory_sim_threshold,
                     max_boost=label_memory_max_boost,
+                    min_boost=label_memory_min_boost,
                 )
                 if label_memory_enabled
                 else {}
@@ -13036,6 +13038,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     and search_scope == "region_primary"
                     and rows_in
                     and ranked_in
+                    and not base_code_prior_boost
                 ):
                     return rows_in
                 if len(rows_in) > 1:

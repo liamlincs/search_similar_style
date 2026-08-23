@@ -779,6 +779,7 @@ def build_label_memory_prior_from_refs(
     refs: List[Tuple[str, np.ndarray]],
     sim_threshold: float = 0.90,
     max_boost: float = 0.08,
+    min_boost: float = 0.0,
 ) -> Dict[str, float]:
     if not refs:
         return {}
@@ -792,7 +793,7 @@ def build_label_memory_prior_from_refs(
         sim = float(q @ r)
         if sim >= sim_threshold:
             t = min(1.0, (sim - sim_threshold) / max(1e-6, 1.0 - sim_threshold))
-            boost = max_boost * t
+            boost = max(float(min_boost), max_boost * t)
             prior[code] = max(prior.get(code, 0.0), boost)
     return prior
 
