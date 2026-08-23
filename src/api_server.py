@@ -545,6 +545,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_seed_score_base = float(search_cfg.get("accent_pattern_seed_score_base", 0.90))
     accent_pattern_boost_scale = float(search_cfg.get("accent_pattern_boost_scale", 0.24))
     accent_pattern_min_score = float(search_cfg.get("accent_pattern_min_score", 0.42))
+    accent_pattern_strip_min_score = float(search_cfg.get("accent_pattern_strip_min_score", 0.26))
     accent_pattern_max_injected = int(search_cfg.get("accent_pattern_max_injected", 24))
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
@@ -3391,13 +3392,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _merge_accent_pattern_candidates(
         ranked: List[tuple[str, float]],
         query_sig: np.ndarray | None,
+        min_score_local: float | None = None,
     ) -> tuple[List[tuple[str, float]], str]:
         if not ranked or query_sig is None or not accent_pattern_cache:
             return ranked, ""
+        min_score = accent_pattern_min_score if min_score_local is None else float(min_score_local)
         scored: List[tuple[str, float]] = []
         for file_name, sig in accent_pattern_cache.items():
             sim = float(query_sig @ sig)
-            if sim >= accent_pattern_min_score:
+            if sim >= min_score:
                 scored.append((file_name, sim))
         if not scored:
             return ranked, ""
@@ -14556,6 +14559,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ranked_images, accent_candidates_debug = _merge_accent_pattern_candidates(
                         ranked_images,
                         q_accent_sig,
+                        min_score_local=(
+                            accent_pattern_strip_min_score
+                            if use_strip_mode
+                            else accent_pattern_min_score
+                        ),
                     )
                     if accent_candidates_debug:
                         rows = topk_style_codes(
