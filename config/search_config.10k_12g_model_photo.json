@@ -200,6 +200,7 @@
     "accent_pattern_min_pixels": 80,
     "accent_pattern_max_edge": 192,
     "accent_pattern_crop_enabled": true,
+    "accent_pattern_large_logo_enabled": true,
     "sleeve_pattern_enabled": true,
     "sleeve_pattern_seed_score_base": 0.98,
     "sleeve_pattern_boost_scale": 0.42,

@@ -549,6 +549,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
     accent_pattern_crop_enabled = bool(search_cfg.get("accent_pattern_crop_enabled", True))
+    accent_pattern_large_logo_enabled = bool(search_cfg.get("accent_pattern_large_logo_enabled", True))
     accent_pattern_small_region_max_score = float(search_cfg.get("accent_pattern_small_region_max_score", 0.68))
     accent_region_rescue_enabled = bool(search_cfg.get("accent_region_rescue_enabled", True))
     accent_region_rescue_min_sim = float(search_cfg.get("accent_region_rescue_min_sim", 0.70))
@@ -3120,7 +3121,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 out[py, px] = True
         return out
 
-    def _extract_accent_pattern_sig(path: Path, grid: int = 12) -> np.ndarray | None:
+    def _extract_accent_pattern_sig(path: Path, grid: int = 12, allow_large_components: bool = False) -> np.ndarray | None:
         try:
             with Image.open(path) as im0:
                 im = im0.convert("RGB")
@@ -3146,7 +3147,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         valid = np.ones((h, w), dtype=bool)
         valid[: min(int(h * 0.10), 100), :] = False
         colorful = valid & (chroma >= 38.0) & (sat >= 0.22) & (gray >= 35.0) & (gray <= 235.0)
-        colorful = _filter_accent_motif_components(colorful)
+        if not allow_large_components:
+            colorful = _filter_accent_motif_components(colorful)
         if int(colorful.sum()) < max(8, accent_pattern_min_pixels):
             return None
 
@@ -4576,10 +4578,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accent_pattern",
-                "version": 8,
+                "version": 9,
                 "grid": 12,
                 "min_pixels": int(accent_pattern_min_pixels),
                 "max_edge": int(accent_pattern_max_edge),
+                "large_logo": bool(accent_pattern_large_logo_enabled),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -4602,7 +4605,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         t0 = time.perf_counter()
         out: Dict[str, np.ndarray] = {}
         for fp in files:
-            sig = _extract_accent_pattern_sig(fp, grid=12)
+            sig = _extract_accent_pattern_sig(
+                fp,
+                grid=12,
+                allow_large_components=bool(accent_pattern_large_logo_enabled),
+            )
             if sig is not None:
                 out[fp.name] = sig.astype(np.float32)
 
@@ -14468,7 +14475,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and (not crop_active or accent_pattern_crop_enabled)
             )
             if accent_pattern_allowed:
-                q_accent_sig = _extract_accent_pattern_sig(query_path, grid=12)
+                q_accent_sig = _extract_accent_pattern_sig(
+                    query_path,
+                    grid=12,
+                    allow_large_components=bool(accent_pattern_large_logo_enabled and use_strip_mode),
+                )
                 if q_accent_sig is not None:
                     accent_debug = "1"
             checker_large_crop_blocked = bool(
