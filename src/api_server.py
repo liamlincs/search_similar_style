@@ -655,6 +655,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     low_confidence_enabled = bool(search_cfg.get("low_confidence_enabled", True))
     low_confidence_margin_threshold = float(search_cfg.get("low_confidence_margin_threshold", 0.015))
     low_confidence_top1_threshold = float(search_cfg.get("low_confidence_top1_threshold", 0.72))
+    low_conf_region_candidate_rescue_enabled = bool(search_cfg.get("low_conf_region_candidate_rescue_enabled", True))
+    low_conf_region_candidate_rescue_scan_images = int(search_cfg.get("low_conf_region_candidate_rescue_scan_images", 1600))
+    low_conf_region_candidate_rescue_min_score = float(search_cfg.get("low_conf_region_candidate_rescue_min_score", 0.72))
+    low_conf_region_candidate_rescue_min_hits = int(search_cfg.get("low_conf_region_candidate_rescue_min_hits", 2))
+    low_conf_region_candidate_rescue_max_rows = int(search_cfg.get("low_conf_region_candidate_rescue_max_rows", 3))
+    low_conf_region_candidate_rescue_hit_weight = float(search_cfg.get("low_conf_region_candidate_rescue_hit_weight", 0.006))
     similar_images_topn = int(search_cfg.get("similar_images_topn", 8))
     region_similar_images_topn = int(search_cfg.get("region_similar_images_topn", max(8, similar_images_topn)))
     confidence_high_threshold = float(search_cfg.get("confidence_high_threshold", 0.08))
@@ -13015,6 +13021,116 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 ]
                 return (forced_rows + rescue_rows + kept_rows)[:top_k]
 
+            def _rescue_low_conf_region_candidate_rows(
+                rows_in: List[Dict[str, Any]],
+                ranked_in: List[tuple[str, float]],
+            ) -> List[Dict[str, Any]]:
+                nonlocal region_rescue_debug
+                if not (
+                    low_conf_region_candidate_rescue_enabled
+                    and crop_active
+                    and active_match_mode == "similar_style"
+                    and search_scope == "region_primary"
+                    and rows_in
+                    and ranked_in
+                ):
+                    return rows_in
+                if len(rows_in) > 1:
+                    top1_score = float(rows_in[0].get("score", 0.0))
+                    top2_score = float(rows_in[1].get("score", 0.0))
+                    low_conf = (top1_score - top2_score) < float(low_confidence_margin_threshold)
+                else:
+                    top1_score = float(rows_in[0].get("score", 0.0))
+                    low_conf = True
+                low_conf = bool(low_conf or top1_score < float(low_confidence_top1_threshold))
+                if not low_conf:
+                    return rows_in
+
+                existing_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rows_in}
+                scan_n = max(top_k, min(len(ranked_in), max(1, int(low_conf_region_candidate_rescue_scan_images))))
+                min_candidate_score = float(low_conf_region_candidate_rescue_min_score)
+                grouped: Dict[str, Dict[str, Any]] = {}
+                for image_name, score in ranked_in[:scan_n]:
+                    file_name = image_name.split("@", 1)[0]
+                    code = filename_to_style_code(file_name)
+                    key = _code_prior_key(code)
+                    if not key or key in existing_keys:
+                        continue
+                    score_f = float(score)
+                    item = grouped.setdefault(
+                        key,
+                        {
+                            "code": code,
+                            "best_image": file_name,
+                            "best_score": score_f,
+                            "scores": [],
+                            "above_min": 0,
+                        },
+                    )
+                    item["scores"].append(score_f)
+                    if score_f >= min_candidate_score:
+                        item["above_min"] = int(item.get("above_min", 0)) + 1
+                    if score_f > float(item.get("best_score", -1e9)):
+                        item["best_score"] = score_f
+                        item["best_image"] = file_name
+
+                min_hits = max(1, int(low_conf_region_candidate_rescue_min_hits))
+                candidates: List[tuple[float, Dict[str, Any]]] = []
+                for item in grouped.values():
+                    best_score = float(item.get("best_score", 0.0))
+                    hit_count = int(item.get("above_min", 0))
+                    if best_score < min_candidate_score or hit_count < min_hits:
+                        continue
+                    scores = [float(x) for x in item.get("scores", [])[: max(1, code_agg_top_n)]]
+                    mean_score = float(np.mean(scores)) if scores else best_score
+                    rescue_score = (
+                        code_agg_alpha * best_score
+                        + (1.0 - code_agg_alpha) * mean_score
+                        + max(0.0, float(low_conf_region_candidate_rescue_hit_weight)) * min(hit_count, 5)
+                    )
+                    candidates.append((rescue_score, item))
+                if not candidates:
+                    return rows_in
+
+                rescue_rows: List[Dict[str, Any]] = []
+                for rescue_score, item in sorted(candidates, key=lambda pair: pair[0], reverse=True)[
+                    : max(1, int(low_conf_region_candidate_rescue_max_rows))
+                ]:
+                    z = float(display_score_scale) * (float(rescue_score) - float(display_score_bias))
+                    disp = 1.0 / (1.0 + np.exp(-np.clip(z, -20.0, 20.0)))
+                    disp = min(0.9999, max(0.0, float(disp)))
+                    rescue_rows.append(
+                        {
+                            "style_code": str(item.get("code", "")),
+                            "best_standard_image": str(item.get("best_image", "")),
+                            "score": round(disp, 4),
+                            "rank_score": round(float(rescue_score), 6),
+                            "_region_rescue_keep": True,
+                            "_low_conf_candidate_hits": int(item.get("above_min", 0)),
+                            "_low_conf_candidate_best": round(float(item.get("best_score", 0.0)), 6),
+                        }
+                    )
+                if not rescue_rows:
+                    return rows_in
+                rescue_debug = ",".join(
+                    f"{row.get('style_code', '')}:{float(row.get('_low_conf_candidate_best', 0.0)):.3f}/h{int(row.get('_low_conf_candidate_hits', 0))}"
+                    for row in rescue_rows
+                )
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|low_conf_candidate={rescue_debug}"
+                    if region_rescue_debug
+                    else f"low_conf_candidate={rescue_debug}"
+                )
+                rescue_keys = {_code_prior_key(str(row.get("style_code", ""))) for row in rescue_rows}
+                kept_rows = [
+                    row
+                    for row in rows_in
+                    if _code_prior_key(str(row.get("style_code", ""))) not in rescue_keys
+                ]
+                target_n = max(top_k, len(rows_in))
+                keep_n = max(0, target_n - len(rescue_rows))
+                return (kept_rows[:keep_n] + rescue_rows)[:target_n]
+
             def _apply_sleeve_region_rescue() -> None:
                 if not (
                     crop_active
@@ -14768,6 +14884,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             rows = _rescue_checker_region_rows(rows, ranked_images)
             rows = _rescue_accent_region_rows(rows, ranked_images)
             rows = _rescue_scene_text_region_rows(rows, ranked_images)
+            rows = _rescue_low_conf_region_candidate_rows(rows, ranked_images)
             _make_display_scores_follow_order(rows)
 
             rows = _dedupe_search_rows(rows, top_k)
