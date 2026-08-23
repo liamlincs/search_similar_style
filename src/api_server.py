@@ -546,6 +546,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     accent_pattern_boost_scale = float(search_cfg.get("accent_pattern_boost_scale", 0.24))
     accent_pattern_min_score = float(search_cfg.get("accent_pattern_min_score", 0.42))
     accent_pattern_strip_min_score = float(search_cfg.get("accent_pattern_strip_min_score", 0.26))
+    accent_pattern_strip_fallback_min_score = float(search_cfg.get("accent_pattern_strip_fallback_min_score", 0.08))
     accent_pattern_max_injected = int(search_cfg.get("accent_pattern_max_injected", 24))
     accent_pattern_min_pixels = int(search_cfg.get("accent_pattern_min_pixels", 80))
     accent_pattern_max_edge = int(search_cfg.get("accent_pattern_max_edge", 192))
@@ -3393,17 +3394,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         ranked: List[tuple[str, float]],
         query_sig: np.ndarray | None,
         min_score_local: float | None = None,
+        fallback_min_score: float | None = None,
     ) -> tuple[List[tuple[str, float]], str]:
         if not ranked or query_sig is None or not accent_pattern_cache:
             return ranked, ""
         min_score = accent_pattern_min_score if min_score_local is None else float(min_score_local)
-        scored: List[tuple[str, float]] = []
+        all_scored: List[tuple[str, float]] = []
         for file_name, sig in accent_pattern_cache.items():
             sim = float(query_sig @ sig)
+            all_scored.append((file_name, sim))
+        all_scored.sort(key=lambda x: x[1], reverse=True)
+        scored: List[tuple[str, float]] = []
+        for file_name, sim in all_scored:
             if sim >= min_score:
                 scored.append((file_name, sim))
+        fallback_used = False
         if not scored:
-            return ranked, ""
+            fallback_floor = None if fallback_min_score is None else float(fallback_min_score)
+            if fallback_floor is None:
+                return ranked, ""
+            scored = [(file_name, sim) for file_name, sim in all_scored if sim >= fallback_floor]
+            fallback_used = True
+            if not scored:
+                return ranked, ""
         scored.sort(key=lambda x: x[1], reverse=True)
         injected = scored[: max(1, accent_pattern_max_injected)]
 
@@ -3418,6 +3431,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             f"{filename_to_style_code(file_name)}:{sim:.3f}/{accent_pattern_seed_score_base + accent_pattern_boost_scale * max(0.0, sim):.3f}"
             for file_name, sim in injected[:40]
         ]
+        if fallback_used and debug_items:
+            debug_items[0] = f"strip-fallback={debug_items[0]}"
         out = sorted(merged.items(), key=lambda x: x[1], reverse=True)
         return out, ",".join(debug_items)
 
@@ -14563,6 +14578,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             accent_pattern_strip_min_score
                             if use_strip_mode
                             else accent_pattern_min_score
+                        ),
+                        fallback_min_score=(
+                            accent_pattern_strip_fallback_min_score
+                            if use_strip_mode
+                            else None
                         ),
                     )
                     if accent_candidates_debug:
