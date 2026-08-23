@@ -19,6 +19,10 @@
     {
       "query_image": "data/test_samples/KFB24-0119_region_288.jpg",
       "style_code": "KFB24-0119"
+    },
+    {
+      "query_image": "data/test_samples/KF22-0151_region_117.png",
+      "style_code": "KF22-0151"
     }
   ]
 }
