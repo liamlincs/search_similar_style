@@ -3396,10 +3396,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         min_score_local: float | None = None,
         fallback_min_score: float | None = None,
     ) -> tuple[List[tuple[str, float]], str]:
+        nonlocal accent_pattern_cache
         if not ranked or query_sig is None:
             return ranked, ""
         if not accent_pattern_cache:
-            return ranked, "no-cache"
+            with search_assets_lock:
+                current_names = list(names)
+            if current_names:
+                t0 = time.perf_counter()
+                accent_pattern_cache = _load_or_build_accent_pattern_cache(current_names)
+                logging.info(
+                    "api lazy loaded accent pattern cache: %d in %.2fs",
+                    len(accent_pattern_cache),
+                    time.perf_counter() - t0,
+                )
+            if not accent_pattern_cache:
+                return ranked, "no-cache"
         min_score = accent_pattern_min_score if min_score_local is None else float(min_score_local)
         all_scored: List[tuple[str, float]] = []
         for file_name, sig in accent_pattern_cache.items():
