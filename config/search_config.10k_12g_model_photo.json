@@ -101,8 +101,8 @@
   },
   "search": {
     "top_k": 9,
-    "candidate_multiplier": 16,
-    "recall_topn_cap": 1200,
+    "candidate_multiplier": 40,
+    "recall_topn_cap": 1600,
     "min_score": 0.64,
     "code_agg_top_n": 2,
     "code_agg_alpha": 0.75,
