@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from html import escape as html_escape
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import numpy as np
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -1425,7 +1425,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 app.state.accent_pattern_cache_warm_detail = f"{reason}: {len(warm_names)} images"
                 try:
                     t0 = time.perf_counter()
-                    accent_pattern_cache = _load_or_build_accent_pattern_cache(warm_names)
+                    def _progress(done: int, total: int, matched: int, elapsed: float) -> None:
+                        app.state.accent_pattern_cache_warm_detail = (
+                            f"{reason}: {done}/{total} matched={matched} in {elapsed:.2f}s"
+                        )
+
+                    accent_pattern_cache = _load_or_build_accent_pattern_cache(
+                        warm_names,
+                        progress_cb=_progress,
+                    )
                     app.state.accent_pattern_cache_warm = "done"
                     app.state.accent_pattern_cache_warm_detail = (
                         f"{reason} done: {len(accent_pattern_cache)} items in {time.perf_counter() - t0:.2f}s"
@@ -4660,7 +4668,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(standard_dir))
         return Path("outputs") / f"collar_chevron_cache_{safe}.npz"
 
-    def _load_or_build_accent_pattern_cache(file_names: List[str]) -> Dict[str, np.ndarray]:
+    def _load_or_build_accent_pattern_cache(
+        file_names: List[str],
+        progress_cb: Callable[[int, int, int, float], None] | None = None,
+    ) -> Dict[str, np.ndarray]:
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
         files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
         sigs = [_local_file_sig(p) for p in files]
@@ -4693,7 +4704,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
         t0 = time.perf_counter()
         out: Dict[str, np.ndarray] = {}
-        for fp in files:
+        total = len(files)
+        for idx, fp in enumerate(files, start=1):
             sig = _extract_accent_pattern_sig(
                 fp,
                 grid=12,
@@ -4701,6 +4713,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             )
             if sig is not None:
                 out[fp.name] = sig.astype(np.float32)
+            if idx == 1 or idx == total or idx % 500 == 0:
+                elapsed = time.perf_counter() - t0
+                if progress_cb is not None:
+                    try:
+                        progress_cb(idx, total, len(out), elapsed)
+                    except Exception:
+                        pass
+                logging.info(
+                    "accent pattern cache progress: %d/%d matched=%d in %.2fs",
+                    idx,
+                    total,
+                    len(out),
+                    elapsed,
+                )
 
         if feature_cache_enabled:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
