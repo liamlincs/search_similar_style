@@ -3341,6 +3341,69 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         proj_x = proj_x / (float(np.linalg.norm(proj_x)) + 1e-8)
         proj_y = proj_y / (float(np.linalg.norm(proj_y)) + 1e-8)
 
+        crop_arr = crop_rgb.astype(np.float32)
+        cr = crop_arr[..., 0]
+        cg = crop_arr[..., 1]
+        cb = crop_arr[..., 2]
+        cmx = crop_arr.max(axis=-1)
+        cmn = crop_arr.min(axis=-1)
+        cchroma = cmx - cmn
+        csat = cchroma / np.clip(cmx, 1.0, None)
+        red_mask = (cr > 105.0) & (cr > cg * 1.12) & (cr > cb * 1.12) & (cchroma > 24.0)
+        dark_mask = crop_gray < 82.0
+        light_mask = (crop_gray > 174.0) & (csat < 0.34)
+        tan_mask = (
+            (cr > 95.0)
+            & (cg > 70.0)
+            & (cb < 120.0)
+            & (cr >= cb + 18.0)
+            & (crop_gray >= 72.0)
+            & (crop_gray <= 182.0)
+        )
+        if cv2 is not None:
+            gy = cv2.Sobel(crop_gray, cv2.CV_32F, 0, 1, ksize=3)
+            gx = cv2.Sobel(crop_gray, cv2.CV_32F, 1, 0, ksize=3)
+            edge_map = np.sqrt(gx * gx + gy * gy)
+        else:
+            edge_map = np.zeros_like(crop_gray, dtype=np.float32)
+            edge_map[:, 1:] += np.abs(crop_gray[:, 1:] - crop_gray[:, :-1])
+            edge_map[1:, :] += np.abs(crop_gray[1:, :] - crop_gray[:-1, :])
+        edge_thr = max(18.0, float(np.percentile(edge_map, 72.0)))
+        edge_mask = edge_map >= edge_thr
+
+        logo_masks = [red_mask, dark_mask, light_mask, tan_mask, edge_mask]
+        logo_vecs: List[np.ndarray] = []
+        for logo_mask in logo_masks:
+            img = Image.fromarray((logo_mask.astype(np.uint8) * 255), mode="L").resize((grid, grid), Image.BILINEAR)
+            vec = np.asarray(img, dtype=np.float32).reshape(-1) / 255.0
+            logo_vecs.append(vec)
+        logo_presence = np.array(
+            [
+                min(1.0, float(mask.mean()) / scale)
+                for mask, scale in [
+                    (red_mask, 0.16),
+                    (dark_mask, 0.18),
+                    (light_mask, 0.26),
+                    (tan_mask, 0.18),
+                    (edge_mask, 0.18),
+                ]
+            ],
+            dtype=np.float32,
+        )
+        aspect = bw / float(max(1, bh))
+        aspect_centers = np.array([0.55, 0.9, 1.4, 2.2, 3.4], dtype=np.float32)
+        aspect_vec = np.exp(-((aspect - aspect_centers) ** 2) / (2.0 * (0.42 ** 2))).astype(np.float32)
+        aspect_vec = aspect_vec / (float(np.linalg.norm(aspect_vec)) + 1e-8)
+        band_proj = np.concatenate(
+            [
+                logo_vecs[0].reshape(grid, grid).sum(axis=1),
+                logo_vecs[1].reshape(grid, grid).sum(axis=1),
+                logo_vecs[2].reshape(grid, grid).sum(axis=1),
+                logo_vecs[3].reshape(grid, grid).sum(axis=1),
+            ]
+        ).astype(np.float32)
+        band_proj = band_proj / (float(np.linalg.norm(band_proj)) + 1e-8)
+
         v = np.concatenate([
             mask_vec * 0.75,
             weighted_rgb * 0.55,
@@ -3350,6 +3413,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             diversity_scalar * 1.50,
             coverage_vec * 1.20,
             dark_base_scalar * 0.80,
+            logo_vecs[0] * 1.35,
+            logo_vecs[1] * 1.00,
+            logo_vecs[2] * 0.80,
+            logo_vecs[3] * 0.75,
+            logo_vecs[4] * 0.85,
+            logo_presence * 1.10,
+            aspect_vec * 0.75,
+            band_proj * 0.95,
         ]).astype(np.float32)
         n = float(np.linalg.norm(v)) + 1e-8
         return (v / n).astype(np.float32)
@@ -4681,7 +4752,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         cache_key = json.dumps(
             {
                 "kind": "accent_pattern",
-                "version": 9,
+                "version": 10,
                 "grid": 12,
                 "min_pixels": int(accent_pattern_min_pixels),
                 "max_edge": int(accent_pattern_max_edge),
