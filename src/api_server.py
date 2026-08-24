@@ -1284,6 +1284,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         else ("lazy" if lazy_warm_enhancement_caches_on_search else "disabled")
     )
     app.state.enhancement_cache_warm_detail = ""
+    app.state.accent_pattern_cache_warm = "disabled" if not accent_pattern_enabled else "idle"
+    app.state.accent_pattern_cache_warm_detail = ""
     app.state.image_cache_prewarm = "disabled" if not catalog_prewarm_image_cache else "pending"
     app.state.image_cache_prewarm_detail = ""
     image_cache_dir = Path("outputs/image_cache")
@@ -1381,6 +1383,67 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return {
             "started": True,
             "state": "running",
+            "detail": f"{reason} requested",
+        }
+
+    accent_pattern_cache_warm_lock = threading.Lock()
+
+    def _start_accent_pattern_cache_warm(reason: str, *, force: bool = False) -> Dict[str, Any]:
+        nonlocal accent_pattern_cache
+        if not accent_pattern_enabled:
+            return {
+                "started": False,
+                "state": "disabled",
+                "detail": "accent pattern is disabled",
+            }
+        current_state = str(getattr(app.state, "accent_pattern_cache_warm", "idle"))
+        if accent_pattern_cache_warm_lock.locked() or current_state == "running":
+            return {
+                "started": False,
+                "state": "running",
+                "detail": str(getattr(app.state, "accent_pattern_cache_warm_detail", "")),
+            }
+        if accent_pattern_cache and not force:
+            app.state.accent_pattern_cache_warm = "done"
+            app.state.accent_pattern_cache_warm_detail = f"already loaded: {len(accent_pattern_cache)} items"
+            return {
+                "started": False,
+                "state": "done",
+                "detail": str(getattr(app.state, "accent_pattern_cache_warm_detail", "")),
+            }
+
+        def _run() -> None:
+            nonlocal accent_pattern_cache
+            with accent_pattern_cache_warm_lock:
+                with search_assets_lock:
+                    warm_names = list(names)
+                if not warm_names:
+                    app.state.accent_pattern_cache_warm = "failed"
+                    app.state.accent_pattern_cache_warm_detail = "no search asset names loaded"
+                    return
+                app.state.accent_pattern_cache_warm = "running"
+                app.state.accent_pattern_cache_warm_detail = f"{reason}: {len(warm_names)} images"
+                try:
+                    t0 = time.perf_counter()
+                    accent_pattern_cache = _load_or_build_accent_pattern_cache(warm_names)
+                    app.state.accent_pattern_cache_warm = "done"
+                    app.state.accent_pattern_cache_warm_detail = (
+                        f"{reason} done: {len(accent_pattern_cache)} items in {time.perf_counter() - t0:.2f}s"
+                    )
+                    logging.info(
+                        "accent pattern cache warmed: reason=%s items=%d",
+                        reason,
+                        len(accent_pattern_cache),
+                    )
+                except Exception as exc:
+                    app.state.accent_pattern_cache_warm = "failed"
+                    app.state.accent_pattern_cache_warm_detail = f"{reason} failed: {exc}"
+                    logging.exception("accent pattern cache warm failed: reason=%s", reason)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {
+            "started": True,
+            "state": "requested",
             "detail": f"{reason} requested",
         }
 
@@ -5325,6 +5388,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     "search_detail": str(getattr(app.state, "search_ready_detail", "")),
                     "enhancement_cache_warm": str(getattr(app.state, "enhancement_cache_warm", "")),
                     "enhancement_cache_warm_detail": str(getattr(app.state, "enhancement_cache_warm_detail", "")),
+                    "accent_pattern_cache_warm": str(getattr(app.state, "accent_pattern_cache_warm", "")),
+                    "accent_pattern_cache_warm_detail": str(getattr(app.state, "accent_pattern_cache_warm_detail", "")),
                     "image_cache_prewarm": str(getattr(app.state, "image_cache_prewarm", "")),
                     "image_cache_prewarm_detail": str(getattr(app.state, "image_cache_prewarm_detail", "")),
                 },
@@ -5345,6 +5410,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         result = _start_enhancement_cache_warm("manual", allow_when_disabled=True, force=True)
         result["enhancement_cache_warm"] = str(getattr(app.state, "enhancement_cache_warm", ""))
         result["enhancement_cache_warm_detail"] = str(getattr(app.state, "enhancement_cache_warm_detail", ""))
+        return result
+
+    @app.post("/api/v1/admin/warm-accent-pattern-cache")
+    def api_warm_accent_pattern_cache(request: Request) -> Dict[str, Any]:
+        _require_local_request(request)
+        if not bool(getattr(app.state, "search_ready", False)):
+            raise HTTPException(
+                status_code=503,
+                detail=str(getattr(app.state, "search_ready_detail", "search assets loading")),
+            )
+        result = _start_accent_pattern_cache_warm("manual", force=True)
+        result["accent_pattern_cache_warm"] = str(getattr(app.state, "accent_pattern_cache_warm", ""))
+        result["accent_pattern_cache_warm_detail"] = str(getattr(app.state, "accent_pattern_cache_warm_detail", ""))
         return result
 
     @app.post("/api/v1/admin/reload-search-assets")
