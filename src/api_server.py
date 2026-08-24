@@ -2394,6 +2394,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/health",
                 "/ready",
                 "/api/v1/admin/warm-enhancement-caches",
+                "/api/v1/admin/warm-accent-pattern-cache",
                 "/api/v1/admin/reload-search-assets",
                 "/api/v1/admin/run-nightly-maintenance",
             }
@@ -2416,6 +2417,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/api/v1/render",
                 "/api/v1/images/upload",
                 "/api/v1/admin/warm-enhancement-caches",
+                "/api/v1/admin/warm-accent-pattern-cache",
                 "/api/v1/admin/reload-search-assets",
                 "/api/v1/admin/run-nightly-maintenance",
                 "/recolor",
