@@ -15018,7 +15018,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if region_rescue_debug
                     else "skip-heavy-accent-no-cache"
                 )
-                rows = _rescue_label_memory_rows(rows, ranked_images)
             else:
                 _apply_sleeve_region_rescue()
                 rows = _rescue_region_rows(rows, ranked_images)
