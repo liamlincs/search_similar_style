@@ -1433,6 +1433,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     accent_pattern_cache = _load_or_build_accent_pattern_cache(
                         warm_names,
                         progress_cb=_progress,
+                        source_dir=search_feature_dir,
                     )
                     app.state.accent_pattern_cache_warm = "done"
                     app.state.accent_pattern_cache_warm_detail = (
@@ -4671,9 +4672,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _load_or_build_accent_pattern_cache(
         file_names: List[str],
         progress_cb: Callable[[int, int, int, float], None] | None = None,
+        source_dir: Path | None = None,
     ) -> Dict[str, np.ndarray]:
+        src_dir = source_dir or (search_feature_dir if search_feature_dir.exists() else standard_dir)
         uniq = sorted({n.split("@", 1)[0] for n in file_names})
-        files = [standard_dir / n for n in uniq if (standard_dir / n).exists() and (standard_dir / n).is_file()]
+        files = [src_dir / n for n in uniq if (src_dir / n).exists() and (src_dir / n).is_file()]
         sigs = [_local_file_sig(p) for p in files]
         cache_key = json.dumps(
             {
@@ -4683,6 +4686,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "min_pixels": int(accent_pattern_min_pixels),
                 "max_edge": int(accent_pattern_max_edge),
                 "large_logo": bool(accent_pattern_large_logo_enabled),
+                "source_dir": str(src_dir),
                 "pattern": standard_pattern,
                 "exts": list(image_exts),
             },
@@ -4705,6 +4709,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         t0 = time.perf_counter()
         out: Dict[str, np.ndarray] = {}
         total = len(files)
+        logging.info("accent pattern cache build source: dir=%s total=%d", src_dir, total)
         for idx, fp in enumerate(files, start=1):
             sig = _extract_accent_pattern_sig(
                 fp,
