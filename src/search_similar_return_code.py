@@ -7,7 +7,7 @@ import re
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -469,6 +469,7 @@ def precompute_scene_text_index(
     exts: List[str],
     min_token_len: int = 4,
     use_cache: bool = True,
+    progress_cb: Callable[[int, int, int, float], None] | None = None,
 ) -> Dict[str, Any]:
     files = collect_images(standard_dir, pattern, exts)
     if not files:
@@ -478,7 +479,7 @@ def precompute_scene_text_index(
     cache_path = _scene_text_cache_path(standard_dir)
     cache_key = json.dumps(
         {
-            "version": 2,
+            "version": 3,
             "pattern": pattern,
             "exts": list(exts),
             "min_token_len": int(min_token_len),
@@ -515,7 +516,8 @@ def precompute_scene_text_index(
     image_tokens: Dict[str, List[str]] = {}
     token_df: Dict[str, int] = {}
     t0 = time.perf_counter()
-    for p in files:
+    total_files = len(files)
+    for idx, p in enumerate(files, start=1):
         try:
             img = Image.open(p).convert("RGB")
             tokens = extract_text_tokens(extract_scene_text(img, max_variants=1), min_len=min_token_len)
@@ -524,6 +526,20 @@ def precompute_scene_text_index(
         image_tokens[p.name] = tokens
         for tok in set(tokens):
             token_df[tok] = token_df.get(tok, 0) + 1
+        if idx == 1 or idx == total_files or idx % 500 == 0:
+            elapsed = time.perf_counter() - t0
+            if progress_cb is not None:
+                try:
+                    progress_cb(idx, total_files, len(token_df), elapsed)
+                except Exception:
+                    pass
+            logging.info(
+                "scene text index progress: %d/%d tokens=%d in %.2fs",
+                idx,
+                total_files,
+                len(token_df),
+                elapsed,
+            )
 
     total = max(1, len(image_tokens))
     token_idf = {
@@ -647,7 +663,7 @@ def merge_scene_text_candidates(
     boosted: List[Tuple[str, float]] = []
     for image_name, raw in match_scores.items():
         count_bonus = min(0.08, 0.02 * max(0, image_match_count.get(image_name, 1) - 1))
-        seeded = min(1.2, float(seed_score_base) + boost_scale * (raw / norm) + count_bonus)
+        seeded = min(1.55, float(seed_score_base) + boost_scale * (raw / norm) + count_bonus)
         best = max(float(merged.get(image_name, -1e9)), seeded)
         merged[image_name] = best
         boosted.append((image_name, best))

@@ -684,6 +684,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_boost_scale = float(search_cfg.get("scene_text_boost_scale", 0.18))
     scene_text_max_candidates_per_token = int(search_cfg.get("scene_text_max_candidates_per_token", 64))
     scene_text_max_injected = int(search_cfg.get("scene_text_max_injected", 24))
+    scene_text_index_on_startup = bool(search_cfg.get("scene_text_index_on_startup", False))
     scene_text_region_rescue_enabled = bool(search_cfg.get("scene_text_region_rescue_enabled", True))
     scene_text_region_rescue_min_score = float(search_cfg.get("scene_text_region_rescue_min_score", 1.25))
     scene_text_region_rescue_min_ratio = float(search_cfg.get("scene_text_region_rescue_min_ratio", 0.66))
@@ -1213,17 +1214,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             logging.info("api loaded label memory refs: %d", len(next_label_memory_refs))
 
         next_scene_text_index: Dict[str, Any] | None = None
-        if scene_text_hint_enabled:
+        if scene_text_hint_enabled and scene_text_index_on_startup:
             t0 = time.perf_counter()
+            text_source_dir = search_feature_dir if search_feature_dir.exists() else standard_dir
             next_scene_text_index = precompute_scene_text_index(
-                standard_dir=standard_dir,
+                standard_dir=text_source_dir,
                 pattern=standard_pattern,
                 exts=image_exts,
                 min_token_len=scene_text_min_token_len,
                 use_cache=True,
             )
             logging.info(
-                "api loaded scene text index: %d images in %.2fs",
+                "api loaded scene text index: source=%s images=%d in %.2fs",
+                text_source_dir,
                 int(next_scene_text_index.get("total_images", 0)) if isinstance(next_scene_text_index, dict) else 0,
                 time.perf_counter() - t0,
             )
@@ -1286,6 +1289,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     app.state.enhancement_cache_warm_detail = ""
     app.state.accent_pattern_cache_warm = "disabled" if not accent_pattern_enabled else "idle"
     app.state.accent_pattern_cache_warm_detail = ""
+    app.state.scene_text_index_warm = "disabled" if not scene_text_hint_enabled else "idle"
+    app.state.scene_text_index_warm_detail = ""
     app.state.image_cache_prewarm = "disabled" if not catalog_prewarm_image_cache else "pending"
     app.state.image_cache_prewarm_detail = ""
     image_cache_dir = Path("outputs/image_cache")
@@ -1448,6 +1453,84 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     app.state.accent_pattern_cache_warm = "failed"
                     app.state.accent_pattern_cache_warm_detail = f"{reason} failed: {exc}"
                     logging.exception("accent pattern cache warm failed: reason=%s", reason)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {
+            "started": True,
+            "state": "requested",
+            "detail": f"{reason} requested",
+        }
+
+    scene_text_index_warm_lock = threading.Lock()
+
+    def _start_scene_text_index_warm(reason: str, *, force: bool = False) -> Dict[str, Any]:
+        nonlocal scene_text_index
+        if not scene_text_hint_enabled:
+            return {
+                "started": False,
+                "state": "disabled",
+                "detail": "scene text hint is disabled",
+            }
+        current_state = str(getattr(app.state, "scene_text_index_warm", "idle"))
+        if scene_text_index_warm_lock.locked() or current_state == "running":
+            return {
+                "started": False,
+                "state": "running",
+                "detail": str(getattr(app.state, "scene_text_index_warm_detail", "")),
+            }
+        if scene_text_index and not force:
+            total = int(scene_text_index.get("total_images", 0)) if isinstance(scene_text_index, dict) else 0
+            app.state.scene_text_index_warm = "done"
+            app.state.scene_text_index_warm_detail = f"already loaded: {total} images"
+            return {
+                "started": False,
+                "state": "done",
+                "detail": str(getattr(app.state, "scene_text_index_warm_detail", "")),
+            }
+
+        def _run() -> None:
+            nonlocal scene_text_index
+            with scene_text_index_warm_lock:
+                with search_assets_lock:
+                    has_assets = bool(names)
+                if not has_assets:
+                    app.state.scene_text_index_warm = "failed"
+                    app.state.scene_text_index_warm_detail = "no search asset names loaded"
+                    return
+                text_source_dir = search_feature_dir if search_feature_dir.exists() else standard_dir
+                app.state.scene_text_index_warm = "running"
+                app.state.scene_text_index_warm_detail = f"{reason}: source={text_source_dir}"
+                try:
+                    t0 = time.perf_counter()
+
+                    def _progress(done: int, total: int, tokens: int, elapsed: float) -> None:
+                        app.state.scene_text_index_warm_detail = (
+                            f"{reason}: {done}/{total} tokens={tokens} in {elapsed:.2f}s"
+                        )
+
+                    scene_text_index = precompute_scene_text_index(
+                        standard_dir=text_source_dir,
+                        pattern=standard_pattern,
+                        exts=image_exts,
+                        min_token_len=scene_text_min_token_len,
+                        use_cache=True,
+                        progress_cb=_progress,
+                    )
+                    total_images = int(scene_text_index.get("total_images", 0)) if isinstance(scene_text_index, dict) else 0
+                    app.state.scene_text_index_warm = "done"
+                    app.state.scene_text_index_warm_detail = (
+                        f"{reason} done: {total_images} images in {time.perf_counter() - t0:.2f}s"
+                    )
+                    logging.info(
+                        "scene text index warmed: reason=%s source=%s images=%d",
+                        reason,
+                        text_source_dir,
+                        total_images,
+                    )
+                except Exception as exc:
+                    app.state.scene_text_index_warm = "failed"
+                    app.state.scene_text_index_warm_detail = f"{reason} failed: {exc}"
+                    logging.exception("scene text index warm failed: reason=%s", reason)
 
         threading.Thread(target=_run, daemon=True).start()
         return {
@@ -2404,6 +2487,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/ready",
                 "/api/v1/admin/warm-enhancement-caches",
                 "/api/v1/admin/warm-accent-pattern-cache",
+                "/api/v1/admin/warm-scene-text-index",
                 "/api/v1/admin/reload-search-assets",
                 "/api/v1/admin/run-nightly-maintenance",
             }
@@ -2427,6 +2511,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/api/v1/images/upload",
                 "/api/v1/admin/warm-enhancement-caches",
                 "/api/v1/admin/warm-accent-pattern-cache",
+                "/api/v1/admin/warm-scene-text-index",
                 "/api/v1/admin/reload-search-assets",
                 "/api/v1/admin/run-nightly-maintenance",
                 "/recolor",
@@ -5494,6 +5579,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     "enhancement_cache_warm_detail": str(getattr(app.state, "enhancement_cache_warm_detail", "")),
                     "accent_pattern_cache_warm": str(getattr(app.state, "accent_pattern_cache_warm", "")),
                     "accent_pattern_cache_warm_detail": str(getattr(app.state, "accent_pattern_cache_warm_detail", "")),
+                    "scene_text_index_warm": str(getattr(app.state, "scene_text_index_warm", "")),
+                    "scene_text_index_warm_detail": str(getattr(app.state, "scene_text_index_warm_detail", "")),
                     "image_cache_prewarm": str(getattr(app.state, "image_cache_prewarm", "")),
                     "image_cache_prewarm_detail": str(getattr(app.state, "image_cache_prewarm_detail", "")),
                 },
@@ -5527,6 +5614,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         result = _start_accent_pattern_cache_warm("manual", force=True)
         result["accent_pattern_cache_warm"] = str(getattr(app.state, "accent_pattern_cache_warm", ""))
         result["accent_pattern_cache_warm_detail"] = str(getattr(app.state, "accent_pattern_cache_warm_detail", ""))
+        return result
+
+    @app.post("/api/v1/admin/warm-scene-text-index")
+    def api_warm_scene_text_index(request: Request) -> Dict[str, Any]:
+        _require_local_request(request)
+        if not bool(getattr(app.state, "search_ready", False)):
+            raise HTTPException(
+                status_code=503,
+                detail=str(getattr(app.state, "search_ready_detail", "search assets loading")),
+            )
+        result = _start_scene_text_index_warm("manual", force=True)
+        result["scene_text_index_warm"] = str(getattr(app.state, "scene_text_index_warm", ""))
+        result["scene_text_index_warm_detail"] = str(getattr(app.state, "scene_text_index_warm_detail", ""))
         return result
 
     @app.post("/api/v1/admin/reload-search-assets")
@@ -14032,45 +14132,48 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if region_best_score >= float(scene_text_suppress_when_region_min_score) and not scene_text_small_region_allowed:
                     return rows_in
                 image_tokens = dict(scene_text_index.get("image_tokens", {}))
+                token_to_images = dict(scene_text_index.get("token_to_images", {}))
                 token_idf = dict(scene_text_index.get("token_idf", {}))
-                if not image_tokens:
+                if not image_tokens or not token_to_images:
                     return rows_in
                 ranked_by_image = {name.split("@", 1)[0]: float(score) for name, score in ranked_in}
-                best_by_code: Dict[str, Dict[str, Any]] = {}
+                score_by_image: Dict[str, Dict[str, Any]] = {}
                 min_ratio = max(0.0, min(1.0, scene_text_region_rescue_min_ratio))
-                for image_name, toks_raw in image_tokens.items():
-                    toks = [str(tok).upper() for tok in toks_raw if str(tok).strip()]
-                    if not toks:
+                index_tokens = [str(tok).upper() for tok in token_to_images.keys() if str(tok).strip()]
+                for query_tok_raw in scene_text_tokens:
+                    query_tok = str(query_tok_raw).upper().strip()
+                    if len(query_tok) < scene_text_min_token_len:
+                        continue
+                    matched: List[tuple[str, float]] = []
+                    for tok in index_tokens:
+                        if len(tok) < scene_text_min_token_len or abs(len(tok) - len(query_tok)) > 5:
+                            continue
+                        if query_tok == tok:
+                            ratio = 1.0
+                        elif len(query_tok) >= 6 and len(tok) >= 6 and (query_tok in tok or tok in query_tok):
+                            ratio = min(1.0, min(len(query_tok), len(tok)) / max(len(query_tok), len(tok)))
+                        else:
+                            ratio = difflib.SequenceMatcher(None, query_tok, tok).ratio()
+                        if ratio >= min_ratio:
+                            matched.append((tok, float(ratio)))
+                    matched.sort(key=lambda x: (x[1], float(token_idf.get(x[0], 0.0))), reverse=True)
+                    for tok, ratio in matched[:8]:
+                        idf = max(1.0, float(token_idf.get(tok, 1.0)))
+                        for image_name in list(token_to_images.get(tok, []))[: max(1, scene_text_max_candidates_per_token)]:
+                            item = score_by_image.setdefault(
+                                str(image_name),
+                                {"text_score": 0.0, "hit_count": 0},
+                            )
+                            item["text_score"] = float(item.get("text_score", 0.0)) + ratio * idf
+                            item["hit_count"] = int(item.get("hit_count", 0)) + 1
+                best_by_code: Dict[str, Dict[str, Any]] = {}
+                for image_name, text_item in score_by_image.items():
+                    text_score = float(text_item.get("text_score", 0.0))
+                    hit_count = int(text_item.get("hit_count", 0))
+                    if hit_count <= 0 or text_score < scene_text_region_rescue_min_score:
                         continue
                     code = filename_to_style_code(image_name)
                     if not code:
-                        continue
-                    text_score = 0.0
-                    hit_count = 0
-                    for query_tok_raw in scene_text_tokens:
-                        query_tok = str(query_tok_raw).upper().strip()
-                        if len(query_tok) < scene_text_min_token_len:
-                            continue
-                        best_ratio = 0.0
-                        best_tok = ""
-                        for tok in toks:
-                            if len(tok) < scene_text_min_token_len:
-                                continue
-                            if query_tok == tok:
-                                ratio = 1.0
-                            elif len(query_tok) >= 6 and len(tok) >= 6 and (query_tok in tok or tok in query_tok):
-                                ratio = min(1.0, min(len(query_tok), len(tok)) / max(len(query_tok), len(tok)))
-                            else:
-                                ratio = difflib.SequenceMatcher(None, query_tok, tok).ratio()
-                            if ratio > best_ratio:
-                                best_ratio = float(ratio)
-                                best_tok = tok
-                        if best_ratio < min_ratio:
-                            continue
-                        idf = float(token_idf.get(best_tok, 1.0))
-                        text_score += best_ratio * max(1.0, idf)
-                        hit_count += 1
-                    if hit_count <= 0 or text_score < scene_text_region_rescue_min_score:
                         continue
                     key = _code_prior_key(code)
                     current = best_by_code.get(key)
@@ -15202,6 +15305,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if region_rescue_debug
                     else "skip-heavy-accent"
                 )
+                rows = _rescue_scene_text_region_rows(rows, ranked_images)
             else:
                 _apply_sleeve_region_rescue()
                 rows = _rescue_region_rows(rows, ranked_images)
