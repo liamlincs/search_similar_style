@@ -14619,7 +14619,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 q_accent_sig = _extract_accent_pattern_sig(
                     query_path,
                     grid=12,
-                    allow_large_components=bool(accent_pattern_large_logo_enabled and use_strip_mode),
+                    allow_large_components=bool(
+                        accent_pattern_large_logo_enabled
+                        and (use_strip_mode or strict_small_region_crop or partial_region_crop)
+                    ),
                 )
                 if q_accent_sig is not None:
                     accent_debug = "1"
@@ -15121,13 +15124,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             skip_heavy_region_rescues = bool(
                 strict_small_region_crop
                 and q_accent_sig is not None
-                and not accent_pattern_cache
             )
             if skip_heavy_region_rescues:
                 region_rescue_debug = (
-                    f"{region_rescue_debug}|skip-heavy-accent-no-cache"
+                    f"{region_rescue_debug}|skip-heavy-accent"
                     if region_rescue_debug
-                    else "skip-heavy-accent-no-cache"
+                    else "skip-heavy-accent"
                 )
             else:
                 _apply_sleeve_region_rescue()
