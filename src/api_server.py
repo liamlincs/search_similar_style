@@ -13511,10 +13511,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         best_image = file_name
                         best_ranked_score = float(score)
                 if not best_image:
-                    for candidate in sorted(standard_dir.glob(f"{best_code_key}_*")):
-                        if candidate.is_file() and candidate.suffix.lower().lstrip(".") in image_exts:
-                            best_image = candidate.name
-                            break
+                    best_image = req_standard_image_by_code_key.get(best_code_key, "")
                 if not best_image:
                     return rows_in
 
