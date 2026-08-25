@@ -15454,6 +15454,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     if region_rescue_debug
                     else f"skip-heavy-crop:{crop_final_area:.3f}"
                 )
+                _step0 = time.perf_counter()
+                rows = _rescue_label_memory_rows(rows, ranked_images)
+                _record_rescue_step("label_memory", _step0)
             else:
                 _step0 = time.perf_counter()
                 _apply_sleeve_region_rescue()
