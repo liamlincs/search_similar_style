@@ -11,6 +11,12 @@
       "query_image": "data/test_samples/KFB24-0119_region_288.jpg",
       "expected_style_code": "KFB24-0119",
       "description": "Model-photo sleeve region crop with multicolor geometric stripe pattern. Regression for KFB24-0119 recall."
+    },
+    {
+      "id": "gz23_1360_region_checkered_vest",
+      "query_image": "data/test_samples/GZ23-1360_region_checkered_vest.png",
+      "expected_style_code": "GZ23-1360-4",
+      "description": "Model-photo region crop with black and ivory checkered knitted vest. Regression for checker pattern ranking without label-memory interference."
     }
   ]
 }

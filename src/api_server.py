@@ -365,6 +365,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     label_memory_max_boost = float(search_cfg.get("label_memory_max_boost", 0.14))
     label_memory_min_boost = float(search_cfg.get("label_memory_min_boost", 0.0))
     label_memory_promote_min_delta = float(search_cfg.get("label_memory_promote_min_delta", 0.004))
+    label_memory_checker_cap_enabled = bool(search_cfg.get("label_memory_checker_cap_enabled", True))
+    label_memory_checker_min_checker = float(search_cfg.get("label_memory_checker_min_checker", 0.16))
+    label_memory_checker_min_bw_mix = float(search_cfg.get("label_memory_checker_min_bw_mix", 0.55))
+    label_memory_checker_max_boost = float(search_cfg.get("label_memory_checker_max_boost", 0.0))
     hybrid_weights = search_cfg.get("hybrid_weights", {})
     w_clip = float(hybrid_weights.get("clip", 0.55))
     w_shape = float(hybrid_weights.get("shape", 0.30))
@@ -14834,6 +14838,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and not checker_blocked_by_region_probe
             ):
                 q_checker_profile = q_pre_checker_profile or _extract_checker_profile(query_path, grid=10)
+                label_memory_checker_capped = False
                 if q_checker_profile:
                     checker_debug = (
                         f"{float(q_checker_profile.get('checker', 0.0)):.3f}/"
@@ -14846,6 +14851,35 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         and float(q_checker_profile.get("checker", 0.0)) < checker_accent_suppress_below
                     ):
                         q_checker_profile = None
+                    if (
+                        q_checker_profile is not None
+                        and label_memory_checker_cap_enabled
+                        and base_code_prior_boost
+                        and float(q_checker_profile.get("checker", 0.0)) >= float(label_memory_checker_min_checker)
+                        and float(q_checker_profile.get("bw_mix", 0.0)) >= float(label_memory_checker_min_bw_mix)
+                    ):
+                        cap = max(0.0, float(label_memory_checker_max_boost))
+                        capped_base: Dict[str, float] = {}
+                        adjusted_prior = dict(code_prior_boost)
+                        capped_codes: List[str] = []
+                        for code_key, boost in base_code_prior_boost.items():
+                            boost_f = float(boost)
+                            capped = min(boost_f, cap)
+                            capped_base[code_key] = capped
+                            if capped < boost_f:
+                                current = float(adjusted_prior.get(code_key, 0.0))
+                                adjusted_prior[code_key] = max(0.0, current - (boost_f - capped))
+                                capped_codes.append(f"{code_key}:{boost_f:.3f}->{capped:.3f}")
+                        if capped_codes:
+                            base_code_prior_boost = capped_base
+                            code_prior_boost = adjusted_prior
+                            label_memory_checker_capped = True
+                            cap_debug = "label_checker_cap=" + ",".join(capped_codes[:4])
+                            region_boost_debug = (
+                                f"{region_boost_debug}|{cap_debug}"
+                                if region_boost_debug
+                                else cap_debug
+                            )
                 ranked_images, checker_code_boost, checker_candidates_debug = _apply_checker_consistency(
                     ranked_images,
                     q_checker_profile,
@@ -14864,7 +14898,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     code_prior_boost = dict(code_prior_boost)
                     for code_key, boost in checker_code_boost.items():
                         code_prior_boost[code_key] = code_prior_boost.get(code_key, 0.0) + float(boost)
-                if checker_code_boost or checker_seed_debug:
+                if checker_code_boost or checker_seed_debug or label_memory_checker_capped:
                     rows = topk_style_codes(
                         ranked_images,
                         top_k,
