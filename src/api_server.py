@@ -693,6 +693,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_small_region_max_score = float(search_cfg.get("scene_text_small_region_max_score", 0.68))
     scene_text_fuzzy_min_token_len = int(search_cfg.get("scene_text_fuzzy_min_token_len", 6))
     scene_text_fuzzy_max_index_tokens = int(search_cfg.get("scene_text_fuzzy_max_index_tokens", 3000))
+    scene_text_crop_max_area = float(search_cfg.get("scene_text_crop_max_area", 0.22))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -15274,8 +15275,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and region_best_score >= float(scene_text_suppress_when_region_min_score)
                 and not scene_text_small_region_allowed
             )
+            scene_text_crop_allowed = bool(
+                not crop_active
+                or strict_small_region_crop
+                or use_strip_mode
+                or crop_final_area <= max(0.0, min(1.0, float(scene_text_crop_max_area)))
+            )
             if (
                 scene_text_hint_enabled
+                and scene_text_crop_allowed
                 and (not strict_small_region_crop or scene_text_small_region_allowed)
                 and not scene_text_blocked_by_region
             ):
@@ -15305,6 +15313,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     )
             elif scene_text_hint_enabled and scene_text_blocked_by_region:
                 scene_text_tokens = [f"skip-region:{region_best_score:.3f}"]
+            elif scene_text_hint_enabled and not scene_text_crop_allowed:
+                scene_text_tokens = [f"skip-crop-area:{crop_final_area:.3f}"]
 
             t_rescue_chain0 = time.perf_counter()
             skip_heavy_region_rescues = bool(
