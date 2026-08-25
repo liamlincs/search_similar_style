@@ -14144,17 +14144,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 index_tokens = [str(tok).upper() for tok in token_to_images.keys() if str(tok).strip()]
                 for query_tok_raw in scene_text_tokens:
                     query_tok = str(query_tok_raw).upper().strip()
-                    if len(query_tok) < scene_text_min_token_len:
-                        continue
                     if len(query_tok) < max(scene_text_min_token_len, scene_text_fuzzy_min_token_len):
-                        exact_images = list(token_to_images.get(query_tok, []))[: max(1, scene_text_max_candidates_per_token)]
-                        for image_name in exact_images:
-                            item = score_by_image.setdefault(
-                                str(image_name),
-                                {"text_score": 0.0, "hit_count": 0},
-                            )
-                            item["text_score"] = float(item.get("text_score", 0.0)) + max(1.0, float(token_idf.get(query_tok, 1.0)))
-                            item["hit_count"] = int(item.get("hit_count", 0)) + 1
                         continue
                     if scene_text_fuzzy_max_index_tokens > 0 and len(index_tokens) > scene_text_fuzzy_max_index_tokens:
                         exact_images = list(token_to_images.get(query_tok, []))[: max(1, scene_text_max_candidates_per_token)]

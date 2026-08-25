@@ -587,12 +587,10 @@ def _match_scene_tokens(
     min_ratio: float = 0.78,
     max_matches: int = 4,
 ) -> List[Tuple[str, float]]:
-    if query_token in token_to_images:
-        return [(query_token, 1.0)]
-    # Four or five character OCR fragments are frequently noisy; fuzzy matching them
-    # across the whole catalog creates many false positives and can dominate latency.
     if len(query_token) < 6:
         return []
+    if query_token in token_to_images:
+        return [(query_token, 1.0)]
     out: List[Tuple[str, float]] = []
     qlen = len(query_token)
     for cand in token_to_images.keys():
