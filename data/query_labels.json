@@ -27,6 +27,10 @@
     {
       "query_image": "data/test_samples/KFZ24-0213_region_264.jpg",
       "style_code": "KFZ24-0213"
+    },
+    {
+      "query_image": "data/test_samples/GZ24-0067_region_sleeve.png",
+      "style_code": "GZ24-0067"
     }
   ]
 }

@@ -17,6 +17,12 @@
       "query_image": "data/test_samples/GZ23-1360_region_checkered_vest.png",
       "expected_style_code": "GZ23-1360-4",
       "description": "Model-photo region crop with black and ivory checkered knitted vest. Regression for checker pattern ranking without label-memory interference."
+    },
+    {
+      "id": "gz24_0067_region_sleeve",
+      "query_image": "data/test_samples/GZ24-0067_region_sleeve.png",
+      "expected_style_code": "GZ24-0067",
+      "description": "Model-photo region crop with black and orange sleeve patch. Regression for cross-color sleeve recall."
     }
   ]
 }
