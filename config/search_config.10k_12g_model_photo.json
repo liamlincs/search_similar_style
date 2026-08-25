@@ -249,6 +249,8 @@
     "scene_text_fuzzy_min_token_len": 6,
     "scene_text_fuzzy_max_index_tokens": 12000,
     "scene_text_crop_max_area": 0.22,
+    "region_heavy_rescue_crop_max_area": 0.28,
+    "region_rescue_step_timing_threshold": 0.05,
     "low_confidence_enabled": true,
     "low_confidence_margin_threshold": 0.06,
     "low_confidence_top1_threshold": 0.78,

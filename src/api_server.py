@@ -694,6 +694,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     scene_text_fuzzy_min_token_len = int(search_cfg.get("scene_text_fuzzy_min_token_len", 6))
     scene_text_fuzzy_max_index_tokens = int(search_cfg.get("scene_text_fuzzy_max_index_tokens", 3000))
     scene_text_crop_max_area = float(search_cfg.get("scene_text_crop_max_area", 0.22))
+    region_heavy_rescue_crop_max_area = float(search_cfg.get("region_heavy_rescue_crop_max_area", 0.28))
+    region_rescue_step_timing_threshold = float(search_cfg.get("region_rescue_step_timing_threshold", 0.05))
     strip_mode_enabled = bool(search_cfg.get("strip_mode_enabled", True))
     strip_aspect_threshold = float(search_cfg.get("strip_aspect_threshold", 2.4))
     strip_fill_threshold = float(search_cfg.get("strip_fill_threshold", 0.42))
@@ -15317,9 +15319,44 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 scene_text_tokens = [f"skip-crop-area:{crop_final_area:.3f}"]
 
             t_rescue_chain0 = time.perf_counter()
+            rescue_step_debug: List[str] = []
+
+            def _record_rescue_step(name: str, started_at: float) -> None:
+                step_elapsed = time.perf_counter() - started_at
+                if step_elapsed >= max(0.0, float(region_rescue_step_timing_threshold)):
+                    rescue_step_debug.append(f"{name}:{step_elapsed:.3f}")
+
+            def _has_useful_debug_candidates(debug_text: str) -> bool:
+                text = str(debug_text or "").strip()
+                if not text:
+                    return False
+                if text in {"no-cache", "loading-cache"}:
+                    return False
+                if text.startswith("skip-") or text.startswith("fallback-empty"):
+                    return False
+                return True
+
+            scene_text_has_rescue_tokens = any(
+                tok and not str(tok).startswith("skip-")
+                for tok in scene_text_tokens
+            )
+            has_specialized_rescue_candidates = bool(
+                _has_useful_debug_candidates(checker_candidates_debug)
+                or _has_useful_debug_candidates(accent_candidates_debug)
+                or _has_useful_debug_candidates(sleeve_candidates_debug)
+                or _has_useful_debug_candidates(accessory_candidates_debug)
+                or scene_text_has_rescue_tokens
+            )
             skip_heavy_region_rescues = bool(
                 strict_small_region_crop
                 and q_accent_sig is not None
+            )
+            skip_large_plain_region_rescues = bool(
+                crop_active
+                and not strict_small_region_crop
+                and not use_strip_mode
+                and crop_final_area > max(0.0, min(1.0, float(region_heavy_rescue_crop_max_area)))
+                and not has_specialized_rescue_candidates
             )
             if skip_heavy_region_rescues:
                 region_rescue_debug = (
@@ -15328,22 +15365,65 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     else "skip-heavy-accent"
                 )
                 rows = _rescue_scene_text_region_rows(rows, ranked_images)
+            elif skip_large_plain_region_rescues:
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|skip-heavy-crop:{crop_final_area:.3f}"
+                    if region_rescue_debug
+                    else f"skip-heavy-crop:{crop_final_area:.3f}"
+                )
             else:
+                _step0 = time.perf_counter()
                 _apply_sleeve_region_rescue()
+                _record_rescue_step("apply_sleeve", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_region_rows(rows, ranked_images)
+                _record_rescue_step("region", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_sleeve_region_rows(rows, ranked_images)
+                _record_rescue_step("sleeve", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_hat_from_sleeve_region_rows(rows, ranked_images)
+                _record_rescue_step("hat_sleeve", _step0)
+                _step0 = time.perf_counter()
                 rows = _force_top_region_rows(rows)
+                _record_rescue_step("force_top", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_pattern_region_rows(rows, ranked_images)
+                _record_rescue_step("pattern", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_dark_motif_region_rows(rows)
+                _record_rescue_step("dark_motif", _step0)
+                _step0 = time.perf_counter()
                 rows = _order_region_primary_rows(rows)
+                _record_rescue_step("order", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_hat_region_rows(rows, ranked_images)
+                _record_rescue_step("hat", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_hat_family_region_rows(rows)
+                _record_rescue_step("hat_family", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_checker_region_rows(rows, ranked_images)
+                _record_rescue_step("checker", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_accent_region_rows(rows, ranked_images)
+                _record_rescue_step("accent", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_scene_text_region_rows(rows, ranked_images)
+                _record_rescue_step("scene_text", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_label_memory_rows(rows, ranked_images)
+                _record_rescue_step("label_memory", _step0)
+                _step0 = time.perf_counter()
                 rows = _rescue_low_conf_region_candidate_rows(rows, ranked_images)
+                _record_rescue_step("low_conf", _step0)
+            if rescue_step_debug:
+                timing_debug = "rescue_timing=" + ",".join(rescue_step_debug[:12])
+                region_rescue_debug = (
+                    f"{region_rescue_debug}|{timing_debug}"
+                    if region_rescue_debug
+                    else timing_debug
+                )
             t_rescue_chain = time.perf_counter() - t_rescue_chain0
             _make_display_scores_follow_order(rows)
 
