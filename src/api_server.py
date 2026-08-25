@@ -15365,6 +15365,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     else "skip-heavy-accent"
                 )
                 rows = _rescue_scene_text_region_rows(rows, ranked_images)
+                _step0 = time.perf_counter()
+                rows = _rescue_label_memory_rows(rows, ranked_images)
+                _record_rescue_step("label_memory", _step0)
             elif skip_large_plain_region_rescues:
                 region_rescue_debug = (
                     f"{region_rescue_debug}|skip-heavy-crop:{crop_final_area:.3f}"
