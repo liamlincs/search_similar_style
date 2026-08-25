@@ -1139,12 +1139,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     region_feats: np.ndarray | None = None
     rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
     label_memory_refs: List[tuple[str, np.ndarray]] = []
+    label_memory_checker_code_keys: set[str] = set()
     scene_text_index: Dict[str, Any] | None = None
     standard_image_by_code_key: Dict[str, str] = {}
 
     def _reload_search_assets(reason: str = "startup", manifest_image_names: set[str] | None = None) -> None:
         nonlocal names, feats, secondary_names, secondary_feats, region_names, region_feats
-        nonlocal rerank_candidate_cache, label_memory_refs, scene_text_index
+        nonlocal rerank_candidate_cache, label_memory_refs, label_memory_checker_code_keys, scene_text_index
         nonlocal standard_image_by_code_key
         t_reload = time.perf_counter()
         if reason == "startup" and not sync_search_feature_dir_on_startup:
@@ -1219,8 +1220,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             logging.info("api rerank candidate cache preload disabled; using lazy cache on requests")
 
         next_label_memory_refs = precompute_label_memory_refs(label_memory_path) if label_memory_enabled else []
+        next_label_memory_checker_code_keys: set[str] = set()
+        if label_memory_enabled and label_memory_path.exists():
+            try:
+                label_rows = json.loads(label_memory_path.read_text(encoding="utf-8")).get("labels", [])
+            except Exception:
+                label_rows = []
+            for row in label_rows:
+                label_image = Path(str(row.get("query_image", "")))
+                code_key = _style_code_key(str(row.get("style_code", "")))
+                if not code_key or not label_image.exists():
+                    continue
+                profile = _extract_checker_profile(label_image, grid=10)
+                if (
+                    profile is not None
+                    and float(profile.get("checker", 0.0)) >= float(label_memory_checker_min_checker)
+                    and float(profile.get("bw_mix", 0.0)) >= float(label_memory_checker_min_bw_mix)
+                ):
+                    next_label_memory_checker_code_keys.add(code_key)
         if label_memory_enabled:
             logging.info("api loaded label memory refs: %d", len(next_label_memory_refs))
+            if next_label_memory_checker_code_keys:
+                logging.info("api loaded checker label memory refs: %d", len(next_label_memory_checker_code_keys))
 
         next_scene_text_index: Dict[str, Any] | None = None
         if scene_text_hint_enabled and scene_text_index_on_startup:
@@ -1256,6 +1277,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             region_feats = next_region_feats
             rerank_candidate_cache = next_rerank_candidate_cache
             label_memory_refs = next_label_memory_refs
+            label_memory_checker_code_keys = next_label_memory_checker_code_keys
             scene_text_index = next_scene_text_index
             standard_image_by_code_key = next_standard_image_by_code_key
         logging.info("search assets reloaded: reason=%s in %.2fs", reason, time.perf_counter() - t_reload)
@@ -12580,6 +12602,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 req_region_feats = region_feats
                 req_rerank_candidate_cache = rerank_candidate_cache
                 req_label_memory_refs = label_memory_refs
+                req_label_memory_checker_code_keys = label_memory_checker_code_keys
                 req_scene_text_index = scene_text_index
                 req_standard_image_by_code_key = standard_image_by_code_key
 
@@ -12630,6 +12653,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
             def _code_prior_key(code: str) -> str:
                 return _style_code_key(code)
+
+            def _cap_label_memory_for_checker_profile(profile: Dict[str, float] | None) -> bool:
+                nonlocal base_code_prior_boost, code_prior_boost, checker_debug, region_boost_debug
+                if profile is None:
+                    return False
+                checker_value = float(profile.get("checker", 0.0))
+                bw_mix_value = float(profile.get("bw_mix", 0.0))
+                if checker_value <= 0.0:
+                    return False
+                if not checker_debug:
+                    checker_debug = (
+                        f"{checker_value:.3f}/"
+                        f"{float(profile.get('stripe', 0.0)):.3f}/"
+                        f"{bw_mix_value:.3f}"
+                    )
+                min_checker_for_cap = float(label_memory_checker_min_checker)
+                if strict_small_region_crop:
+                    min_checker_for_cap = min(min_checker_for_cap, max(float(checker_query_threshold), min_checker_for_cap * 0.85))
+                if not (
+                    label_memory_checker_cap_enabled
+                    and base_code_prior_boost
+                    and checker_value >= min_checker_for_cap
+                    and bw_mix_value >= float(label_memory_checker_min_bw_mix)
+                ):
+                    return False
+                cap = max(0.0, float(label_memory_checker_max_boost))
+                capped_base: Dict[str, float] = {}
+                adjusted_prior = dict(code_prior_boost)
+                capped_codes: List[str] = []
+                for code_key, boost in base_code_prior_boost.items():
+                    boost_f = float(boost)
+                    checker_label = code_key in req_label_memory_checker_code_keys
+                    capped = boost_f if checker_label else min(boost_f, cap)
+                    capped_base[code_key] = capped
+                    if capped < boost_f:
+                        current = float(adjusted_prior.get(code_key, 0.0))
+                        adjusted_prior[code_key] = max(0.0, current - (boost_f - capped))
+                        capped_codes.append(f"{code_key}:{boost_f:.3f}->{capped:.3f}")
+                if not capped_codes:
+                    return False
+                base_code_prior_boost = capped_base
+                code_prior_boost = adjusted_prior
+                cap_debug = "label_checker_cap=" + ",".join(capped_codes[:4])
+                region_boost_debug = (
+                    f"{region_boost_debug}|{cap_debug}"
+                    if region_boost_debug
+                    else cap_debug
+                )
+                return True
 
             def _rows_from_ranked(
                 ranked_in: List[tuple[str, float]],
@@ -14611,9 +14683,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 use_strip_mode = (qa >= strip_aspect_threshold) or (qf <= strip_fill_threshold)
             q_pre_checker_profile = None
             vertical_stripe_region_crop = False
-            if crop_active and not strict_small_region_crop and not use_strip_mode:
+            if crop_active and not use_strip_mode:
                 q_pre_checker_profile = _extract_checker_profile(query_path, grid=10)
-                if q_pre_checker_profile:
+                if q_pre_checker_profile and not strict_small_region_crop:
                     vertical_stripe_region_crop = bool(
                         crop_norm_h >= 0.45
                         and float(query_height or 0) > float(query_width or 0) * 1.25
@@ -14680,6 +14752,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     else 0.0
                 ),
             )
+            label_memory_checker_capped = _cap_label_memory_for_checker_profile(q_pre_checker_profile)
+            if label_memory_checker_capped:
+                rows = _rows_from_ranked(ranked_images)
             second_pass_used = False
             if adaptive_second_pass_enabled:
                 top1_score = float(rows[0]["score"]) if rows else 0.0
@@ -14838,7 +14913,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 and not checker_blocked_by_region_probe
             ):
                 q_checker_profile = q_pre_checker_profile or _extract_checker_profile(query_path, grid=10)
-                label_memory_checker_capped = False
                 if q_checker_profile:
                     checker_debug = (
                         f"{float(q_checker_profile.get('checker', 0.0)):.3f}/"
@@ -14851,35 +14925,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         and float(q_checker_profile.get("checker", 0.0)) < checker_accent_suppress_below
                     ):
                         q_checker_profile = None
-                    if (
-                        q_checker_profile is not None
-                        and label_memory_checker_cap_enabled
-                        and base_code_prior_boost
-                        and float(q_checker_profile.get("checker", 0.0)) >= float(label_memory_checker_min_checker)
-                        and float(q_checker_profile.get("bw_mix", 0.0)) >= float(label_memory_checker_min_bw_mix)
-                    ):
-                        cap = max(0.0, float(label_memory_checker_max_boost))
-                        capped_base: Dict[str, float] = {}
-                        adjusted_prior = dict(code_prior_boost)
-                        capped_codes: List[str] = []
-                        for code_key, boost in base_code_prior_boost.items():
-                            boost_f = float(boost)
-                            capped = min(boost_f, cap)
-                            capped_base[code_key] = capped
-                            if capped < boost_f:
-                                current = float(adjusted_prior.get(code_key, 0.0))
-                                adjusted_prior[code_key] = max(0.0, current - (boost_f - capped))
-                                capped_codes.append(f"{code_key}:{boost_f:.3f}->{capped:.3f}")
-                        if capped_codes:
-                            base_code_prior_boost = capped_base
-                            code_prior_boost = adjusted_prior
-                            label_memory_checker_capped = True
-                            cap_debug = "label_checker_cap=" + ",".join(capped_codes[:4])
-                            region_boost_debug = (
-                                f"{region_boost_debug}|{cap_debug}"
-                                if region_boost_debug
-                                else cap_debug
-                            )
+                    label_memory_checker_capped = (
+                        _cap_label_memory_for_checker_profile(q_checker_profile)
+                        or label_memory_checker_capped
+                    )
                 ranked_images, checker_code_boost, checker_candidates_debug = _apply_checker_consistency(
                     ranked_images,
                     q_checker_profile,
