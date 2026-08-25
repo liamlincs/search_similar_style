@@ -246,6 +246,8 @@
     "scene_text_boost_scale": 0.16,
     "scene_text_max_candidates_per_token": 128,
     "scene_text_max_injected": 40,
+    "scene_text_fuzzy_min_token_len": 6,
+    "scene_text_fuzzy_max_index_tokens": 12000,
     "low_confidence_enabled": true,
     "low_confidence_margin_threshold": 0.06,
     "low_confidence_top1_threshold": 0.78,
