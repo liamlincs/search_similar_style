@@ -1329,6 +1329,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_upload_dir = Path("outputs/catalog_import_uploads")
     catalog_upload_dir.mkdir(parents=True, exist_ok=True)
     wechat_access_token_cache: Dict[str, Any] = {"token": "", "expires_at": 0.0}
+    wechat_text_security_pass_cache: Dict[str, float] = {}
+    wechat_text_security_pass_cache_lock = threading.Lock()
 
     def _reload_search_assets_and_warm_caches(reason: str, manifest_image_names: set[str] | None = None) -> None:
         with search_assets_reload_lock:
@@ -1917,9 +1919,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         texts = [str(value or "").strip() for value in values if str(value or "").strip()]
         if not texts:
             return
+        now = time.time()
         try:
             for text in texts:
+                cache_key = hashlib.sha1(f"{openid}\0{text}".encode("utf-8")).hexdigest()
+                with wechat_text_security_pass_cache_lock:
+                    cached_until = float(wechat_text_security_pass_cache.get(cache_key, 0.0))
+                if cached_until > now:
+                    continue
                 _wechat_msg_sec_check(text, openid=openid)
+                with wechat_text_security_pass_cache_lock:
+                    wechat_text_security_pass_cache[cache_key] = now + 3600.0
+                    if len(wechat_text_security_pass_cache) > 4096:
+                        expired = [key for key, until in wechat_text_security_pass_cache.items() if until <= now]
+                        for key in expired[:1024]:
+                            wechat_text_security_pass_cache.pop(key, None)
         except HTTPException:
             raise
         except WechatContentSecurityError as exc:
@@ -11511,9 +11525,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     ) -> Dict[str, Any]:
         t0 = time.perf_counter()
         _catalog_require_permission(request, "product:view")
-        _check_text_content_security(style_code, tags, year_tags, category_tags, subcategory_tags, openid=_wechat_openid_from_request(request))
+        raw_tag_list = [item.strip() for item in tags.split(",") if item.strip()]
+        personal_exact_raw_tag = (
+            len(raw_tag_list) == 1
+            and not bool(exclude_personal)
+            and (
+                raw_tag_list[0].startswith("owner:")
+                or ":folder:" in raw_tag_list[0]
+            )
+        )
+        if personal_exact_raw_tag:
+            _check_text_content_security(style_code, year_tags, category_tags, subcategory_tags, openid=_wechat_openid_from_request(request))
+        else:
+            _check_text_content_security(style_code, tags, year_tags, category_tags, subcategory_tags, openid=_wechat_openid_from_request(request))
         base_url = _external_base_url(request)
-        tag_list = [item.strip() for item in tags.split(",") if item.strip()]
+        tag_list = list(raw_tag_list)
         for kind, raw in (
             ("year", year_tags),
             ("category", category_tags),
@@ -11588,7 +11614,6 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def api_list_catalog_personal_folders(request: Request, user_tag: str = "") -> Dict[str, Any]:
         t0 = time.perf_counter()
         _catalog_require_permission(request, "product:view")
-        _check_text_content_security(user_tag, openid=_wechat_openid_from_request(request))
         owner_tag = _owner_tag_from_request(request, user_tag)
         if not owner_tag:
             return {"folders": []}
@@ -11616,13 +11641,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         t0 = time.perf_counter()
         _catalog_require_permission(request, "product:create")
         t_auth = time.perf_counter()
-        _check_text_content_security(
-            payload.source_style_code,
-            payload.folder_name,
-            payload.user_tag,
-            *payload.image_names,
-            openid=_wechat_openid_from_request(request),
-        )
+        _check_text_content_security(payload.folder_name, openid=_wechat_openid_from_request(request))
         t_content = time.perf_counter()
         owner_tag = _owner_tag_from_request(request, payload.user_tag)
         folder_name = str(payload.folder_name or "").strip()
@@ -11650,6 +11669,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         unique_part = dt.datetime.now().strftime("%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
         personal_code = f"MY-{owner_hash}-{folder_part}-{source_part}-{unique_part}"
         copied: List[str] = []
+        linked = 0
+        copied_bytes = 0
         t_copy0 = time.perf_counter()
         for index, image_name in enumerate(selected):
             src_path = standard_dir / Path(image_name).name
@@ -11660,7 +11681,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             target_name = f"{personal_code}_{digest}_{index:03d}{suffix}"
             target_path = standard_dir / target_name
             if not target_path.exists():
-                shutil.copyfile(src_path, target_path)
+                try:
+                    os.link(src_path, target_path)
+                    linked += 1
+                except OSError:
+                    shutil.copyfile(src_path, target_path)
+                    try:
+                        copied_bytes += src_path.stat().st_size
+                    except OSError:
+                        copied_bytes = -1
             copied.append(target_name)
         t_copy = time.perf_counter()
         _start_catalog_image_cache_prewarm_for_names(copied, "catalog_personal_product_create")
@@ -11675,12 +11704,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         serialized = _serialize_catalog_product(_external_base_url(request), product)
         t_serialize = time.perf_counter()
         logging.info(
-            "catalog personal create timing owner=%s folder=%s source=%s selected=%d copied=%d auth=%.1f content=%.1f source_db=%.1f copy=%.1f upsert=%.1f serialize=%.1f total=%.1f",
+            "catalog personal create timing owner=%s folder=%s source=%s selected=%d copied=%d linked=%d copied_bytes=%d auth=%.1f content=%.1f source_db=%.1f copy=%.1f upsert=%.1f serialize=%.1f total=%.1f",
             owner_tag,
             folder_name,
             str(payload.source_style_code or "").strip(),
             len(selected),
             len(copied),
+            linked,
+            copied_bytes,
             (t_auth - t0) * 1000.0,
             (t_content - t_auth) * 1000.0,
             (t_source - t_content) * 1000.0,
