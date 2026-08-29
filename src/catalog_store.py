@@ -112,6 +112,9 @@ class CatalogStore:
 
                 CREATE INDEX IF NOT EXISTS idx_product_tags_tag_id
                 ON product_tags(tag_id, style_code);
+
+                CREATE INDEX IF NOT EXISTS idx_tags_name
+                ON tags(name);
                 """
             )
 
@@ -210,7 +213,7 @@ class CatalogStore:
             rows = conn.execute(
                 """
                 SELECT DISTINCT t.name
-                FROM tags t
+                FROM tags AS t INDEXED BY idx_tags_name
                 JOIN product_tags pt ON pt.tag_id = t.id
                 WHERE t.name >= ? AND t.name < ?
                 ORDER BY t.name COLLATE NOCASE ASC
@@ -599,6 +602,84 @@ class CatalogStore:
             ).fetchall()
         return self._assemble_products(product_rows, image_rows, tag_rows)
 
+    def list_products_by_exact_tag(
+        self,
+        tag: str,
+        style_code: str = "",
+        limit: int = 200,
+        offset: int = 0,
+        include_images: bool = True,
+    ) -> List[Dict[str, Any]]:
+        clean_tag = self._clean_tag(tag)
+        if not clean_tag:
+            return []
+        filters: List[str] = ["t.name = ?"]
+        params: List[Any] = [clean_tag]
+        query_code = style_code.strip()
+        if query_code:
+            filters.append(
+                """
+                (
+                    UPPER(p.style_code) LIKE UPPER(?)
+                    OR (
+                        INSTR(p.style_code, '-') > 0
+                        AND UPPER(SUBSTR(p.style_code, INSTR(p.style_code, '-') + 1)) LIKE UPPER(?)
+                    )
+                )
+                """
+            )
+            params.extend([f"%{query_code}%", f"%{query_code}%"])
+        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+
+        with self._connect() as conn:
+            product_rows = conn.execute(
+                f"""
+                SELECT p.style_code, p.cover_image, p.note, p.created_at, p.updated_at
+                FROM tags AS t INDEXED BY idx_tags_name
+                JOIN product_tags pt ON pt.tag_id = t.id
+                JOIN products p ON p.style_code = pt.style_code
+                WHERE {" AND ".join(filters)}
+                ORDER BY p.style_code DESC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+            if not product_rows:
+                return []
+            codes = [str(row["style_code"]) for row in product_rows]
+            placeholders = ",".join(["?"] * len(codes))
+            if include_images:
+                image_rows = conn.execute(
+                    f"""
+                    SELECT style_code, image_name, sort_order
+                    FROM product_images
+                    WHERE style_code IN ({placeholders})
+                    ORDER BY style_code ASC, sort_order ASC, image_name ASC
+                    """,
+                    codes,
+                ).fetchall()
+            else:
+                image_rows = conn.execute(
+                    f"""
+                    SELECT style_code, COUNT(*) AS image_count
+                    FROM product_images
+                    WHERE style_code IN ({placeholders})
+                    GROUP BY style_code
+                    """,
+                    codes,
+                ).fetchall()
+            tag_rows = conn.execute(
+                f"""
+                SELECT pt.style_code, t.name
+                FROM product_tags pt
+                JOIN tags t ON t.id = pt.tag_id
+                WHERE pt.style_code IN ({placeholders})
+                ORDER BY pt.style_code ASC, t.name COLLATE NOCASE ASC
+                """,
+                codes,
+            ).fetchall()
+        return self._assemble_products(product_rows, image_rows, tag_rows)
+
     def count_products(
         self,
         style_code: str = "",
@@ -612,6 +693,39 @@ class CatalogStore:
                 SELECT COUNT(*) AS total
                 {from_clause}
                 {where_clause}
+                """,
+                params,
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def count_products_by_exact_tag(self, tag: str, style_code: str = "") -> int:
+        clean_tag = self._clean_tag(tag)
+        if not clean_tag:
+            return 0
+        filters: List[str] = ["t.name = ?"]
+        params: List[Any] = [clean_tag]
+        query_code = style_code.strip()
+        if query_code:
+            filters.append(
+                """
+                (
+                    UPPER(p.style_code) LIKE UPPER(?)
+                    OR (
+                        INSTR(p.style_code, '-') > 0
+                        AND UPPER(SUBSTR(p.style_code, INSTR(p.style_code, '-') + 1)) LIKE UPPER(?)
+                    )
+                )
+                """
+            )
+            params.extend([f"%{query_code}%", f"%{query_code}%"])
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total
+                FROM tags AS t INDEXED BY idx_tags_name
+                JOIN product_tags pt ON pt.tag_id = t.id
+                JOIN products p ON p.style_code = pt.style_code
+                WHERE {" AND ".join(filters)}
                 """,
                 params,
             ).fetchone()

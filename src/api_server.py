@@ -7167,7 +7167,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         closePersonalProductModal();
         closeGallery();
         state.selectedPersonalFolder = folder;
-        await loadPersonalFolders().catch(() => []);
+        if (!state.personalFolders.includes(folder)) {
+          state.personalFolders = state.personalFolders.concat([folder]).sort((a, b) => String(a).localeCompare(String(b)));
+        }
         renderPersonalFolders();
         setStatus(`已加入个人产品：${folder}`, false);
         if (state.appMode === "mine") await loadProducts(true);
@@ -11521,23 +11523,43 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 typed = make_typed_tag(kind, item)
                 if typed:
                     tag_list.append(typed)
-        products = catalog_store.list_products(
-            style_code=style_code,
-            tags=tag_list,
-            limit=limit,
-            offset=offset,
-            exclude_owner=bool(exclude_personal),
-            include_images=bool(include_images),
+        personal_exact_tag = (
+            len(tag_list) == 1
+            and not bool(exclude_personal)
+            and (
+                tag_list[0].startswith("owner:")
+                or ":folder:" in tag_list[0]
+            )
         )
-        total = catalog_store.count_products(
-            style_code=style_code,
-            tags=tag_list,
-            exclude_owner=bool(exclude_personal),
-        )
+        query_mode = "exact-tag" if personal_exact_tag else "general"
+        if personal_exact_tag:
+            products = catalog_store.list_products_by_exact_tag(
+                tag_list[0],
+                style_code=style_code,
+                limit=limit,
+                offset=offset,
+                include_images=bool(include_images),
+            )
+            total = catalog_store.count_products_by_exact_tag(tag_list[0], style_code=style_code)
+        else:
+            products = catalog_store.list_products(
+                style_code=style_code,
+                tags=tag_list,
+                limit=limit,
+                offset=offset,
+                exclude_owner=bool(exclude_personal),
+                include_images=bool(include_images),
+            )
+            total = catalog_store.count_products(
+                style_code=style_code,
+                tags=tag_list,
+                exclude_owner=bool(exclude_personal),
+            )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         if tag_list or not bool(exclude_personal):
             logging.info(
-                "catalog products timing tags=%s exclude_personal=%s include_images=%s limit=%s offset=%s rows=%d total=%d ms=%.1f",
+                "catalog products timing mode=%s tags=%s exclude_personal=%s include_images=%s limit=%s offset=%s rows=%d total=%d ms=%.1f",
+                query_mode,
                 ",".join(tag_list),
                 int(bool(exclude_personal)),
                 int(bool(include_images)),
@@ -11591,7 +11613,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.post("/api/v1/catalog/personal-products")
     def api_create_catalog_personal_product(request: Request, payload: CatalogPersonalProductRequest) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         _catalog_require_permission(request, "product:create")
+        t_auth = time.perf_counter()
         _check_text_content_security(
             payload.source_style_code,
             payload.folder_name,
@@ -11599,6 +11623,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             *payload.image_names,
             openid=_wechat_openid_from_request(request),
         )
+        t_content = time.perf_counter()
         owner_tag = _owner_tag_from_request(request, payload.user_tag)
         folder_name = str(payload.folder_name or "").strip()
         if not owner_tag:
@@ -11606,6 +11631,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if not folder_name:
             raise HTTPException(status_code=400, detail="missing folder name")
         source = catalog_store.get_product(str(payload.source_style_code or "").strip())
+        t_source = time.perf_counter()
         if not source:
             raise HTTPException(status_code=404, detail="source product not found")
         allowed = {str(item.get("image_name", "")) for item in source.get("images", [])}
@@ -11624,6 +11650,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         unique_part = dt.datetime.now().strftime("%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6]
         personal_code = f"MY-{owner_hash}-{folder_part}-{source_part}-{unique_part}"
         copied: List[str] = []
+        t_copy0 = time.perf_counter()
         for index, image_name in enumerate(selected):
             src_path = standard_dir / Path(image_name).name
             if not src_path.exists() or not src_path.is_file():
@@ -11635,6 +11662,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not target_path.exists():
                 shutil.copyfile(src_path, target_path)
             copied.append(target_name)
+        t_copy = time.perf_counter()
         _start_catalog_image_cache_prewarm_for_names(copied, "catalog_personal_product_create")
         tags = [owner_tag, _personal_folder_tag(owner_tag, folder_name)]
         product = catalog_store.upsert_product(
@@ -11643,8 +11671,26 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             tags=tags,
             note=f"个人产品/{folder_name}，来源：{source.get('style_code', '')}",
         )
+        t_upsert = time.perf_counter()
+        serialized = _serialize_catalog_product(_external_base_url(request), product)
+        t_serialize = time.perf_counter()
+        logging.info(
+            "catalog personal create timing owner=%s folder=%s source=%s selected=%d copied=%d auth=%.1f content=%.1f source_db=%.1f copy=%.1f upsert=%.1f serialize=%.1f total=%.1f",
+            owner_tag,
+            folder_name,
+            str(payload.source_style_code or "").strip(),
+            len(selected),
+            len(copied),
+            (t_auth - t0) * 1000.0,
+            (t_content - t_auth) * 1000.0,
+            (t_source - t_content) * 1000.0,
+            (t_copy - t_copy0) * 1000.0,
+            (t_upsert - t_copy) * 1000.0,
+            (t_serialize - t_upsert) * 1000.0,
+            (t_serialize - t0) * 1000.0,
+        )
         return {
-            "product": _serialize_catalog_product(_external_base_url(request), product),
+            "product": serialized,
             "folder": folder_name,
             "images_added": len(copied),
         }
