@@ -202,6 +202,23 @@ class CatalogStore:
             ).fetchall()
         return [str(row["name"]) for row in rows]
 
+    def list_used_tags_with_prefix(self, prefix: str) -> List[str]:
+        clean = self._clean_tag(prefix)
+        if not clean:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT t.name
+                FROM tags t
+                JOIN product_tags pt ON pt.tag_id = t.id
+                WHERE t.name >= ? AND t.name < ?
+                ORDER BY t.name COLLATE NOCASE ASC
+                """,
+                (clean, clean + "\uffff"),
+            ).fetchall()
+        return [str(row["name"]) for row in rows]
+
     def list_tag_groups(self, *, used_only: bool = True) -> Dict[str, List[str]]:
         groups: Dict[str, List[str]] = {
             "year": [],

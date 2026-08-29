@@ -11507,6 +11507,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         limit: int = 60,
         offset: int = 0,
     ) -> Dict[str, Any]:
+        t0 = time.perf_counter()
         _catalog_require_permission(request, "product:view")
         _check_text_content_security(style_code, tags, year_tags, category_tags, subcategory_tags, openid=_wechat_openid_from_request(request))
         base_url = _external_base_url(request)
@@ -11533,6 +11534,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             tags=tag_list,
             exclude_owner=bool(exclude_personal),
         )
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        if tag_list or not bool(exclude_personal):
+            logging.info(
+                "catalog products timing tags=%s exclude_personal=%s include_images=%s limit=%s offset=%s rows=%d total=%d ms=%.1f",
+                ",".join(tag_list),
+                int(bool(exclude_personal)),
+                int(bool(include_images)),
+                max(1, min(int(limit), 500)),
+                max(0, int(offset)),
+                len(products),
+                total,
+                elapsed_ms,
+            )
         return {
             "products": [_serialize_catalog_product(base_url, item) for item in products],
             "total": total,
@@ -11550,19 +11564,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     @app.get("/api/v1/catalog/personal-folders")
     def api_list_catalog_personal_folders(request: Request, user_tag: str = "") -> Dict[str, Any]:
+        t0 = time.perf_counter()
         _catalog_require_permission(request, "product:view")
         _check_text_content_security(user_tag, openid=_wechat_openid_from_request(request))
         owner_tag = _owner_tag_from_request(request, user_tag)
         if not owner_tag:
             return {"folders": []}
         prefix = f"{owner_tag}:folder:"
+        used_tags = catalog_store.list_used_tags_with_prefix(prefix)
         folders = sorted(
             {
                 tag[len(prefix):].strip()
-                for tag in catalog_store.list_used_tags()
+                for tag in used_tags
                 if str(tag).startswith(prefix) and tag[len(prefix):].strip()
             },
             key=lambda item: item.lower(),
+        )
+        logging.info(
+            "catalog personal folders timing owner=%s tags=%d folders=%d ms=%.1f",
+            owner_tag,
+            len(used_tags),
+            len(folders),
+            (time.perf_counter() - t0) * 1000.0,
         )
         return {"folders": folders}
 

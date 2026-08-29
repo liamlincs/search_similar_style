@@ -23,6 +23,13 @@
       "query_image": "data/test_samples/GZ24-0067_region_sleeve.png",
       "expected_style_code": "GZ24-0067",
       "description": "Model-photo region crop with black and orange sleeve patch. Regression for cross-color sleeve recall."
+    },
+    {
+      "id": "GZ24-0067_region_120",
+      "query_image": "data/test_samples/GZ24-0067_region_120.jpg",
+      "expected_style_code": "GZ24-0067",
+      "max_rank": 10,
+      "description": "Large expanded sleeve region crop from 120.jpeg. Regression for keeping label memory on large-crop fast path."
     }
   ]
 }
