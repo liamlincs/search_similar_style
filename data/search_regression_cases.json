@@ -30,6 +30,13 @@
       "expected_style_code": "GZ24-0067",
       "max_rank": 10,
       "description": "Large expanded sleeve region crop from 120.jpeg. Regression for keeping label memory on large-crop fast path."
+    },
+    {
+      "id": "jc22_0110_1_region_sleeve",
+      "query_image": "data/test_samples/JC22-0110-1_region_sleeve.png",
+      "expected_style_code": "JC22-0110-1",
+      "max_rank": 10,
+      "description": "Model-photo region crop with navy, brown, burgundy, and light-blue knitted sleeve panels. Regression for JC22-0110-1 sleeve recall."
     }
   ]
 }
