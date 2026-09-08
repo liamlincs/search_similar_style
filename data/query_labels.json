@@ -39,6 +39,14 @@
     {
       "query_image": "data/test_samples/JC22-0110-1_region_sleeve.png",
       "style_code": "JC22-0110-1"
+    },
+    {
+      "query_image": "data/test_samples/GZ23-1795_region_collar.png",
+      "style_code": "GZ23-1795-1"
+    },
+    {
+      "query_image": "data/test_samples/GZ23-1795_region_collar.png",
+      "style_code": "GZ23-1795-4"
     }
   ]
 }

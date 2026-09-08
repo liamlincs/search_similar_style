@@ -37,6 +37,20 @@
       "expected_style_code": "JC22-0110-1",
       "max_rank": 10,
       "description": "Model-photo region crop with navy, brown, burgundy, and light-blue knitted sleeve panels. Regression for JC22-0110-1 sleeve recall."
+    },
+    {
+      "id": "gz23_1795_1_region_collar",
+      "query_image": "data/test_samples/GZ23-1795_region_collar.png",
+      "expected_style_code": "GZ23-1795-1",
+      "max_rank": 10,
+      "description": "Video-frame collar region crop with cream mesh and dark scalloped trim. Regression for GZ23-1795-1 collar recall."
+    },
+    {
+      "id": "gz23_1795_4_region_collar",
+      "query_image": "data/test_samples/GZ23-1795_region_collar.png",
+      "expected_style_code": "GZ23-1795-4",
+      "max_rank": 10,
+      "description": "Video-frame collar region crop with cream mesh and dark scalloped trim. Regression for GZ23-1795-4 collar recall."
     }
   ]
 }
