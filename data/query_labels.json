@@ -47,6 +47,22 @@
     {
       "query_image": "data/test_samples/GZ23-1795_region_collar.png",
       "style_code": "GZ23-1795-4"
+    },
+    {
+      "query_image": "data/test_samples/GB25-0893_region_1.png",
+      "style_code": "GB25-0893"
+    },
+    {
+      "query_image": "data/test_samples/GB25-0893_region_2.png",
+      "style_code": "GB25-0893"
+    },
+    {
+      "query_image": "data/test_samples/GB25-0893_region_3.png",
+      "style_code": "GB25-0893"
+    },
+    {
+      "query_image": "data/test_samples/GB25-0893_region_4.png",
+      "style_code": "GB25-0893"
     }
   ]
 }

@@ -51,6 +51,34 @@
       "expected_style_code": "GZ23-1795-4",
       "max_rank": 10,
       "description": "Video-frame collar region crop with cream mesh and dark scalloped trim. Regression for GZ23-1795-4 collar recall."
+    },
+    {
+      "id": "gb25_0893_region_blue_scarf",
+      "query_image": "data/test_samples/GB25-0893_region_1.png",
+      "expected_style_code": "GB25-0893",
+      "max_rank": 10,
+      "description": "Flat-lay region crop with blue ribbed scarf on navy sweatshirt. Regression for GB25-0893 scarf recall."
+    },
+    {
+      "id": "gb25_0893_region_yellow_scarf",
+      "query_image": "data/test_samples/GB25-0893_region_2.png",
+      "expected_style_code": "GB25-0893",
+      "max_rank": 10,
+      "description": "Flat-lay region crop with yellow ribbed scarf on gray sweatshirt. Regression for GB25-0893 scarf recall."
+    },
+    {
+      "id": "gb25_0893_region_ivory_scarf",
+      "query_image": "data/test_samples/GB25-0893_region_3.png",
+      "expected_style_code": "GB25-0893",
+      "max_rank": 10,
+      "description": "Flat-lay region crop with ivory ribbed scarf on mustard sweatshirt. Regression for GB25-0893 scarf recall."
+    },
+    {
+      "id": "gb25_0893_region_wine_scarf",
+      "query_image": "data/test_samples/GB25-0893_region_4.png",
+      "expected_style_code": "GB25-0893",
+      "max_rank": 10,
+      "description": "Flat-lay region crop with wine ribbed scarf on gray sweatshirt. Regression for GB25-0893 scarf recall."
     }
   ]
 }
