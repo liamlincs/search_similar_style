@@ -67,6 +67,22 @@
     {
       "query_image": "data/test_samples/KFB25-0077_region_scarf.png",
       "style_code": "KFB25-0077"
+    },
+    {
+      "query_image": "data/test_samples/KFB25-0048_region_1_blue.png",
+      "style_code": "KFB25-0048"
+    },
+    {
+      "query_image": "data/test_samples/KFB25-0048_region_2_left_brown.png",
+      "style_code": "KFB25-0048"
+    },
+    {
+      "query_image": "data/test_samples/KFB25-0048_region_3_right_brown.png",
+      "style_code": "KFB25-0048"
+    },
+    {
+      "query_image": "data/test_samples/KFB25-0048_region_4_white.png",
+      "style_code": "KFB25-0048"
     }
   ]
 }

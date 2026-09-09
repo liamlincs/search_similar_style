@@ -86,6 +86,34 @@
       "expected_style_code": "KFB25-0077",
       "max_rank": 10,
       "description": "Shop-display region crop with red and ivory striped scarf on plum sweatshirt. Regression for KFB25-0077 scarf recall."
+    },
+    {
+      "id": "kfb25_0048_region_blue_scarf",
+      "query_image": "data/test_samples/KFB25-0048_region_1_blue.png",
+      "expected_style_code": "KFB25-0048",
+      "max_rank": 10,
+      "description": "Video-frame region crop with blue open-knit scarf on dark sweatshirt. Regression for KFB25-0048 scarf recall."
+    },
+    {
+      "id": "kfb25_0048_region_left_brown_scarf",
+      "query_image": "data/test_samples/KFB25-0048_region_2_left_brown.png",
+      "expected_style_code": "KFB25-0048",
+      "max_rank": 10,
+      "description": "Video-frame region crop with mustard open-knit scarf on brown sweatshirt. Regression for KFB25-0048 scarf recall."
+    },
+    {
+      "id": "kfb25_0048_region_right_brown_scarf",
+      "query_image": "data/test_samples/KFB25-0048_region_3_right_brown.png",
+      "expected_style_code": "KFB25-0048",
+      "max_rank": 10,
+      "description": "Video-frame region crop with crossed mustard open-knit scarf on navy sweatshirt. Regression for KFB25-0048 scarf recall."
+    },
+    {
+      "id": "kfb25_0048_region_white_scarf",
+      "query_image": "data/test_samples/KFB25-0048_region_4_white.png",
+      "expected_style_code": "KFB25-0048",
+      "max_rank": 10,
+      "description": "Video-frame region crop with brown open-knit scarf on white sweatshirt. Regression for KFB25-0048 scarf recall."
     }
   ]
 }
