@@ -87,6 +87,10 @@
     {
       "query_image": "data/test_samples/GB24-0220_GZ24-0397_region_collar.png",
       "style_code": "GB24-0220"
+    },
+    {
+      "query_image": "data/test_samples/GB24-0220_GZ24-0397_region_pocket.png",
+      "style_code": "GZ24-0397"
     }
   ]
 }

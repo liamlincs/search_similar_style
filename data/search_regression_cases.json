@@ -121,6 +121,13 @@
       "expected_style_code": "GB24-0220",
       "max_rank": 10,
       "description": "Model-photo square crop with burgundy ribbed collar on striped shirt. Regression for GB24-0220 collar recall."
+    },
+    {
+      "id": "gz24_0397_region_pocket",
+      "query_image": "data/test_samples/GB24-0220_GZ24-0397_region_pocket.png",
+      "expected_style_code": "GZ24-0397",
+      "max_rank": 10,
+      "description": "Model-photo square crop with burgundy knit chest pocket on striped shirt. Regression for GZ24-0397 pocket recall."
     }
   ]
 }
