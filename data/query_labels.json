@@ -83,6 +83,10 @@
     {
       "query_image": "data/test_samples/KFB25-0048_region_4_white.png",
       "style_code": "KFB25-0048"
+    },
+    {
+      "query_image": "data/test_samples/GB24-0220_GZ24-0397_region_collar.png",
+      "style_code": "GB24-0220"
     }
   ]
 }

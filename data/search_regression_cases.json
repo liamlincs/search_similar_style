@@ -114,6 +114,13 @@
       "expected_style_code": "KFB25-0048",
       "max_rank": 10,
       "description": "Video-frame region crop with brown open-knit scarf on white sweatshirt. Regression for KFB25-0048 scarf recall."
+    },
+    {
+      "id": "gb24_0220_region_collar",
+      "query_image": "data/test_samples/GB24-0220_GZ24-0397_region_collar.png",
+      "expected_style_code": "GB24-0220",
+      "max_rank": 10,
+      "description": "Model-photo square crop with burgundy ribbed collar on striped shirt. Regression for GB24-0220 collar recall."
     }
   ]
 }
