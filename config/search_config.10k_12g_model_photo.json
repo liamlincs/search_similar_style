@@ -287,6 +287,8 @@
     "label_memory_checker_min_checker": 0.16,
     "label_memory_checker_min_bw_mix": 0.55,
     "label_memory_checker_max_boost": 0.0,
+    "label_memory_weak_checker_cap_enabled": true,
+    "label_memory_weak_checker_max_boost": 0.02,
     "feature_cache_enabled": true,
     "db_feature_dtype": "float16",
     "result_image_max_edge": 320,
