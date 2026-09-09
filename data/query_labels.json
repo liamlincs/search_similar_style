@@ -63,6 +63,10 @@
     {
       "query_image": "data/test_samples/GB25-0893_region_4.png",
       "style_code": "GB25-0893"
+    },
+    {
+      "query_image": "data/test_samples/KFB25-0077_region_scarf.png",
+      "style_code": "KFB25-0077"
     }
   ]
 }

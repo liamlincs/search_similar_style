@@ -79,6 +79,13 @@
       "expected_style_code": "GB25-0893",
       "max_rank": 10,
       "description": "Flat-lay region crop with wine ribbed scarf on gray sweatshirt. Regression for GB25-0893 scarf recall."
+    },
+    {
+      "id": "kfb25_0077_region_scarf",
+      "query_image": "data/test_samples/KFB25-0077_region_scarf.png",
+      "expected_style_code": "KFB25-0077",
+      "max_rank": 10,
+      "description": "Shop-display region crop with red and ivory striped scarf on plum sweatshirt. Regression for KFB25-0077 scarf recall."
     }
   ]
 }
