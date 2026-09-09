@@ -289,6 +289,10 @@
     "label_memory_checker_max_boost": 0.0,
     "label_memory_weak_checker_cap_enabled": true,
     "label_memory_weak_checker_max_boost": 0.02,
+    "label_memory_weak_checker_cap_below": 0.06,
+    "label_memory_weak_checker_cap_codes": [
+      "KF22-0151"
+    ],
     "feature_cache_enabled": true,
     "db_feature_dtype": "float16",
     "result_image_max_edge": 320,

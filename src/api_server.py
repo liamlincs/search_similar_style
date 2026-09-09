@@ -371,6 +371,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     label_memory_checker_max_boost = float(search_cfg.get("label_memory_checker_max_boost", 0.0))
     label_memory_weak_checker_cap_enabled = bool(search_cfg.get("label_memory_weak_checker_cap_enabled", True))
     label_memory_weak_checker_max_boost = float(search_cfg.get("label_memory_weak_checker_max_boost", 0.02))
+    label_memory_weak_checker_cap_below = float(search_cfg.get("label_memory_weak_checker_cap_below", 0.06))
+    label_memory_weak_checker_cap_codes = {
+        _style_code_key(str(code))
+        for code in search_cfg.get("label_memory_weak_checker_cap_codes", [])
+        if _style_code_key(str(code))
+    }
     hybrid_weights = search_cfg.get("hybrid_weights", {})
     w_clip = float(hybrid_weights.get("clip", 0.55))
     w_shape = float(hybrid_weights.get("shape", 0.30))
@@ -12795,10 +12801,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 for code_key, boost in base_code_prior_boost.items():
                     boost_f = float(boost)
                     checker_label = code_key in req_label_memory_checker_code_keys
+                    weak_checker_label = checker_label or code_key in label_memory_weak_checker_cap_codes
                     if strong_checker_query:
                         capped = boost_f if checker_label else min(boost_f, cap)
                     else:
-                        capped = min(boost_f, cap) if checker_label else boost_f
+                        capped = (
+                            min(boost_f, cap)
+                            if weak_checker_label and boost_f <= float(label_memory_weak_checker_cap_below)
+                            else boost_f
+                        )
                     capped_base[code_key] = capped
                     if capped < boost_f:
                         current = float(adjusted_prior.get(code_key, 0.0))
