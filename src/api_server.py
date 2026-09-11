@@ -2543,6 +2543,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/api/v1/admin/warm-scene-text-index",
                 "/api/v1/admin/reload-search-assets",
                 "/api/v1/admin/run-nightly-maintenance",
+                "/catalog/share-cover.png",
+                "/catalog/share-cover.jpg",
             }
             or is_catalog_login
             or is_catalog_logout
@@ -2567,6 +2569,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "/api/v1/admin/warm-scene-text-index",
                 "/api/v1/admin/reload-search-assets",
                 "/api/v1/admin/run-nightly-maintenance",
+                "/catalog/share-cover.png",
+                "/catalog/share-cover.jpg",
                 "/recolor",
                 "/recolor-ai",
             }
@@ -5704,16 +5708,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         initial_type: str,
         server_permissions: List[str] | None = None,
         server_user_id: str = "",
+        share_image_url: str = "",
     ) -> str:
         safe_type = "color" if str(initial_type or "").strip().lower() == "color" else "product"
         permissions_json = json.dumps(server_permissions or [], ensure_ascii=False)
         user_id_json = json.dumps(str(server_user_id or "").strip(), ensure_ascii=False)
+        share_image_json = json.dumps(str(share_image_url or "").strip(), ensure_ascii=False)
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>产品库</title>
+  <meta name="description" content="产品库" />
+  <meta property="og:title" content="产品库" />
+  <meta property="og:description" content="产品库" />
+  <meta property="og:image" content="__SHARE_IMAGE_URL__" />
+  <link rel="preload" as="image" href="__SHARE_IMAGE_URL__" />
   <script src="https://res.wx.qq.com/open/js/jweixin-1.6.0.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -6039,6 +6050,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
   </style>
 </head>
 <body>
+  <img src="__SHARE_IMAGE_URL__" alt="" width="300" height="300" style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:.01;pointer-events:none;" />
   <div class="app">
     <div class="top">
       <div class="head">
@@ -6351,6 +6363,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     const INITIAL_TYPE = "__INITIAL_TYPE__";
     const SERVER_PERMISSIONS = __SERVER_PERMISSIONS__;
     const SERVER_USER_ID = __SERVER_USER_ID__;
+    const SHARE_IMAGE_URL = __SHARE_IMAGE_JSON__;
     const tokenKey = "openfire_catalog_token";
     const params = new URLSearchParams(location.search);
     const urlToken = params.get("token") || params.get("access_token") || "";
@@ -6519,6 +6532,61 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function escapeHtml(value) {
       return String(value || "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    function setMetaContent(selector, value) {
+      const node = document.querySelector(selector);
+      if (node) node.setAttribute("content", String(value || ""));
+    }
+    function cleanShareUrl(raw = location.href) {
+      try {
+        const url = new URL(raw, location.href);
+        [
+          "meter_l",
+          "meter_a",
+          "meter_b",
+          "meter_ts",
+          "meter_device_id",
+          "meter_device_name",
+          "meter_device_ts",
+          "native_action",
+          "native_ts"
+        ].forEach((key) => url.searchParams.delete(key));
+        return url.toString();
+      } catch (_) {
+        return location.href;
+      }
+    }
+    function currentShareTitle(extraTitle = "") {
+      if (extraTitle) return `${extraTitle} - 产品库`;
+      return state.type === "color" ? "色卡库" : "产品库";
+    }
+    function updateShareInfo(extraTitle = "") {
+      const title = currentShareTitle(extraTitle);
+      const link = cleanShareUrl();
+      let imgUrl = SHARE_IMAGE_URL || (location.origin + "/catalog/share-cover.jpg");
+      try { imgUrl = new URL(imgUrl, location.origin).toString(); } catch (_) {}
+      document.title = title;
+      setMetaContent('meta[name="description"]', title);
+      setMetaContent('meta[property="og:title"]', title);
+      setMetaContent('meta[property="og:description"]', title);
+      setMetaContent('meta[property="og:image"]', imgUrl);
+      try {
+        const preload = document.querySelector('link[rel="preload"][as="image"]');
+        if (preload) preload.setAttribute("href", imgUrl);
+      } catch (_) {}
+      const payload = { action: "setShareInfo", type: "share", title, desc: title, link, path: link, imageUrl: imgUrl, imgUrl };
+      try { window.parent?.postMessage?.(payload, "*"); } catch (_) {}
+      try {
+        if (window.wx?.miniProgram?.postMessage) window.wx.miniProgram.postMessage({ data: payload });
+      } catch (_) {}
+      try {
+        if (window.wx?.ready && window.wx?.updateAppMessageShareData) {
+          window.wx.ready(() => {
+            window.wx.updateAppMessageShareData({ title, desc: title, link, imgUrl });
+            if (window.wx.updateTimelineShareData) window.wx.updateTimelineShareData({ title, link, imgUrl });
+          });
+        }
+      } catch (_) {}
     }
     async function api(path, options = {}) {
       const headers = Object.assign({}, options.headers || {});
@@ -6727,6 +6795,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       nextParams.set("type", state.type);
       nextParams.set("mode", state.appMode);
       history.replaceState(null, "", location.pathname + "?" + nextParams.toString());
+      updateShareInfo();
       if (state.appMode !== "image") loadCurrent();
     }
     function switchProductMode(mode) {
@@ -7032,24 +7101,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       state.selectedGalleryImages = [];
       const isPersonal = isPersonalProduct(product);
       $("galleryTitle").textContent = productDisplayTitle(product);
+      updateShareInfo(productDisplayTitle(product));
       $("gallerySubTitle").textContent = isPersonal ? `共 ${productImageCount(product)} 张图片` : `共 ${productImageCount(product)} 张图片，点击图片多选`;
       $("addPersonalBtn").textContent = isPersonal ? "取消个人产品" : "加入个人产品";
       $("addPersonalBtn").classList.toggle("remove", isPersonal);
       $("addPersonalBtn").classList.toggle("added", false);
       $("addPersonalBtn").classList.remove("hidden");
-      $("galleryGrid").innerHTML = (product.images || []).map((img) => isPersonal ? `
+      $("galleryGrid").innerHTML = (product.images || []).map((img, index) => {
+        const displayUrl = shareableProductImageUrl(img.image_url || "", 640);
+        const loading = index < 3 ? "eager" : "lazy";
+        const fetchPriority = index < 3 ? "high" : "auto";
+        return isPersonal ? `
         <div class="gallery-item selectable" data-image-name="${escapeHtml(img.image_name || "")}">
-          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(imageDisplayName(img.image_name || ""))}" loading="lazy" decoding="async" />
+          <img data-role="zoomGalleryImage" src="${displayUrl}" alt="${escapeHtml(imageDisplayName(img.image_name || ""))}" loading="${loading}" fetchpriority="${fetchPriority}" decoding="async" />
           <button class="gallery-delete" data-role="deletePersonalImage" data-image-name="${escapeHtml(img.image_name || "")}" type="button">×</button>
           <div class="gallery-caption">${escapeHtml(imageDisplayName(img.image_name || ""))}</div>
         </div>
       ` : `
         <div class="gallery-item selectable" data-image-name="${escapeHtml(img.image_name || "")}">
-          <img data-role="zoomGalleryImage" src="${img.image_url || ""}" alt="${escapeHtml(img.image_name || "")}" loading="lazy" decoding="async" />
+          <img data-role="zoomGalleryImage" src="${displayUrl}" alt="${escapeHtml(img.image_name || "")}" loading="${loading}" fetchpriority="${fetchPriority}" decoding="async" />
           <span class="gallery-check" data-role="toggleGalleryImage">＋</span>
           <div class="gallery-caption">${escapeHtml(imageDisplayName(img.image_name || ""))}</div>
         </div>
-      `).join("");
+      `;
+      }).join("");
       $("galleryGrid").querySelectorAll('[data-role="zoomGalleryImage"]').forEach((img) => {
         img.addEventListener("click", (event) => {
           event.stopPropagation();
@@ -7105,6 +7180,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function closeGallery() {
       $("galleryModal").classList.remove("open");
+      updateShareInfo();
     }
     function updateGallerySelectionUi() {
       const product = state.currentGalleryProduct;
@@ -8468,8 +8544,22 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       try {
         const url = new URL(text, location.origin);
         if (url.pathname.startsWith("/images/")) {
-          url.searchParams.set("max_edge", "320");
+          url.searchParams.set("max_edge", String(Math.max(128, Math.min(2048, Number(edge) || 320))));
           url.searchParams.set("q", "62");
+        }
+        return url.pathname + url.search + url.hash;
+      } catch (_) {
+        return text;
+      }
+    }
+    function shareableProductImageUrl(raw, edge = 640) {
+      const text = String(raw || "").trim();
+      if (!text) return "";
+      try {
+        const url = new URL(text, location.origin);
+        if (url.pathname.startsWith("/images/")) {
+          url.searchParams.set("max_edge", String(Math.max(320, Math.min(1024, Number(edge) || 640))));
+          url.searchParams.set("q", "72");
         }
         return url.pathname + url.search + url.hash;
       } catch (_) {
@@ -9307,7 +9397,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     });
   </script>
 </body>
-</html>""".replace("__INITIAL_TYPE__", safe_type).replace("__SERVER_PERMISSIONS__", permissions_json).replace("__SERVER_USER_ID__", user_id_json)
+</html>""".replace("__INITIAL_TYPE__", safe_type).replace("__SERVER_PERMISSIONS__", permissions_json).replace("__SERVER_USER_ID__", user_id_json).replace("__SHARE_IMAGE_JSON__", share_image_json).replace("__SHARE_IMAGE_URL__", html_escape(str(share_image_url or ""), quote=True))
 
     @app.get("/catalog/login", response_class=HTMLResponse)
     def catalog_login_page(request: Request, error: int = 0) -> HTMLResponse:
@@ -9376,6 +9466,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         resp.delete_cookie(catalog_web_cookie_name)
         return resp
 
+    @app.get("/catalog/share-cover.jpg")
+    @app.get("/catalog/share-cover.png")
+    def catalog_share_cover() -> FileResponse:
+        for candidate in (Path("miniprogram/icon.png"), Path("款图助手.png")):
+            if candidate.exists() and candidate.is_file():
+                out_fp = image_cache_dir / "catalog_share_cover_e300_q82.jpg"
+                if not out_fp.exists() or out_fp.stat().st_mtime < candidate.stat().st_mtime:
+                    with Image.open(candidate) as im0:
+                        im = ImageOps.exif_transpose(im0).convert("RGB")
+                        im.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                        canvas = Image.new("RGB", (300, 300), (255, 255, 255))
+                        x = (300 - im.width) // 2
+                        y = (300 - im.height) // 2
+                        canvas.paste(im, (x, y))
+                        canvas.save(out_fp, format="JPEG", quality=82, optimize=True)
+                return FileResponse(
+                    path=str(out_fp),
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=604800, immutable"},
+                )
+        raise HTTPException(status_code=404, detail="share cover not found")
+
     def _catalog_mobile_response(request: Request, catalog_type: str, token: str = "") -> HTMLResponse:
         catalog_type = str(catalog_type or "").strip().lower()
         permissions = getattr(request.state, "catalog_permissions", None)
@@ -9391,6 +9503,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 catalog_type,
                 sorted(permissions) if permissions is not None else None,
                 user_id,
+                f"{_external_base_url(request)}/catalog/share-cover.jpg",
             ),
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
         )
