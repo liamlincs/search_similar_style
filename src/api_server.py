@@ -5709,11 +5709,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         server_permissions: List[str] | None = None,
         server_user_id: str = "",
         share_image_url: str = "",
+        preview_edge: int = 320,
+        preview_quality: int = 62,
     ) -> str:
         safe_type = "color" if str(initial_type or "").strip().lower() == "color" else "product"
         permissions_json = json.dumps(server_permissions or [], ensure_ascii=False)
         user_id_json = json.dumps(str(server_user_id or "").strip(), ensure_ascii=False)
         share_image_json = json.dumps(str(share_image_url or "").strip(), ensure_ascii=False)
+        preview_edge_json = json.dumps(max(128, min(2048, int(preview_edge or 320))))
+        preview_quality_json = json.dumps(max(40, min(95, int(preview_quality or 62))))
         return """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -6364,6 +6368,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     const SERVER_PERMISSIONS = __SERVER_PERMISSIONS__;
     const SERVER_USER_ID = __SERVER_USER_ID__;
     const SHARE_IMAGE_URL = __SHARE_IMAGE_JSON__;
+    const PREVIEW_IMAGE_EDGE = __PREVIEW_IMAGE_EDGE__;
+    const PREVIEW_IMAGE_QUALITY = __PREVIEW_IMAGE_QUALITY__;
     const tokenKey = "openfire_catalog_token";
     const params = new URLSearchParams(location.search);
     const urlToken = params.get("token") || params.get("access_token") || "";
@@ -7108,7 +7114,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("addPersonalBtn").classList.toggle("added", false);
       $("addPersonalBtn").classList.remove("hidden");
       $("galleryGrid").innerHTML = (product.images || []).map((img, index) => {
-        const displayUrl = shareableProductImageUrl(img.image_url || "", 640);
+        const displayUrl = shareableProductImageUrl(img.image_url || "");
         const loading = index < 3 ? "eager" : "lazy";
         const fetchPriority = index < 3 ? "high" : "auto";
         return isPersonal ? `
@@ -8538,28 +8544,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function loadCurrent() {
       (state.type === "color" ? loadColors() : loadProducts(true)).catch((err) => setStatus(err.message || "加载失败", true));
     }
-    function thumbnailUrl(raw, edge = 320) {
+    function thumbnailUrl(raw) {
       const text = String(raw || "").trim();
       if (!text) return "";
       try {
         const url = new URL(text, location.origin);
         if (url.pathname.startsWith("/images/")) {
-          url.searchParams.set("max_edge", String(Math.max(128, Math.min(2048, Number(edge) || 320))));
-          url.searchParams.set("q", "62");
+          url.searchParams.set("max_edge", String(PREVIEW_IMAGE_EDGE));
+          url.searchParams.set("q", String(PREVIEW_IMAGE_QUALITY));
         }
         return url.pathname + url.search + url.hash;
       } catch (_) {
         return text;
       }
     }
-    function shareableProductImageUrl(raw, edge = 640) {
+    function shareableProductImageUrl(raw) {
       const text = String(raw || "").trim();
       if (!text) return "";
       try {
         const url = new URL(text, location.origin);
         if (url.pathname.startsWith("/images/")) {
-          url.searchParams.set("max_edge", String(Math.max(320, Math.min(1024, Number(edge) || 640))));
-          url.searchParams.set("q", "72");
+          url.searchParams.set("max_edge", String(PREVIEW_IMAGE_EDGE));
+          url.searchParams.set("q", String(PREVIEW_IMAGE_QUALITY));
         }
         return url.pathname + url.search + url.hash;
       } catch (_) {
@@ -9397,7 +9403,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     });
   </script>
 </body>
-</html>""".replace("__INITIAL_TYPE__", safe_type).replace("__SERVER_PERMISSIONS__", permissions_json).replace("__SERVER_USER_ID__", user_id_json).replace("__SHARE_IMAGE_JSON__", share_image_json).replace("__SHARE_IMAGE_URL__", html_escape(str(share_image_url or ""), quote=True))
+</html>""".replace("__INITIAL_TYPE__", safe_type).replace("__SERVER_PERMISSIONS__", permissions_json).replace("__SERVER_USER_ID__", user_id_json).replace("__SHARE_IMAGE_JSON__", share_image_json).replace("__SHARE_IMAGE_URL__", html_escape(str(share_image_url or ""), quote=True)).replace("__PREVIEW_IMAGE_EDGE__", preview_edge_json).replace("__PREVIEW_IMAGE_QUALITY__", preview_quality_json)
 
     @app.get("/catalog/login", response_class=HTMLResponse)
     def catalog_login_page(request: Request, error: int = 0) -> HTMLResponse:
@@ -9504,6 +9510,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 sorted(permissions) if permissions is not None else None,
                 user_id,
                 f"{_external_base_url(request)}/catalog/share-cover.jpg",
+                catalog_prewarm_image_cache_max_edge,
+                catalog_prewarm_image_cache_quality,
             ),
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
         )
