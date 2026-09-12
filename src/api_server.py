@@ -6449,6 +6449,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       productHasMore: true,
       productLoading: false,
       productLoadSeq: 0,
+      productLoadMoreQueued: false,
       colorMode: "query",
       colorView: "instrument",
       previousColorView: "instrument",
@@ -8569,6 +8570,50 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         </div>`;
       }).join("");
     }
+    function canLoadMoreProducts() {
+      return state.type === "product"
+        && state.appMode === "category"
+        && state.productMode === "query"
+        && state.productTool !== "import"
+        && !state.productLoading
+        && state.productHasMore;
+    }
+    function productScrollMetrics() {
+      const doc = document.documentElement || {};
+      const body = document.body || {};
+      const scroller = document.scrollingElement || doc || body;
+      const scrollTop = Number(window.pageYOffset || scroller.scrollTop || doc.scrollTop || body.scrollTop || 0);
+      const viewport = Number(window.innerHeight || doc.clientHeight || body.clientHeight || 0);
+      const height = Math.max(
+        Number(scroller.scrollHeight || 0),
+        Number(doc.scrollHeight || 0),
+        Number(body.scrollHeight || 0),
+        Number(doc.offsetHeight || 0),
+        Number(body.offsetHeight || 0)
+      );
+      return { scrollTop, viewport, height };
+    }
+    function isNearProductLoadMore() {
+      const marker = $("productLoadMore");
+      if (marker && !marker.classList.contains("hidden")) {
+        const rect = marker.getBoundingClientRect();
+        if (rect && Number.isFinite(rect.top)) return rect.top <= (window.innerHeight || 0) + 260;
+      }
+      const metrics = productScrollMetrics();
+      return metrics.viewport + metrics.scrollTop >= metrics.height - 260;
+    }
+    function maybeLoadMoreProducts() {
+      if (!canLoadMoreProducts() || !isNearProductLoadMore() || state.productLoadMoreQueued) return;
+      state.productLoadMoreQueued = true;
+      window.setTimeout(() => {
+        state.productLoadMoreQueued = false;
+        if (!canLoadMoreProducts() || !isNearProductLoadMore()) return;
+        loadProducts(false).catch((err) => setStatus(err.message || "加载失败", true));
+      }, 80);
+    }
+    function armProductLoadMoreCheck() {
+      window.setTimeout(maybeLoadMoreProducts, 120);
+    }
     async function loadProducts(reset = true) {
       if (!canProductView) return renderProducts();
       if (state.productLoading && !reset) return;
@@ -8638,7 +8683,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         if (state.productMode === "query") {
           state.products = reset ? rows : state.products.concat(rows);
           state.productOffset += rows.length;
-          state.productHasMore = rows.length >= limit;
+          state.productHasMore = rows.length > 0 && (!state.productTotal || state.productOffset < state.productTotal);
         } else {
           state.products = rows;
           state.productHasMore = false;
@@ -8647,12 +8692,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         renderProducts();
         renderProductFilters();
         setStatus(`已加载 ${state.products.length} / 共 ${state.productTotal} 个款`, false);
+        armProductLoadMoreCheck();
       } finally {
         if (loadSeq === state.productLoadSeq) {
           state.productLoading = false;
         }
         if (loadSeq === state.productLoadSeq && state.productMode === "query") {
           $("productLoadMore").textContent = state.productHasMore ? "向下滑动加载更多" : (state.products.length ? "已加载全部" : "");
+          armProductLoadMoreCheck();
         }
       }
     }
@@ -9575,11 +9622,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (event.target === $("galleryModal")) closeGallery();
     });
     setColorStatus("", false);
-    window.addEventListener("scroll", () => {
-      if (state.type !== "product" || state.productMode !== "query" || state.productLoading || !state.productHasMore) return;
-      const nearBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 160;
-      if (nearBottom) loadProducts(false).catch((err) => setStatus(err.message || "加载失败", true));
-    }, { passive: true });
+    $("productLoadMore")?.addEventListener("click", () => {
+      if (!canLoadMoreProducts()) return;
+      loadProducts(false).catch((err) => setStatus(err.message || "加载失败", true));
+    });
+    window.addEventListener("scroll", maybeLoadMoreProducts, { passive: true });
+    document.addEventListener("scroll", maybeLoadMoreProducts, { passive: true, capture: true });
+    window.addEventListener("resize", armProductLoadMoreCheck, { passive: true });
+    document.addEventListener("touchend", armProductLoadMoreCheck, { passive: true });
+    if ("IntersectionObserver" in window && $("productLoadMore")) {
+      const productLoadMoreObserver = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) maybeLoadMoreProducts();
+      }, { root: null, rootMargin: "260px 0px", threshold: 0 });
+      productLoadMoreObserver.observe($("productLoadMore"));
+    }
     setColorImageFile(null);
     $("productCreateBox").classList.toggle("hidden", !(canProductCreate && state.type === "product" && state.appMode === "category" && state.productTool === "import"));
     $("colorCreateBox").classList.toggle("hidden", !(canColorCreate && state.type === "color" && state.colorMode === "manage"));
