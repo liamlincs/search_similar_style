@@ -240,6 +240,37 @@ class CatalogStore:
         groups["year"] = sorted(groups["year"], key=lambda item: str(item).lower())
         return groups
 
+    def list_subcategories_by_category(self) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {name: [] for name in DEFAULT_CATEGORY_TAGS}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT cat.name AS category_tag, sub.name AS subcategory_tag
+                FROM product_tags AS cat_pt
+                JOIN tags AS cat ON cat.id = cat_pt.tag_id
+                JOIN product_tags AS sub_pt ON sub_pt.style_code = cat_pt.style_code
+                JOIN tags AS sub ON sub.id = sub_pt.tag_id
+                WHERE cat.name >= ? AND cat.name < ?
+                  AND sub.name >= ? AND sub.name < ?
+                ORDER BY cat.name COLLATE NOCASE ASC, sub.name COLLATE NOCASE ASC
+                """,
+                (
+                    TAG_TYPE_PREFIXES["category"],
+                    TAG_TYPE_PREFIXES["category"] + "\uffff",
+                    TAG_TYPE_PREFIXES["subcategory"],
+                    TAG_TYPE_PREFIXES["subcategory"] + "\uffff",
+                ),
+            ).fetchall()
+        for row in rows:
+            category = parse_catalog_tag(str(row["category_tag"])).get("name", "").strip()
+            subcategory = parse_catalog_tag(str(row["subcategory_tag"])).get("name", "").strip()
+            if not category or not subcategory or subcategory == "暂无":
+                continue
+            values = result.setdefault(category, [])
+            if subcategory not in values:
+                values.append(subcategory)
+        return result
+
     def create_tag(self, name: str) -> str:
         tag = self._clean_tag(name)
         if not tag:

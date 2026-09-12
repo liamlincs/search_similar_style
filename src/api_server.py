@@ -2084,6 +2084,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _derive_year_tag_from_style_code(style_code: str) -> str:
         return derive_year_from_style_code(style_code)
 
+    def _derive_import_tags_from_path(rel_path: str) -> tuple[str, List[str]]:
+        parts = [part.strip() for part in Path(str(rel_path or "")).parts if part.strip()]
+        if len(parts) < 4:
+            return "", []
+        year_dir, category_dir, subcategory_dir = parts[0], parts[1], parts[2]
+        year_tag = year_dir if re.fullmatch(r"20\d{2}", year_dir) else ""
+        tags = [
+            make_typed_tag("category", category_dir),
+            make_typed_tag("subcategory", subcategory_dir),
+        ]
+        return year_tag, _normalize_import_tags([tag for tag in tags if tag])
+
     def _sanitize_year_tag(value: str) -> str:
         raw = str(value or "").strip()
         if not raw:
@@ -2185,14 +2197,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     error = "识别款号必须以字母开头"
                 prefix = code_to_filename_prefix(code) if code else re.sub(r"[^A-Za-z0-9_-]+", "_", path.stem).strip("_") or "UNKNOWN"
                 proposed_filename = _next_import_filename(prefix, path.suffix.lower(), used_names, next_seq)
+                path_year_tag, path_tags = _derive_import_tags_from_path(rel_path)
                 results.append(
                     {
                         "source_rel_path": rel_path,
                         "source_name": path.name,
                         "proposed_style_code": style_code,
-                        "proposed_year_tag": _derive_year_tag_from_style_code(style_code),
+                        "proposed_year_tag": path_year_tag or _derive_year_tag_from_style_code(style_code),
                         "proposed_filename": proposed_filename,
-                        "tags": [],
+                        "tags": path_tags,
                         "status": "ok" if (code and is_valid_code) else ("invalid_style_code" if code else "ocr_failed"),
                         "error": error,
                     }
@@ -6424,7 +6437,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       products: [],
       colors: [],
       importJob: null,
-      tagGroups: { year: [], category: [], subcategory: [] },
+      tagGroups: { year: [], category: [], subcategory: [], subcategoryByCategory: {} },
       selectedTags: [],
       filterDraftTags: [],
       appMode: params.get("mode") === "mine" ? "mine" : (params.get("mode") === "image" ? "image" : "category"),
@@ -6657,6 +6670,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         year: groups.year || [],
         category: groups.category || ["单品", "罗纹", "毛织配件", "布匹"],
         subcategory: (groups.subcategory || []).filter((name) => String(name || "").trim() !== "暂无"),
+        subcategoryByCategory: groups.subcategory_by_category || {},
       };
       $("yearOptions").innerHTML = state.tagGroups.year.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
       $("categoryOptions").innerHTML = state.tagGroups.category.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
@@ -6681,24 +6695,47 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!box) return;
       box.textContent = "";
     }
+    function draftTagName(type) {
+      const found = (state.filterDraftTags || []).find((tag) => splitTag(tag).type === type);
+      return found ? splitTag(found).name : "";
+    }
+    function subcategoryOptionsForDraft() {
+      const category = draftTagName("category");
+      const mapping = state.tagGroups.subcategoryByCategory || {};
+      if (!category) return [];
+      const hasLinkedOptions = Object.keys(mapping).some((key) => (mapping[key] || []).length);
+      if (!hasLinkedOptions) return state.tagGroups.subcategory || [];
+      return mapping[category] || [];
+    }
+    function pruneDraftSubcategory() {
+      const subcategory = draftTagName("subcategory");
+      if (!subcategory) return;
+      const allowed = subcategoryOptionsForDraft();
+      if (!allowed.includes(subcategory)) {
+        state.filterDraftTags = (state.filterDraftTags || []).filter((tag) => splitTag(tag).type !== "subcategory");
+      }
+    }
     function renderProductFilterSheet() {
       const box = $("filterSheetBody");
       if (!box) return;
+      pruneDraftSubcategory();
       const draftTags = state.filterDraftTags || [];
+      const selectedCategory = draftTagName("category");
+      const subcategoryList = subcategoryOptionsForDraft();
       const rows = [
         ["年份", "year", state.tagGroups.year],
         ["类别", "category", state.tagGroups.category],
-        ["细类", "subcategory", state.tagGroups.subcategory],
+        ["细类", "subcategory", subcategoryList],
       ];
       box.innerHTML = rows.map(([label, type, list]) => `
         <div class="filter-group">
           <div class="filter-group-title">${label}</div>
           <div class="filter-options">
-            <button class="filter-option ${!(list || []).some((name) => draftTags.includes(typedTag(type, name))) ? "active" : ""}" type="button" data-clear-type="${type}">全部</button>
+            <button class="filter-option ${!(list || []).some((name) => draftTags.includes(typedTag(type, name))) ? "active" : ""}" type="button" data-clear-type="${type}" ${type === "subcategory" && !selectedCategory ? "disabled" : ""}>全部</button>
           ${(list || []).map((name) => {
             const tag = typedTag(type, name);
             return `<button class="filter-option ${draftTags.includes(tag) ? "active" : ""}" type="button" data-filter-type="${type}" data-tag="${escapeHtml(tag)}">${escapeHtml(name)}</button>`;
-          }).join("")}
+          }).join("") || (type === "subcategory" && !selectedCategory ? `<button class="filter-option" type="button" disabled>先选类别</button>` : "")}
           </div>
         </div>
       `).join("");
@@ -6706,7 +6743,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         btn.addEventListener("click", () => {
           const tag = btn.dataset.tag || "";
           const type = btn.dataset.filterType || "";
-          state.filterDraftTags = (state.filterDraftTags || []).filter((x) => splitTag(x).type !== type);
+          const removeTypes = type === "category" ? new Set(["category", "subcategory"]) : new Set([type]);
+          state.filterDraftTags = (state.filterDraftTags || []).filter((x) => !removeTypes.has(splitTag(x).type));
           if (!btn.classList.contains("active")) state.filterDraftTags = state.filterDraftTags.concat([tag]);
           renderProductFilterSheet();
         });
@@ -6714,7 +6752,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       box.querySelectorAll("[data-clear-type]").forEach((btn) => {
         btn.addEventListener("click", () => {
           const type = btn.dataset.clearType || "";
-          state.filterDraftTags = (state.filterDraftTags || []).filter((x) => splitTag(x).type !== type);
+          const removeTypes = type === "category" ? new Set(["category", "subcategory"]) : new Set([type]);
+          state.filterDraftTags = (state.filterDraftTags || []).filter((x) => !removeTypes.has(splitTag(x).type));
           renderProductFilterSheet();
         });
       });
@@ -9076,15 +9115,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         const item = (job.items || [])[index] || {};
         const fallbackName = card.querySelector('[data-role="importFilename"]').value.trim() || item.proposed_filename || "";
         const styleCode = card.querySelector('[data-role="importStyleCode"]').value.trim() || item.proposed_style_code || "";
+        let tags = normalizeTags(item.tags || []);
+        if (bulkCategory) {
+          tags = tags.filter((tag) => splitTag(tag).type !== "category" && splitTag(tag).type !== "subcategory");
+          tags.push(typedTag("category", bulkCategory));
+          if (bulkSubcategory) tags.push(typedTag("subcategory", bulkSubcategory));
+        } else if (bulkSubcategory) {
+          tags = tags.filter((tag) => splitTag(tag).type !== "subcategory");
+          tags.push(typedTag("subcategory", bulkSubcategory));
+        }
         return {
           source_rel_path: item.source_rel_path,
           selected: !!card.querySelector('[data-role="importSelected"]').checked,
           target_filename: importFilenameFromStyle(styleCode, fallbackName),
           year_tag: card.querySelector('[data-role="importYear"]').value.trim(),
-          tags: normalizeTags([
-            typedTag("category", bulkCategory),
-            typedTag("subcategory", bulkSubcategory),
-          ]),
+          tags: normalizeTags(tags),
         };
       });
     }
@@ -12121,7 +12166,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         _catalog_require_permission(request, "product:view")
         return {
             "tags": catalog_store.list_used_tags(),
-            "tag_groups": catalog_store.list_tag_groups(),
+            "tag_groups": {
+                **catalog_store.list_tag_groups(),
+                "subcategory_by_category": catalog_store.list_subcategories_by_category(),
+            },
         }
 
     @app.get("/api/v1/color-card/libraries")
