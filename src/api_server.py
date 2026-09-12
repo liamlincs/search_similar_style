@@ -19,6 +19,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -29,6 +30,7 @@ from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image, ImageEnhance, ImageFile, ImageOps
@@ -7200,11 +7202,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         btn.textContent = "正在下载...";
       }
       try {
-        const downloadUrl = withDownloadParam(url);
+        const downloadUrl = zipDownloadUrl(url);
         const a = document.createElement("a");
         const cleanTitle = String(state.currentZoomTitle || "高清图").replace(/[\\/:*?"<>|]+/g, "_").trim() || "高清图";
         a.href = downloadUrl;
-        a.download = /\\.(png|jpe?g|webp|bmp)$/i.test(cleanTitle) ? cleanTitle : cleanTitle + ".jpg";
+        a.download = cleanTitle.replace(/\\.(png|jpe?g|webp|bmp)$/i, "") + "_高清图.zip";
         a.style.display = "none";
         document.body.appendChild(a);
         a.click();
@@ -7223,16 +7225,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
       }
     }
-    function withDownloadParam(raw) {
+    function zipDownloadUrl(raw) {
       try {
         const url = new URL(raw, location.origin);
-        url.searchParams.delete("max_edge");
-        url.searchParams.delete("q");
-        url.searchParams.set("download", "1");
-        return url.pathname + url.search + url.hash;
+        const parts = url.pathname.split("/").filter(Boolean);
+        const imageName = decodeURIComponent(parts[parts.length - 1] || "");
+        const next = new URL(`/api/v1/catalog/images/${encodeURIComponent(imageName)}/download.zip`, location.origin);
+        const sourceToken = url.searchParams.get("token") || token || "";
+        if (sourceToken) next.searchParams.set("token", sourceToken);
+        return next.pathname + next.search;
       } catch (_) {
-        const sep = String(raw || "").includes("?") ? "&" : "?";
-        return `${raw}${sep}download=1`;
+        return raw;
       }
     }
     function suspendGalleryImagesForZoom() {
@@ -12558,6 +12561,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 headers={"Cache-Control": "public, max-age=604800, immutable"},
             )
         return FileResponse(path=str(fp), headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/api/v1/catalog/images/{image_name}/download.zip")
+    def api_download_catalog_image_zip(request: Request, image_name: str) -> Response:
+        _catalog_require_permission(request, "product:view")
+        safe = Path(image_name).name
+        fp = standard_dir / safe
+        if not safe or not fp.exists() or not fp.is_file():
+            raise HTTPException(status_code=404, detail="image not found")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.write(fp, arcname=safe)
+        zip_name = f"{Path(safe).stem}_高清图.zip"
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers=_download_headers(zip_name, "private, max-age=0, no-cache"),
+        )
 
     @app.post("/api/v1/catalog/imports/commit")
     def api_commit_catalog_import(request: Request, payload: CatalogImportCommitRequest) -> Dict[str, Any]:
