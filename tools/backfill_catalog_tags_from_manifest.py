@@ -5,6 +5,7 @@ import argparse
 import json
 import re
 import shutil
+import sqlite3
 import sys
 import time
 from collections import Counter, defaultdict
@@ -152,6 +153,12 @@ def summarize_store(store: CatalogStore) -> Counter:
     return summary
 
 
+def existing_style_codes(db_path: Path) -> set[str]:
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = conn.execute("SELECT style_code FROM products").fetchall()
+    return {str(row[0]).strip() for row in rows if str(row[0]).strip()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Backfill catalog year/category/subcategory tags from import manifests.")
     parser.add_argument("--db", required=True, help="Path to product_catalog.db")
@@ -170,6 +177,7 @@ def main() -> int:
 
     store = CatalogStore(db_path)
     before = summarize_store(store)
+    existing_codes = existing_style_codes(db_path)
     style_tags: dict[str, list[str]] = defaultdict(list)
     stats: Counter = Counter()
     examples: list[tuple[str, list[str], str]] = []
@@ -196,12 +204,14 @@ def main() -> int:
             if len(examples) < 10:
                 examples.append((style_code, wanted, str(item.get("source_rel_path") or image_name)))
 
-    normalized_style_tags = {code: normalize_tags(tags) for code, tags in style_tags.items()}
+    all_style_tags = {code: normalize_tags(tags) for code, tags in style_tags.items()}
+    normalized_style_tags = {code: tags for code, tags in all_style_tags.items() if code in existing_codes}
     tag_count = sum(len(tags) for tags in normalized_style_tags.values())
     print("模式:", "写入数据库" if args.apply else "预览，不写入")
     print("manifest 文件数:", stats["manifest_files"])
     print("manifest 行数:", stats["rows"])
-    print("可补标签款数:", len(normalized_style_tags))
+    print("manifest 中有标签款数:", len(all_style_tags))
+    print("当前库可补标签款数:", len(normalized_style_tags))
     print("可补标签条数:", tag_count)
     print("补前缺年份/类别/细类:", before["missing_year"], before["missing_category"], before["missing_subcategory"])
     print("示例:")
