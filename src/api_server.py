@@ -5861,6 +5861,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .zoom-original { display: none; }
     .zoom-hd-link { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); min-height: 34px; padding: 0 12px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.72); color: #334155; font-size: 12px; font-weight: 700; text-decoration: none; border: 0; }
     .zoom-close { position: fixed; right: 14px; top: max(14px, env(safe-area-inset-top)); width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: #111827; font-size: 30px; line-height: 1; }
+    .hd-action-sheet { position: fixed; inset: 0; z-index: 220; display: none; align-items: flex-end; background: rgba(0,0,0,.46); }
+    .hd-action-sheet.open { display: flex; }
+    .hd-action-panel { width: 100%; background: #fff; border-radius: 18px 18px 0 0; overflow: hidden; padding-bottom: env(safe-area-inset-bottom); text-align: center; }
+    .hd-action-note { padding: 18px 22px 14px; color: #64748b; font-size: 14px; line-height: 1.45; border-bottom: 1px solid #edf0f4; }
+    .hd-action-panel button { width: 100%; min-height: 56px; border: 0; border-bottom: 1px solid #edf0f4; border-radius: 0; background: #fff; color: #111827; font-size: 17px; font-weight: 500; }
+    .hd-action-panel button.primary { color: #0b77d8; font-weight: 700; }
+    .hd-action-panel button.cancel { margin-top: 8px; color: #64748b; border-bottom: 0; }
     .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
     .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
     .personal-btn.remove { background: #fff1f2; color: #be123c; }
@@ -6339,6 +6346,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <img class="zoom-img" id="zoomImage" alt="图片预览" />
       <a class="zoom-original" id="zoomOriginalLink" href="#" target="_blank" rel="noopener"></a>
       <button class="zoom-hd-link" id="zoomHdBtn" type="button">下载高清图</button>
+    </div>
+    <div class="hd-action-sheet" id="hdActionSheet">
+      <div class="hd-action-panel">
+        <div class="hd-action-note">微信内不能直接保存到相册，可打开高清图后长按保存，或复制链接到浏览器下载。</div>
+        <button class="primary" id="hdOpenOriginalBtn" type="button">打开高清图</button>
+        <button id="hdCopyLinkBtn" type="button">复制高清图链接</button>
+        <button class="cancel" id="hdCancelBtn" type="button">取消</button>
+      </div>
     </div>
     <div class="filter-modal" id="personalProductModal">
       <div class="filter-sheet">
@@ -7195,6 +7210,10 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     async function downloadCurrentZoomOriginal() {
       const url = state.currentZoomOriginalUrl || "";
       if (!url) return;
+      if (isWechat()) {
+        openHdActionSheet();
+        return;
+      }
       const btn = $("zoomHdBtn");
       const oldText = btn ? btn.textContent : "";
       if (btn) {
@@ -7236,6 +7255,46 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return next.pathname + next.search;
       } catch (_) {
         return raw;
+      }
+    }
+    function isWechat() {
+      const ua = navigator.userAgent || "";
+      return /MicroMessenger/i.test(ua);
+    }
+    function openHdActionSheet() {
+      $("hdActionSheet")?.classList.add("open");
+    }
+    function closeHdActionSheet() {
+      $("hdActionSheet")?.classList.remove("open");
+    }
+    function openCurrentZoomOriginal() {
+      const url = state.currentZoomOriginalUrl || "";
+      if (!url) return;
+      location.href = url;
+    }
+    async function copyCurrentZoomOriginalLink() {
+      const url = state.currentZoomOriginalUrl || "";
+      if (!url) return;
+      const absoluteUrl = (() => {
+        try { return new URL(url, location.origin).toString(); } catch (_) { return url; }
+      })();
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(absoluteUrl);
+        } else {
+          const input = document.createElement("input");
+          input.value = absoluteUrl;
+          input.style.position = "fixed";
+          input.style.left = "-9999px";
+          document.body.appendChild(input);
+          input.select();
+          document.execCommand("copy");
+          input.remove();
+        }
+        setStatus("高清图链接已复制", false);
+        closeHdActionSheet();
+      } catch (_) {
+        setStatus("复制失败，请打开高清图后复制链接", true);
       }
     }
     function suspendGalleryImagesForZoom() {
@@ -9212,6 +9271,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     });
     $("zoomCloseBtn").addEventListener("click", closeZoomImage);
     $("zoomHdBtn").addEventListener("click", () => downloadCurrentZoomOriginal());
+    $("hdOpenOriginalBtn").addEventListener("click", openCurrentZoomOriginal);
+    $("hdCopyLinkBtn").addEventListener("click", () => copyCurrentZoomOriginalLink());
+    $("hdCancelBtn").addEventListener("click", closeHdActionSheet);
+    $("hdActionSheet").addEventListener("click", (event) => {
+      if (event.target === $("hdActionSheet")) closeHdActionSheet();
+    });
     $("zoomModal").addEventListener("click", (event) => {
       if (event.target === $("zoomModal")) closeZoomImage();
     });
