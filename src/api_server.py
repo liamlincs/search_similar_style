@@ -5848,6 +5848,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .zoom-modal.open { display: flex; }
     .zoom-img { max-width: 100%; max-height: 88vh; object-fit: contain; border-radius: 8px; background: #111827; }
     .zoom-original { display: none; }
+    .zoom-download { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); min-height: 34px; padding: 0 12px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.72); color: #334155; font-size: 12px; font-weight: 700; text-decoration: none; }
     .zoom-close { position: fixed; right: 14px; top: max(14px, env(safe-area-inset-top)); width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: #111827; font-size: 30px; line-height: 1; }
     .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
     .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
@@ -6326,6 +6327,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <button class="zoom-close" id="zoomCloseBtn" type="button">×</button>
       <img class="zoom-img" id="zoomImage" alt="图片预览" />
       <a class="zoom-original" id="zoomOriginalLink" href="#" target="_blank" rel="noopener"></a>
+      <a class="zoom-download" id="zoomDownloadLink" href="#" target="_blank" rel="noopener" download>下载高清图</a>
     </div>
     <div class="filter-modal" id="personalProductModal">
       <div class="filter-sheet">
@@ -7134,7 +7136,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("galleryGrid").querySelectorAll('[data-role="zoomGalleryImage"]').forEach((img) => {
         img.addEventListener("click", (event) => {
           event.stopPropagation();
-          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "");
+          const item = img.closest(".gallery-item");
+          const imageName = (item && item.dataset.imageName) || "";
+          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "", productOriginalImageUrl(imageName, img.getAttribute("src") || ""));
         });
       });
       if (!isPersonal) {
@@ -7162,6 +7166,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("zoomImage").alt = title || "图片预览";
       const link = $("zoomOriginalLink");
       if (link) link.href = imageUrl;
+      const downloadLink = $("zoomDownloadLink");
+      if (downloadLink) {
+        downloadLink.href = originalUrl || imageUrl;
+        downloadLink.download = title || "高清图";
+      }
       $("zoomModal").classList.add("open");
     }
     function closeZoomImage() {
@@ -7169,6 +7178,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("zoomImage").removeAttribute("src");
       const link = $("zoomOriginalLink");
       if (link) link.href = "#";
+      const downloadLink = $("zoomDownloadLink");
+      if (downloadLink) {
+        downloadLink.href = "#";
+        downloadLink.removeAttribute("download");
+      }
       restoreGalleryImagesAfterZoom();
     }
     function suspendGalleryImagesForZoom() {
