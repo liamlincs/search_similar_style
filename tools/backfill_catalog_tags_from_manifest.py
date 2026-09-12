@@ -74,9 +74,10 @@ def tags_from_source_rel_path(source_rel_path: str) -> list[str]:
     if len(parts) < 4:
         return []
     year_dir, category_dir, subcategory_dir = parts[0], parts[1], parts[2]
+    if not re.fullmatch(r"20\d{2}", year_dir):
+        return []
     tags = []
-    if re.fullmatch(r"20\d{2}", year_dir):
-        tags.append(make_typed_tag("year", year_dir))
+    tags.append(make_typed_tag("year", year_dir))
     tags.append(make_typed_tag("category", category_dir))
     tags.append(make_typed_tag("subcategory", subcategory_dir))
     return normalize_tags(tag for tag in tags if tag)
