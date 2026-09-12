@@ -5848,7 +5848,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .zoom-modal.open { display: flex; }
     .zoom-img { max-width: 100%; max-height: 88vh; object-fit: contain; border-radius: 8px; background: #111827; }
     .zoom-original { display: none; }
-    .zoom-download { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); min-height: 34px; padding: 0 12px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.72); color: #334155; font-size: 12px; font-weight: 700; text-decoration: none; }
+    .zoom-hd-link { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); min-height: 34px; padding: 0 12px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.72); color: #334155; font-size: 12px; font-weight: 700; text-decoration: none; border: 0; }
     .zoom-close { position: fixed; right: 14px; top: max(14px, env(safe-area-inset-top)); width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: #111827; font-size: 30px; line-height: 1; }
     .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
     .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
@@ -6327,7 +6327,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       <button class="zoom-close" id="zoomCloseBtn" type="button">×</button>
       <img class="zoom-img" id="zoomImage" alt="图片预览" />
       <a class="zoom-original" id="zoomOriginalLink" href="#" target="_blank" rel="noopener"></a>
-      <a class="zoom-download" id="zoomDownloadLink" href="#" target="_blank" rel="noopener" download>下载高清图</a>
+      <button class="zoom-hd-link" id="zoomHdBtn" type="button">下载高清图</button>
     </div>
     <div class="filter-modal" id="personalProductModal">
       <div class="filter-sheet">
@@ -6435,6 +6435,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       nativeMeterPollTimer: null,
       nativeMeterPollSeq: 0,
       currentGalleryProduct: null,
+      currentZoomOriginalUrl: "",
+      currentZoomTitle: "",
       selectedGalleryImages: [],
       personalFolders: [],
       selectedPersonalFolder: "",
@@ -7164,26 +7166,55 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       suspendGalleryImagesForZoom();
       $("zoomImage").src = imageUrl;
       $("zoomImage").alt = title || "图片预览";
+      state.currentZoomOriginalUrl = originalUrl || imageUrl;
+      state.currentZoomTitle = title || "高清图";
       const link = $("zoomOriginalLink");
       if (link) link.href = imageUrl;
-      const downloadLink = $("zoomDownloadLink");
-      if (downloadLink) {
-        downloadLink.href = originalUrl || imageUrl;
-        downloadLink.download = title || "高清图";
-      }
       $("zoomModal").classList.add("open");
     }
     function closeZoomImage() {
       $("zoomModal").classList.remove("open");
       $("zoomImage").removeAttribute("src");
+      state.currentZoomOriginalUrl = "";
+      state.currentZoomTitle = "";
       const link = $("zoomOriginalLink");
       if (link) link.href = "#";
-      const downloadLink = $("zoomDownloadLink");
-      if (downloadLink) {
-        downloadLink.href = "#";
-        downloadLink.removeAttribute("download");
-      }
       restoreGalleryImagesAfterZoom();
+    }
+    async function downloadCurrentZoomOriginal() {
+      const url = state.currentZoomOriginalUrl || "";
+      if (!url) return;
+      const btn = $("zoomHdBtn");
+      const oldText = btn ? btn.textContent : "";
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "下载中...";
+      }
+      try {
+        const resp = await fetch(url, { credentials: "same-origin" });
+        if (!resp.ok) throw new Error("下载失败");
+        const blob = await resp.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const cleanTitle = String(state.currentZoomTitle || "高清图").replace(/[\\/:*?"<>|]+/g, "_").trim() || "高清图";
+        const suffix = blob.type === "image/png" ? ".png" : ".jpg";
+        a.href = objectUrl;
+        a.download = cleanTitle.toLowerCase().endsWith(suffix) ? cleanTitle : cleanTitle + suffix;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          URL.revokeObjectURL(objectUrl);
+          a.remove();
+        }, 1200);
+      } catch (err) {
+        setStatus(err.message || "下载高清图失败", true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = oldText || "下载高清图";
+        }
+      }
     }
     function suspendGalleryImagesForZoom() {
       $("galleryGrid").querySelectorAll('img[data-role="zoomGalleryImage"]').forEach((img) => {
@@ -9158,6 +9189,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (event.target === $("filterModal")) closeFilterModal();
     });
     $("zoomCloseBtn").addEventListener("click", closeZoomImage);
+    $("zoomHdBtn").addEventListener("click", () => downloadCurrentZoomOriginal());
     $("zoomModal").addEventListener("click", (event) => {
       if (event.target === $("zoomModal")) closeZoomImage();
     });
