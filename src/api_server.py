@@ -2918,6 +2918,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             return "image/jpeg"
         return "application/octet-stream"
 
+    def _download_headers(filename: str, cache_control: str = "public, max-age=86400") -> Dict[str, str]:
+        safe = Path(filename or "image.jpg").name or "image.jpg"
+        ascii_name = re.sub(r"[^0-9A-Za-z_.-]+", "_", safe).strip("._") or "image.jpg"
+        quoted = urllib.parse.quote(safe)
+        return {
+            "Cache-Control": cache_control,
+            "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}",
+        }
+
     def _safe_catalog_part(value: str, fallback: str = "item", max_len: int = 36) -> str:
         clean = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", str(value or "").strip()).strip("-_")
         return (clean or fallback)[:max_len]
@@ -7188,32 +7197,42 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const oldText = btn ? btn.textContent : "";
       if (btn) {
         btn.disabled = true;
-        btn.textContent = "下载中...";
+        btn.textContent = "正在下载...";
       }
       try {
-        const resp = await fetch(url, { credentials: "same-origin" });
-        if (!resp.ok) throw new Error("下载失败");
-        const blob = await resp.blob();
-        const objectUrl = URL.createObjectURL(blob);
+        const downloadUrl = withDownloadParam(url);
         const a = document.createElement("a");
         const cleanTitle = String(state.currentZoomTitle || "高清图").replace(/[\\/:*?"<>|]+/g, "_").trim() || "高清图";
-        const suffix = blob.type === "image/png" ? ".png" : ".jpg";
-        a.href = objectUrl;
-        a.download = cleanTitle.toLowerCase().endsWith(suffix) ? cleanTitle : cleanTitle + suffix;
+        a.href = downloadUrl;
+        a.download = /\\.(png|jpe?g|webp|bmp)$/i.test(cleanTitle) ? cleanTitle : cleanTitle + ".jpg";
         a.style.display = "none";
         document.body.appendChild(a);
         a.click();
         setTimeout(() => {
-          URL.revokeObjectURL(objectUrl);
           a.remove();
-        }, 1200);
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = oldText || "下载高清图";
+          }
+        }, 1600);
       } catch (err) {
         setStatus(err.message || "下载高清图失败", true);
-      } finally {
         if (btn) {
           btn.disabled = false;
           btn.textContent = oldText || "下载高清图";
         }
+      }
+    }
+    function withDownloadParam(raw) {
+      try {
+        const url = new URL(raw, location.origin);
+        url.searchParams.delete("max_edge");
+        url.searchParams.delete("q");
+        url.searchParams.set("download", "1");
+        return url.pathname + url.search + url.hash;
+      } catch (_) {
+        const sep = String(raw || "").includes("?") ? "&" : "?";
+        return `${raw}${sep}download=1`;
       }
     }
     function suspendGalleryImagesForZoom() {
@@ -12650,9 +12669,17 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
 
     @app.get("/images/{image_name}")
-    def get_standard_image(image_name: str, max_edge: int = 0, q: int = 82) -> FileResponse:
+    def get_standard_image(image_name: str, max_edge: int = 0, q: int = 82, download: int = 0) -> FileResponse:
         safe = Path(image_name).name
         fp = standard_dir / safe
+        if int(download or 0) == 1:
+            if not fp.exists() or not fp.is_file():
+                raise HTTPException(status_code=404, detail="image not found")
+            return FileResponse(
+                path=str(fp),
+                media_type="application/octet-stream",
+                headers=_download_headers(safe),
+            )
         if max_edge > 0:
             edge = max(128, min(2048, int(max_edge)))
             quality = max(40, min(95, int(q)))
