@@ -5847,7 +5847,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .zoom-modal { position: fixed; inset: 0; z-index: 180; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.88); padding: 16px; }
     .zoom-modal.open { display: flex; }
     .zoom-img { max-width: 100%; max-height: 88vh; object-fit: contain; border-radius: 8px; background: #111827; }
-    .zoom-original { position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); min-height: 38px; padding: 0 14px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.92); color: #0f172a; font-size: 14px; font-weight: 800; text-decoration: none; }
+    .zoom-original { display: none; }
     .zoom-close { position: fixed; right: 14px; top: max(14px, env(safe-area-inset-top)); width: 42px; min-width: 42px; min-height: 42px; padding: 0; border-radius: 999px; background: rgba(255,255,255,.92); color: #111827; font-size: 30px; line-height: 1; }
     .personal-btn { min-height: 40px; padding: 0 14px; border: 0; border-radius: 8px; background: #e8f3ff; color: #0b77d8; font-weight: 800; white-space: nowrap; }
     .personal-btn.added { background: #eef6ff; color: #0f5fa8; }
@@ -6325,7 +6325,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     <div class="zoom-modal" id="zoomModal">
       <button class="zoom-close" id="zoomCloseBtn" type="button">×</button>
       <img class="zoom-img" id="zoomImage" alt="图片预览" />
-      <a class="zoom-original" id="zoomOriginalLink" href="#" target="_blank" rel="noopener">查看原图</a>
+      <a class="zoom-original" id="zoomOriginalLink" href="#" target="_blank" rel="noopener"></a>
     </div>
     <div class="filter-modal" id="personalProductModal">
       <div class="filter-sheet">
@@ -7134,9 +7134,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("galleryGrid").querySelectorAll('[data-role="zoomGalleryImage"]').forEach((img) => {
         img.addEventListener("click", (event) => {
           event.stopPropagation();
-          const item = img.closest(".gallery-item");
-          const imageName = (item && item.dataset.imageName) || "";
-          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "", productOriginalImageUrl(imageName, img.getAttribute("src") || ""));
+          openZoomImage(img.getAttribute("src") || "", img.getAttribute("alt") || "");
         });
       });
       if (!isPersonal) {
@@ -7159,10 +7157,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     }
     function openZoomImage(imageUrl, title, originalUrl = "") {
       if (!imageUrl) return;
+      suspendGalleryImagesForZoom();
       $("zoomImage").src = imageUrl;
       $("zoomImage").alt = title || "图片预览";
       const link = $("zoomOriginalLink");
-      if (link) link.href = originalUrl || imageUrl;
+      if (link) link.href = imageUrl;
       $("zoomModal").classList.add("open");
     }
     function closeZoomImage() {
@@ -7170,6 +7169,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       $("zoomImage").removeAttribute("src");
       const link = $("zoomOriginalLink");
       if (link) link.href = "#";
+      restoreGalleryImagesAfterZoom();
+    }
+    function suspendGalleryImagesForZoom() {
+      $("galleryGrid").querySelectorAll('img[data-role="zoomGalleryImage"]').forEach((img) => {
+        const src = img.getAttribute("src") || "";
+        if (!src || img.dataset.zoomPausedSrc) return;
+        img.dataset.zoomPausedSrc = src;
+        img.removeAttribute("src");
+      });
+    }
+    function restoreGalleryImagesAfterZoom() {
+      $("galleryGrid").querySelectorAll('img[data-role="zoomGalleryImage"]').forEach((img) => {
+        const src = img.dataset.zoomPausedSrc || "";
+        if (!src) return;
+        img.setAttribute("src", src);
+        delete img.dataset.zoomPausedSrc;
+      });
     }
     function openImagePreview(title, imageUrl) {
       state.currentGalleryProduct = null;
