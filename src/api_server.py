@@ -1617,6 +1617,87 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             raw_tags.append(subcategory if str(subcategory).startswith("subcategory:") else f"subcategory:{subcategory}")
         return _normalize_import_tags(raw_tags)
 
+    def _catalog_tag_sync_paths() -> List[Path]:
+        paths = sorted(p for p in standard_dir.glob("_tag_sync*.jsonl") if p.is_file())
+        paths.extend(sorted(p for p in standard_dir.glob("_tag_sync*.json") if p.is_file()))
+        return paths
+
+    def _tag_path_from_source_rel_path(source_rel_path: str) -> Dict[str, Any] | None:
+        parts = [part.strip() for part in Path(str(source_rel_path or "")).parts if part.strip()]
+        if len(parts) < 3 or not re.fullmatch(r"20\d{2}", parts[0]):
+            return None
+        subcategories: List[str] = []
+        for part in parts[2:-1]:
+            subcategories.extend(_manifest_split_values(part))
+        return {
+            "year": parts[0],
+            "category": parts[1],
+            "subcategories": _normalize_import_tags(subcategories),
+        }
+
+    def _catalog_dir_tag_hierarchy() -> Dict[str, Any]:
+        paths = _catalog_tag_sync_paths()
+        if not paths:
+            return {}
+        by_year_category: Dict[str, Dict[str, List[str]]] = {}
+        by_category: Dict[str, List[str]] = {}
+        categories_by_year: Dict[str, List[str]] = {}
+
+        def add_path(tag_path: Dict[str, Any]) -> None:
+            year = str(tag_path.get("year") or "").strip()
+            category = str(tag_path.get("category") or "").strip()
+            if not year or not category:
+                return
+            year_categories = categories_by_year.setdefault(year, [])
+            if category not in year_categories:
+                year_categories.append(category)
+            subcategories = [
+                str(item or "").strip()
+                for item in tag_path.get("subcategories") or []
+                if str(item or "").strip() and str(item or "").strip() != "暂无"
+            ]
+            target = by_year_category.setdefault(year, {}).setdefault(category, [])
+            flat_target = by_category.setdefault(category, [])
+            for subcategory in subcategories:
+                if subcategory not in target:
+                    target.append(subcategory)
+                if subcategory not in flat_target:
+                    flat_target.append(subcategory)
+
+        for path in paths:
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    item = json.loads(raw)
+                except Exception:
+                    continue
+                raw_paths = item.get("tag_paths")
+                if isinstance(raw_paths, list):
+                    for raw_path in raw_paths:
+                        if isinstance(raw_path, dict):
+                            add_path(raw_path)
+                else:
+                    source = str(item.get("source_rel_path") or "").strip()
+                    inferred = _tag_path_from_source_rel_path(source)
+                    if inferred:
+                        add_path(inferred)
+
+        for mapping in by_year_category.values():
+            for values in mapping.values():
+                values.sort(key=lambda item: str(item).lower())
+        for values in by_category.values():
+            values.sort(key=lambda item: str(item).lower())
+        for values in categories_by_year.values():
+            values.sort(key=lambda item: str(item).lower())
+        return {
+            "subcategory_by_year_category": by_year_category,
+            "subcategory_by_category": by_category,
+            "category_by_year": categories_by_year,
+            "source_files": [path.name for path in paths],
+        }
+
     def _apply_nas_import_manifest() -> Dict[str, Any]:
         manifest_paths: List[Path] = []
         manifest_done_dir = standard_dir / "_nas_import_manifests_done"
@@ -6437,7 +6518,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       products: [],
       colors: [],
       importJob: null,
-      tagGroups: { year: [], category: [], subcategory: [], subcategoryByCategory: {} },
+      tagGroups: { year: [], category: [], subcategory: [], categoryByYear: {}, subcategoryByCategory: {}, subcategoryByYearCategory: {} },
       selectedTags: [],
       filterDraftTags: [],
       appMode: params.get("mode") === "mine" ? "mine" : (params.get("mode") === "image" ? "image" : "category"),
@@ -6671,7 +6752,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         year: groups.year || [],
         category: groups.category || ["单品", "罗纹", "毛织配件", "布匹"],
         subcategory: (groups.subcategory || []).filter((name) => String(name || "").trim() !== "暂无"),
+        categoryByYear: groups.category_by_year || {},
         subcategoryByCategory: groups.subcategory_by_category || {},
+        subcategoryByYearCategory: groups.subcategory_by_year_category || {},
       };
       $("yearOptions").innerHTML = state.tagGroups.year.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
       $("categoryOptions").innerHTML = state.tagGroups.category.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
@@ -6700,13 +6783,38 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const found = (state.filterDraftTags || []).find((tag) => splitTag(tag).type === type);
       return found ? splitTag(found).name : "";
     }
+    function categoryOptionsForDraft() {
+      const year = draftTagName("year");
+      const mapping = state.tagGroups.categoryByYear || {};
+      const hasLinkedOptions = Object.keys(mapping).some((key) => (mapping[key] || []).length);
+      if (!year || !hasLinkedOptions) return state.tagGroups.category || [];
+      return mapping[year] || [];
+    }
     function subcategoryOptionsForDraft() {
+      const year = draftTagName("year");
       const category = draftTagName("category");
-      const mapping = state.tagGroups.subcategoryByCategory || {};
       if (!category) return [];
+      const yearMapping = state.tagGroups.subcategoryByYearCategory || {};
+      const hasYearLinkedOptions = Object.keys(yearMapping).some((key) => {
+        const categories = yearMapping[key] || {};
+        return Object.keys(categories).some((name) => (categories[name] || []).length);
+      });
+      if (year && hasYearLinkedOptions) return ((yearMapping[year] || {})[category]) || [];
+      const mapping = state.tagGroups.subcategoryByCategory || {};
       const hasLinkedOptions = Object.keys(mapping).some((key) => (mapping[key] || []).length);
       if (!hasLinkedOptions) return state.tagGroups.subcategory || [];
       return mapping[category] || [];
+    }
+    function pruneDraftCategory() {
+      const category = draftTagName("category");
+      if (!category) return;
+      const allowed = categoryOptionsForDraft();
+      if (!allowed.includes(category)) {
+        state.filterDraftTags = (state.filterDraftTags || []).filter((tag) => {
+          const type = splitTag(tag).type;
+          return type !== "category" && type !== "subcategory";
+        });
+      }
     }
     function pruneDraftSubcategory() {
       const subcategory = draftTagName("subcategory");
@@ -6719,13 +6827,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function renderProductFilterSheet() {
       const box = $("filterSheetBody");
       if (!box) return;
+      pruneDraftCategory();
       pruneDraftSubcategory();
       const draftTags = state.filterDraftTags || [];
+      const selectedYear = draftTagName("year");
       const selectedCategory = draftTagName("category");
+      const categoryList = categoryOptionsForDraft();
       const subcategoryList = subcategoryOptionsForDraft();
       const rows = [
         ["年份", "year", state.tagGroups.year],
-        ["类别", "category", state.tagGroups.category],
+        ["类别", "category", categoryList],
         ["细类", "subcategory", subcategoryList],
       ];
       box.innerHTML = rows.map(([label, type, list]) => `
@@ -6744,7 +6855,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         btn.addEventListener("click", () => {
           const tag = btn.dataset.tag || "";
           const type = btn.dataset.filterType || "";
-          const removeTypes = type === "category" ? new Set(["category", "subcategory"]) : new Set([type]);
+          const removeTypes = type === "year" ? new Set(["year", "category", "subcategory"]) : (type === "category" ? new Set(["category", "subcategory"]) : new Set([type]));
           state.filterDraftTags = (state.filterDraftTags || []).filter((x) => !removeTypes.has(splitTag(x).type));
           if (!btn.classList.contains("active")) state.filterDraftTags = state.filterDraftTags.concat([tag]);
           renderProductFilterSheet();
@@ -6753,7 +6864,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       box.querySelectorAll("[data-clear-type]").forEach((btn) => {
         btn.addEventListener("click", () => {
           const type = btn.dataset.clearType || "";
-          const removeTypes = type === "category" ? new Set(["category", "subcategory"]) : new Set([type]);
+          const removeTypes = type === "year" ? new Set(["year", "category", "subcategory"]) : (type === "category" ? new Set(["category", "subcategory"]) : new Set([type]));
           state.filterDraftTags = (state.filterDraftTags || []).filter((x) => !removeTypes.has(splitTag(x).type));
           renderProductFilterSheet();
         });
@@ -12220,11 +12331,20 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/v1/catalog/tags")
     def api_list_catalog_tags(request: Request) -> Dict[str, Any]:
         _catalog_require_permission(request, "product:view")
+        tag_groups = catalog_store.list_tag_groups()
+        dir_hierarchy = _catalog_dir_tag_hierarchy()
+        subcategory_by_category = (
+            dir_hierarchy.get("subcategory_by_category")
+            if dir_hierarchy.get("subcategory_by_category")
+            else catalog_store.list_subcategories_by_category()
+        )
         return {
             "tags": catalog_store.list_used_tags(),
             "tag_groups": {
-                **catalog_store.list_tag_groups(),
-                "subcategory_by_category": catalog_store.list_subcategories_by_category(),
+                **tag_groups,
+                "category_by_year": dir_hierarchy.get("category_by_year", {}),
+                "subcategory_by_category": subcategory_by_category,
+                "subcategory_by_year_category": dir_hierarchy.get("subcategory_by_year_category", {}),
             },
         }
 
