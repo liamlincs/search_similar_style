@@ -1620,15 +1620,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return _normalize_import_tags(raw_tags)
 
     def _catalog_tag_sync_paths() -> List[Path]:
-        paths = sorted(p for p in standard_dir.glob("_tag_sync*.jsonl") if p.is_file())
-        return paths
+        path = standard_dir / "_tag_sync.jsonl"
+        return [path] if path.is_file() else []
 
     def _catalog_tag_sync_hierarchy_paths() -> List[Path]:
-        patterns = ("_tag_sync_hierarchy*.json", "_tag_hierarchy*.json")
-        paths: List[Path] = []
-        for pattern in patterns:
-            paths.extend(p for p in standard_dir.glob(pattern) if p.is_file())
-        return sorted(paths)
+        paths = [
+            standard_dir / "_tag_sync_hierarchy.json",
+            standard_dir / "_tag_hierarchy.json",
+        ]
+        return [path for path in paths if path.is_file()]
 
     def _catalog_tag_sync_signature(paths: List[Path]) -> tuple[tuple[str, int, int], ...]:
         signature: List[tuple[str, int, int]] = []
