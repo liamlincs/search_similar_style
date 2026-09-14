@@ -197,9 +197,14 @@ class CatalogStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT DISTINCT t.name
-                FROM tags t
-                JOIN product_tags pt ON pt.tag_id = t.id
+                SELECT t.name
+                FROM tags AS t INDEXED BY idx_tags_name
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM product_tags AS pt INDEXED BY idx_product_tags_tag_id
+                    WHERE pt.tag_id = t.id
+                    LIMIT 1
+                )
                 ORDER BY t.name COLLATE NOCASE ASC
                 """
             ).fetchall()
