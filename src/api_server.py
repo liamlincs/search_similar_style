@@ -1620,8 +1620,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
 
     def _catalog_tag_sync_paths() -> List[Path]:
         paths = sorted(p for p in standard_dir.glob("_tag_sync*.jsonl") if p.is_file())
-        paths.extend(sorted(p for p in standard_dir.glob("_tag_sync*.json") if p.is_file()))
         return paths
+
+    def _catalog_tag_sync_hierarchy_paths() -> List[Path]:
+        patterns = ("_tag_sync_hierarchy*.json", "_tag_hierarchy*.json")
+        paths: List[Path] = []
+        for pattern in patterns:
+            paths.extend(p for p in standard_dir.glob(pattern) if p.is_file())
+        return sorted(paths)
 
     def _catalog_tag_sync_signature(paths: List[Path]) -> tuple[tuple[str, int, int], ...]:
         signature: List[tuple[str, int, int]] = []
@@ -1646,7 +1652,96 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "subcategories": _normalize_import_tags(subcategories),
         }
 
+    def _normalize_catalog_dir_hierarchy(data: Dict[str, Any], source_files: List[str]) -> Dict[str, Any]:
+        by_year_category: Dict[str, Dict[str, List[str]]] = {}
+        by_category: Dict[str, List[str]] = {}
+        categories_by_year: Dict[str, List[str]] = {}
+
+        def add_path(year: Any, category: Any, subcategories: Any = None) -> None:
+            clean_year = str(year or "").strip()
+            clean_category = str(category or "").strip()
+            if not clean_year or not clean_category:
+                return
+            year_categories = categories_by_year.setdefault(clean_year, [])
+            if clean_category not in year_categories:
+                year_categories.append(clean_category)
+            clean_subcategories = [
+                str(item or "").strip()
+                for item in (subcategories or [])
+                if str(item or "").strip() and str(item or "").strip() != "暂无"
+            ]
+            year_target = by_year_category.setdefault(clean_year, {}).setdefault(clean_category, [])
+            flat_target = by_category.setdefault(clean_category, [])
+            for subcategory in clean_subcategories:
+                if subcategory not in year_target:
+                    year_target.append(subcategory)
+                if subcategory not in flat_target:
+                    flat_target.append(subcategory)
+
+        raw_by_year_category = data.get("subcategory_by_year_category")
+        if isinstance(raw_by_year_category, dict):
+            for year, categories in raw_by_year_category.items():
+                if not isinstance(categories, dict):
+                    continue
+                for category, subcategories in categories.items():
+                    add_path(year, category, subcategories)
+
+        raw_categories_by_year = data.get("category_by_year")
+        if isinstance(raw_categories_by_year, dict):
+            for year, categories in raw_categories_by_year.items():
+                for category in categories or []:
+                    add_path(year, category, [])
+
+        raw_by_category = data.get("subcategory_by_category")
+        if isinstance(raw_by_category, dict):
+            for category, subcategories in raw_by_category.items():
+                clean_category = str(category or "").strip()
+                if not clean_category:
+                    continue
+                flat_target = by_category.setdefault(clean_category, [])
+                for subcategory in subcategories or []:
+                    clean_subcategory = str(subcategory or "").strip()
+                    if clean_subcategory and clean_subcategory != "暂无" and clean_subcategory not in flat_target:
+                        flat_target.append(clean_subcategory)
+
+        for mapping in by_year_category.values():
+            for values in mapping.values():
+                values.sort(key=lambda item: str(item).lower())
+        for values in by_category.values():
+            values.sort(key=lambda item: str(item).lower())
+        for values in categories_by_year.values():
+            values.sort(key=lambda item: str(item).lower())
+        return {
+            "subcategory_by_year_category": by_year_category,
+            "subcategory_by_category": by_category,
+            "category_by_year": categories_by_year,
+            "source_files": source_files,
+        }
+
     def _catalog_dir_tag_hierarchy() -> Dict[str, Any]:
+        hierarchy_paths = _catalog_tag_sync_hierarchy_paths()
+        if hierarchy_paths:
+            latest = max(hierarchy_paths, key=lambda path: path.stat().st_mtime_ns)
+            signature = (("hierarchy",),) + _catalog_tag_sync_signature([latest])
+            if catalog_tag_sync_cache.get("signature") == signature:
+                cached = catalog_tag_sync_cache.get("data")
+                return cached if isinstance(cached, dict) else {}
+            try:
+                raw_data = json.loads(latest.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                logging.exception("catalog tag sync hierarchy json failed: %s", latest)
+            else:
+                result = _normalize_catalog_dir_hierarchy(raw_data if isinstance(raw_data, dict) else {}, [latest.name])
+                catalog_tag_sync_cache["signature"] = signature
+                catalog_tag_sync_cache["data"] = result
+                logging.info(
+                    "catalog tag sync hierarchy json loaded: file=%s years=%d categories=%d",
+                    latest.name,
+                    len(result.get("subcategory_by_year_category") or {}),
+                    len(result.get("subcategory_by_category") or {}),
+                )
+                return result
+
         paths = _catalog_tag_sync_paths()
         if not paths:
             catalog_tag_sync_cache["signature"] = None

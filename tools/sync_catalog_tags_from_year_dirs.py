@@ -233,6 +233,17 @@ def build_year_hierarchy(tag_paths_by_code: dict[str, list[dict[str, object]]]) 
     }
 
 
+def build_category_by_year(tag_paths_by_code: dict[str, list[dict[str, object]]]) -> dict[str, list[str]]:
+    mapping: dict[str, set[str]] = defaultdict(set)
+    for paths in tag_paths_by_code.values():
+        for path in paths:
+            year = str(path.get("year") or "").strip()
+            category = str(path.get("category") or "").strip()
+            if year and category:
+                mapping[year].add(category)
+    return {year: sorted(values) for year, values in sorted(mapping.items())}
+
+
 def build_category_hierarchy_from_paths(tag_paths_by_code: dict[str, list[dict[str, object]]]) -> dict[str, list[str]]:
     mapping: dict[str, set[str]] = defaultdict(set)
     for paths in tag_paths_by_code.values():
@@ -245,6 +256,18 @@ def build_category_hierarchy_from_paths(tag_paths_by_code: dict[str, list[dict[s
                 if name and name != "暂无":
                     mapping[category].add(name)
     return {category: sorted(values) for category, values in sorted(mapping.items())}
+
+
+def write_hierarchy_json(output_path: Path, tag_paths_by_code: dict[str, list[dict[str, object]]]) -> None:
+    hierarchy = {
+        "generated_by": "sync_catalog_tags_from_year_dirs",
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "category_by_year": build_category_by_year(tag_paths_by_code),
+        "subcategory_by_category": build_category_hierarchy_from_paths(tag_paths_by_code),
+        "subcategory_by_year_category": build_year_hierarchy(tag_paths_by_code),
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(hierarchy, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def write_tag_sync_jsonl(
@@ -340,6 +363,7 @@ def main() -> int:
     parser.add_argument("--year-parent-dir", help="Directory containing 2020/2021/... folders, or one year folder itself")
     parser.add_argument("--input-jsonl", action="append", default=[], help="Tag-sync JSONL file or directory generated on Windows. Can be repeated")
     parser.add_argument("--output-jsonl", help="Write scanned tags to this JSONL file without using the DB")
+    parser.add_argument("--output-hierarchy-json", help="Write a compact hierarchy JSON for the H5 filter API")
     parser.add_argument("--apply", action="store_true", help="Write changes. Omit for dry-run")
     parser.add_argument("--mode", choices=["replace", "add"], default="replace", help="replace updates year/category/subcategory; add only adds missing tags")
     parser.add_argument("--no-backup", action="store_true", help="Do not create a .bak file before --apply")
@@ -357,6 +381,10 @@ def main() -> int:
         output_path = Path(args.output_jsonl).expanduser()
         write_tag_sync_jsonl(output_path, scanned_tags, examples_by_code, tag_paths_by_code)
         print("已生成标签同步 JSONL:", output_path)
+    if args.output_hierarchy_json:
+        output_path = Path(args.output_hierarchy_json).expanduser()
+        write_hierarchy_json(output_path, tag_paths_by_code)
+        print("已生成筛选层级 JSON:", output_path)
 
     if not args.db:
         print("模式: 仅扫描/导出，不连接数据库")
