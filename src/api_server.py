@@ -748,6 +748,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_prewarm_image_cache_quality = max(40, min(95, int(catalog_cfg.get("prewarm_image_cache_quality", catalog_image_quality))))
     catalog_trust_image_cache = bool(catalog_cfg.get("trust_image_cache", False))
     catalog_tag_sync_cache: Dict[str, Any] = {"signature": None, "data": {}}
+    catalog_tags_api_cache: Dict[str, Any] = {"signature": None, "data": None}
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
@@ -1638,6 +1639,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 continue
             signature.append((path.name, int(stat.st_mtime_ns), int(stat.st_size)))
         return tuple(signature)
+
+    def _path_signature(path: Path) -> tuple[str, int, int]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return (str(path), 0, 0)
+        return (str(path), int(stat.st_mtime_ns), int(stat.st_size))
 
     def _tag_path_from_source_rel_path(source_rel_path: str) -> Dict[str, Any] | None:
         parts = [part.strip() for part in Path(str(source_rel_path or "")).parts if part.strip()]
@@ -12453,7 +12461,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     @app.get("/api/v1/catalog/tags")
     def api_list_catalog_tags(request: Request) -> Dict[str, Any]:
         _catalog_require_permission(request, "product:view")
-        tag_groups = catalog_store.list_tag_groups()
+        hierarchy_paths = _catalog_tag_sync_hierarchy_paths()
+        tag_sync_paths = hierarchy_paths or _catalog_tag_sync_paths()
+        signature = (_path_signature(catalog_store.db_path), _catalog_tag_sync_signature(tag_sync_paths))
+        if catalog_tags_api_cache.get("signature") == signature and isinstance(catalog_tags_api_cache.get("data"), dict):
+            return catalog_tags_api_cache["data"]
+
+        used_tags = catalog_store.list_used_tags()
+        tag_groups: Dict[str, List[str]] = {
+            "year": [],
+            "category": list(DEFAULT_CATEGORY_TAGS),
+            "subcategory": list(DEFAULT_SUBCATEGORY_TAGS),
+        }
+        for raw in used_tags:
+            parsed = parse_catalog_tag(raw)
+            kind = str(parsed.get("type", ""))
+            name = str(parsed.get("name", "")).strip()
+            if kind not in tag_groups or not name:
+                continue
+            if name not in tag_groups[kind]:
+                tag_groups[kind].append(name)
+        tag_groups["year"] = sorted(tag_groups["year"], key=lambda item: str(item).lower())
+
         dir_hierarchy = _catalog_dir_tag_hierarchy()
         category_by_year = dir_hierarchy.get("category_by_year", {})
         subcategory_by_year_category = dir_hierarchy.get("subcategory_by_year_category", {})
@@ -12481,8 +12510,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if dir_hierarchy.get("subcategory_by_category")
             else catalog_store.list_subcategories_by_category()
         )
-        return {
-            "tags": catalog_store.list_used_tags(),
+        result = {
+            "tags": used_tags,
             "tag_groups": {
                 **tag_groups,
                 "category_by_year": category_by_year,
@@ -12490,6 +12519,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 "subcategory_by_year_category": subcategory_by_year_category,
             },
         }
+        catalog_tags_api_cache["signature"] = signature
+        catalog_tags_api_cache["data"] = result
+        return result
 
     @app.get("/api/v1/color-card/libraries")
     def api_list_color_card_libraries(request: Request) -> Dict[str, Any]:
