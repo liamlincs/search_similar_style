@@ -6748,10 +6748,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!canProductView) return;
       const data = await api("/api/v1/catalog/tags");
       const groups = data.tag_groups || {};
+      const categories = Array.isArray(groups.category) && groups.category.length ? groups.category : ["单品", "罗纹", "毛织配件", "布匹"];
       state.tagGroups = {
-        year: groups.year || [],
-        category: groups.category || ["单品", "罗纹", "毛织配件", "布匹"],
-        subcategory: (groups.subcategory || []).filter((name) => String(name || "").trim() !== "暂无"),
+        year: Array.isArray(groups.year) ? groups.year : [],
+        category: categories,
+        subcategory: (Array.isArray(groups.subcategory) ? groups.subcategory : []).filter((name) => String(name || "").trim() !== "暂无"),
         categoryByYear: groups.category_by_year || {},
         subcategoryByCategory: groups.subcategory_by_category || {},
         subcategoryByYearCategory: groups.subcategory_by_year_category || {},
@@ -12333,6 +12334,27 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         _catalog_require_permission(request, "product:view")
         tag_groups = catalog_store.list_tag_groups()
         dir_hierarchy = _catalog_dir_tag_hierarchy()
+        category_by_year = dir_hierarchy.get("category_by_year", {})
+        subcategory_by_year_category = dir_hierarchy.get("subcategory_by_year_category", {})
+        if category_by_year:
+            years = [*tag_groups.get("year", [])]
+            categories = [*tag_groups.get("category", [])]
+            for year, year_categories in category_by_year.items():
+                if year and year not in years:
+                    years.append(year)
+                for category in year_categories or []:
+                    if category and category not in categories:
+                        categories.append(category)
+            tag_groups["year"] = sorted(years, key=lambda item: str(item).lower())
+            tag_groups["category"] = categories
+        if subcategory_by_year_category:
+            subcategories = [item for item in tag_groups.get("subcategory", []) if str(item or "").strip() != "暂无"]
+            for year_categories in subcategory_by_year_category.values():
+                for year_subcategories in (year_categories or {}).values():
+                    for subcategory in year_subcategories or []:
+                        if subcategory and subcategory not in subcategories:
+                            subcategories.append(subcategory)
+            tag_groups["subcategory"] = subcategories
         subcategory_by_category = (
             dir_hierarchy.get("subcategory_by_category")
             if dir_hierarchy.get("subcategory_by_category")
@@ -12342,9 +12364,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             "tags": catalog_store.list_used_tags(),
             "tag_groups": {
                 **tag_groups,
-                "category_by_year": dir_hierarchy.get("category_by_year", {}),
+                "category_by_year": category_by_year,
                 "subcategory_by_category": subcategory_by_category,
-                "subcategory_by_year_category": dir_hierarchy.get("subcategory_by_year_category", {}),
+                "subcategory_by_year_category": subcategory_by_year_category,
             },
         }
 
