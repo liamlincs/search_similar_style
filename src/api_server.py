@@ -6870,6 +6870,18 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const index = text.indexOf(":");
       return index > 0 ? { type: text.slice(0, index), name: text.slice(index + 1) } : { type: "", name: text };
     }
+    function uniqueNames(values) {
+      const seen = new Set();
+      const out = [];
+      (values || []).forEach((value) => {
+        const clean = String(value || "").trim();
+        const key = clean.toLowerCase();
+        if (!clean || seen.has(key)) return;
+        seen.add(key);
+        out.push(clean);
+      });
+      return out;
+    }
     function tagLabel(type) {
       return { year: "年份", category: "类别", subcategory: "细类" }[type] || "标签";
     }
@@ -6877,14 +6889,30 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       if (!canProductView) return;
       const data = await api("/api/v1/catalog/tags");
       const groups = data.tag_groups || {};
-      const categories = Array.isArray(groups.category) && groups.category.length ? groups.category : ["单品", "罗纹", "毛织配件", "布匹"];
+      const categoryByYear = groups.category_by_year || {};
+      const subcategoryByCategory = groups.subcategory_by_category || {};
+      const subcategoryByYearCategory = groups.subcategory_by_year_category || {};
+      const yearsFromHierarchy = Object.keys(categoryByYear).filter(Boolean);
+      const categoriesFromHierarchy = Object.values(categoryByYear).flat().filter(Boolean);
+      const subcategoriesFromHierarchy = Object.values(subcategoryByYearCategory).flatMap((categories) => (
+        Object.values(categories || {}).flat()
+      )).filter((name) => String(name || "").trim() && String(name || "").trim() !== "暂无");
+      const years = uniqueNames(Array.isArray(groups.year) ? groups.year.concat(yearsFromHierarchy) : yearsFromHierarchy);
+      const categories = uniqueNames(
+        Array.isArray(groups.category) && groups.category.length
+          ? groups.category.concat(categoriesFromHierarchy)
+          : categoriesFromHierarchy.length
+            ? categoriesFromHierarchy
+            : ["单品", "罗纹", "毛织配件", "布匹"]
+      );
       state.tagGroups = {
-        year: Array.isArray(groups.year) ? groups.year : [],
+        year: years,
         category: categories,
-        subcategory: (Array.isArray(groups.subcategory) ? groups.subcategory : []).filter((name) => String(name || "").trim() !== "暂无"),
-        categoryByYear: groups.category_by_year || {},
-        subcategoryByCategory: groups.subcategory_by_category || {},
-        subcategoryByYearCategory: groups.subcategory_by_year_category || {},
+        subcategory: uniqueNames((Array.isArray(groups.subcategory) ? groups.subcategory : []).concat(subcategoriesFromHierarchy))
+          .filter((name) => String(name || "").trim() !== "暂无"),
+        categoryByYear,
+        subcategoryByCategory,
+        subcategoryByYearCategory,
       };
       $("yearOptions").innerHTML = state.tagGroups.year.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
       $("categoryOptions").innerHTML = state.tagGroups.category.map((x) => `<option value="${escapeHtml(x)}"></option>`).join("");
