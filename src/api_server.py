@@ -66,7 +66,14 @@ from search_similar_return_code import (
 )
 from features import extract_garment_color_feature
 from recolor_service import RECOLOR_OUTPUT_DIR, recolor_region, recolor_region_ai
-from catalog_store import CatalogStore, derive_year_from_style_code, make_typed_tag, parse_catalog_tag
+from catalog_store import (
+    CatalogStore,
+    DEFAULT_CATEGORY_TAGS,
+    DEFAULT_SUBCATEGORY_TAGS,
+    derive_year_from_style_code,
+    make_typed_tag,
+    parse_catalog_tag,
+)
 from color_card_store import ColorCardStore
 from color_card_importer import read_color_rows, slugify_library_id
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image, _run_rapidocr
