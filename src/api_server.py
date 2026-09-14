@@ -747,6 +747,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_prewarm_image_cache_max_edge = max(128, min(2048, int(catalog_cfg.get("prewarm_image_cache_max_edge", catalog_image_max_edge))))
     catalog_prewarm_image_cache_quality = max(40, min(95, int(catalog_cfg.get("prewarm_image_cache_quality", catalog_image_quality))))
     catalog_trust_image_cache = bool(catalog_cfg.get("trust_image_cache", False))
+    catalog_tag_sync_cache: Dict[str, Any] = {"signature": None, "data": {}}
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
@@ -1622,6 +1623,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         paths.extend(sorted(p for p in standard_dir.glob("_tag_sync*.json") if p.is_file()))
         return paths
 
+    def _catalog_tag_sync_signature(paths: List[Path]) -> tuple[tuple[str, int, int], ...]:
+        signature: List[tuple[str, int, int]] = []
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            signature.append((path.name, int(stat.st_mtime_ns), int(stat.st_size)))
+        return tuple(signature)
+
     def _tag_path_from_source_rel_path(source_rel_path: str) -> Dict[str, Any] | None:
         parts = [part.strip() for part in Path(str(source_rel_path or "")).parts if part.strip()]
         if len(parts) < 3 or not re.fullmatch(r"20\d{2}", parts[0]):
@@ -1638,7 +1649,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def _catalog_dir_tag_hierarchy() -> Dict[str, Any]:
         paths = _catalog_tag_sync_paths()
         if not paths:
+            catalog_tag_sync_cache["signature"] = None
+            catalog_tag_sync_cache["data"] = {}
             return {}
+        signature = _catalog_tag_sync_signature(paths)
+        if catalog_tag_sync_cache.get("signature") == signature:
+            cached = catalog_tag_sync_cache.get("data")
+            return cached if isinstance(cached, dict) else {}
         by_year_category: Dict[str, Dict[str, List[str]]] = {}
         by_category: Dict[str, List[str]] = {}
         categories_by_year: Dict[str, List[str]] = {}
@@ -1691,12 +1708,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             values.sort(key=lambda item: str(item).lower())
         for values in categories_by_year.values():
             values.sort(key=lambda item: str(item).lower())
-        return {
+        result = {
             "subcategory_by_year_category": by_year_category,
             "subcategory_by_category": by_category,
             "category_by_year": categories_by_year,
             "source_files": [path.name for path in paths],
         }
+        catalog_tag_sync_cache["signature"] = signature
+        catalog_tag_sync_cache["data"] = result
+        logging.info(
+            "catalog tag sync hierarchy loaded: files=%d years=%d categories=%d",
+            len(paths),
+            len(by_year_category),
+            len(by_category),
+        )
+        return result
 
     def _apply_nas_import_manifest() -> Dict[str, Any]:
         manifest_paths: List[Path] = []
