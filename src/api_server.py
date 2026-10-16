@@ -3096,6 +3096,28 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         )
         return resp
 
+    @app.middleware("http")
+    async def report_unhandled_request_error(request: Request, call_next):
+        """Do not let an endpoint exception turn into a blank H5 request.
+
+        The catalog-token branch in ``check_api_key`` calls ``call_next`` directly;
+        an exception raised after an upload was saved therefore used to escape the
+        access-log statements and the web-view only showed a pending request.  Keep
+        the traceback in the server log and return JSON so the H5 can display it.
+        """
+        try:
+            return await call_next(request)
+        except Exception as exc:
+            logging.exception(
+                "unhandled request error method=%s path=%s user=%s",
+                request.method,
+                request.url.path,
+                getattr(request.state, "api_user", "unknown"),
+            )
+            if request.url.path == "/search":
+                return JSONResponse(status_code=500, content={"detail": "图搜处理失败，请稍后重试"})
+            raise
+
     def _build_image_url_with_preview(base_url: str, image_name: str, max_edge: int, quality: int) -> str:
         safe = Path(image_name).name
         if not safe:
@@ -9219,9 +9241,29 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         }
         const headers = {};
         if (token) headers["X-Catalog-Token"] = token;
-        const resp = await fetch("/search", { method: "POST", body: form, headers });
+        // 微信 web-view 没有可靠的默认超时；请求异常时否则会一直停在“图搜中”。
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 60000);
+        let resp;
+        try {
+          resp = await fetch("/search", { method: "POST", body: form, headers, signal: controller.signal });
+        } catch (err) {
+          if (err && err.name === "AbortError") throw new Error("图搜处理超时，请缩小图片范围后重试");
+          throw err;
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
         if (resp.status === 401) throw new Error("图搜未授权，请检查内网调测配置");
-        if (!resp.ok) throw new Error(await resp.text());
+        if (!resp.ok) {
+          let detail = "图搜处理失败，请稍后重试";
+          try {
+            const errorData = await resp.json();
+            detail = errorData.detail || detail;
+          } catch (_) {
+            // 网关可能返回 HTML 或空响应，使用上面的稳定提示。
+          }
+          throw new Error(detail);
+        }
         const data = await resp.json();
         renderImageSearchResults(data.topk_style_codes || []);
         setStatus(`找到 ${(data.topk_style_codes || []).length} 个相似款`, false);
