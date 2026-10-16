@@ -1189,6 +1189,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         )
         logging.info("api loaded primary db: %d items", len(next_names))
 
+        # Publish the core index before building optional secondary/region indexes.
+        # Region views can take a long time to compute for a large catalog; the
+        # primary index is sufficient to serve searches while those extras load.
+        if reason == "startup":
+            with search_assets_lock:
+                has_published_assets = bool(names) and feats is not None
+                if not has_published_assets and next_names and next_feats is not None:
+                    names = next_names
+                    feats = next_feats
+            if not has_published_assets and next_names and next_feats is not None:
+                app.state.search_ready = True
+                app.state.search_ready_detail = (
+                    "primary search assets ready; loading optional search indexes"
+                )
+
         next_secondary_names: List[str] = []
         next_secondary_feats: np.ndarray | None = None
         if secondary_feature_backend and secondary_feature_backend != feature_backend:
@@ -1221,6 +1236,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 region_crop_recall_backend,
                 len(next_region_names),
             )
+            if reason == "startup" and next_region_names and next_region_feats is not None:
+                with search_assets_lock:
+                    region_names = next_region_names
+                    region_feats = next_region_feats
+                app.state.search_ready_detail = (
+                    "primary and region indexes ready; loading optional search caches"
+                )
 
         next_rerank_candidate_cache: Dict[str, List[Dict[str, Any]]] = {}
         if rerank_enabled and preload_rerank_candidate_cache:
@@ -1373,8 +1395,14 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 app.state.search_ready_detail = "search assets ready"
                 _prewarm_catalog_image_cache()
             except Exception as exc:
-                app.state.search_ready = False
-                app.state.search_ready_detail = f"search assets load failed: {exc}"
+                with search_assets_lock:
+                    has_usable_primary = bool(names) and feats is not None
+                app.state.search_ready = has_usable_primary
+                app.state.search_ready_detail = (
+                    f"primary search assets ready; optional index load failed: {exc}"
+                    if has_usable_primary
+                    else f"search assets load failed: {exc}"
+                )
                 logging.exception("search assets background reload failed: reason=%s", reason)
 
     def _start_search_assets_reload(reason: str) -> Dict[str, Any]:
