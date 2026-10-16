@@ -13415,6 +13415,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             crop_norm_h = float(ch)
                 except Exception:
                     crop_debug = ""
+            # 对“严格小区域”优先使用用户实际框选的紧裁剪图。此前这里继续使用
+            # auto-expand 后的上下文图，针织花型/胸前贴花只占很小比例，CLIP 和
+            # 区域特征会被衬衫格纹、人物背景带偏，导致结果稳定落到格纹/棋盘类款式。
+            # tight_query_path 仍保留在同一个请求的临时文件生命周期内。
+            if strict_small_region_crop and tight_query_available:
+                query_path = tight_query_path
+                crop_debug += ":tight-primary"
             query_width = 0
             query_height = 0
             try:
