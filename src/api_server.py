@@ -13415,13 +13415,23 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                             crop_norm_h = float(ch)
                 except Exception:
                     crop_debug = ""
-            # 对“严格小区域”优先使用用户实际框选的紧裁剪图。此前这里继续使用
-            # auto-expand 后的上下文图，针织花型/胸前贴花只占很小比例，CLIP 和
-            # 区域特征会被衬衫格纹、人物背景带偏，导致结果稳定落到格纹/棋盘类款式。
-            # tight_query_path 仍保留在同一个请求的临时文件生命周期内。
-            if strict_small_region_crop and tight_query_available:
+            # 紧裁剪依赖区域特征库来召回局部细节。若区域库尚未加载或为空，
+            # 继续用紧裁剪做整图召回会偏向袜子、布样等局部纹理相似的款式；
+            # 此时保留 auto-expand 上下文，直到区域库可用。
+            region_feature_db_ready = False
+            if region_crop_recall_enabled:
+                with search_assets_lock:
+                    region_feature_db_ready = bool(
+                        region_feats is not None
+                        and len(region_names) > 0
+                        and len(region_names) == len(region_feats)
+                    )
+            if strict_small_region_crop and tight_query_available and region_feature_db_ready:
+                # tight_query_path remains alive for the lifetime of this request.
                 query_path = tight_query_path
                 crop_debug += ":tight-primary"
+            elif strict_small_region_crop and tight_query_available:
+                crop_debug += ":expanded-no-region-db"
             query_width = 0
             query_height = 0
             try:
@@ -13526,7 +13536,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     max_boost=label_memory_max_boost,
                     min_boost=label_memory_min_boost,
                 )
-                if label_memory_enabled
+                if label_memory_enabled and not (strict_small_region_crop and search_scope == "region_primary")
                 else {}
             )
             t_label_memory = time.perf_counter() - t_label_memory0
