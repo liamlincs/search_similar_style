@@ -20,10 +20,39 @@ def propose_query_views(image: Image.Image) -> list[Image.Image]:
     # Tall promotional collages commonly place the garment detail in a lower
     # half-width panel. Avoid feeding the full collage text and margins to CLIP.
     if height >= 640 and width > 0 and width / float(height) <= 0.50:
-        x0, x1 = 0, int(width * 0.52)
-        y0, y1 = int(height * 0.28), int(height * 0.71)
-        if x1 - x0 >= 48 and y1 - y0 >= 48:
-            views.append(image.crop((x0, y0, x1, y1)))
+        # A sharp horizontal panel boundary distinguishes a multi-photo
+        # catalog collage from a continuous tall screenshot. Use a focused
+        # sleeve-detail view instead of the broad crop so unrelated high
+        # context scores cannot crowd its relevant candidates out.
+        center_x0, center_x1 = int(width * 0.08), int(width * 0.92)
+        if center_x1 > center_x0:
+            row_delta = np.abs(
+                rgb[1:, center_x0:center_x1].astype(np.int16)
+                - rgb[:-1, center_x0:center_x1].astype(np.int16)
+            ).mean(axis=(1, 2))
+        else:
+            row_delta = np.zeros(height - 1, dtype=np.float32)
+        boundary_y0, boundary_y1 = int(height * 0.30), int(height * 0.75)
+        has_collage_boundary = bool(
+            boundary_y1 > boundary_y0
+            and float(np.max(row_delta[boundary_y0:boundary_y1])) >= 18.0
+        )
+        if has_collage_boundary:
+            detail_box = (
+                int(width * 0.04),
+                int(height * 0.43),
+                int(width * 0.38),
+                int(height * 0.59),
+            )
+            if detail_box[2] - detail_box[0] >= 48 and detail_box[3] - detail_box[1] >= 48:
+                detail_view = image.crop(detail_box)
+                detail_view.info["search_roi_profile"] = "collage_detail"
+                views.append(detail_view)
+        else:
+            x0, x1 = 0, int(width * 0.52)
+            y0, y1 = int(height * 0.28), int(height * 0.71)
+            if x1 - x0 >= 48 and y1 - y0 >= 48:
+                views.append(image.crop((x0, y0, x1, y1)))
         return views
 
     if cv2 is None or width < 48 or height < 48:

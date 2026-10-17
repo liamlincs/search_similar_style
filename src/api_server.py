@@ -15428,10 +15428,25 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 query_roi_views = propose_query_views(roi_source.convert("RGB"))
                             roi_source_kind = "crop" if crop_active else "full"
                         if query_roi_views:
+                            focused_collage_detail = any(
+                                str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                == "collage_detail"
+                                for view in query_roi_views
+                            )
+                            query_roi_weight = (
+                                max(full_context_query_roi_weight, 1.25)
+                                if focused_collage_detail
+                                else full_context_query_roi_weight
+                            )
+                            query_roi_label = (
+                                f"{roi_source_kind}:collage_detail:{len(query_roi_views)}"
+                                if focused_collage_detail
+                                else f"{roi_source_kind}:{len(query_roi_views)}"
+                            )
                             region_debug = (
-                                f"{region_debug}|query_roi={roi_source_kind}:{len(query_roi_views)}"
+                                f"{region_debug}|query_roi={query_roi_label}"
                                 if region_debug
-                                else f"query_roi={roi_source_kind}:{len(query_roi_views)}"
+                                else f"query_roi={query_roi_label}"
                             )
                             ranked_query_rois = _search_topk_images_from_views(
                                 query_roi_views,
@@ -15453,7 +15468,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 ranked = merge_ranked_image_lists(
                                     ranked,
                                     ranked_query_rois,
-                                    secondary_weight=full_context_query_roi_weight,
+                                    secondary_weight=query_roi_weight,
                                 )
                     except Exception:
                         logging.exception("full-context query ROI recall failed")
