@@ -29,7 +29,62 @@ def propose_query_views(image: Image.Image) -> list[Image.Image]:
     if cv2 is None or width < 48 or height < 48:
         return views
 
+    # Video screenshots often have black side bars and UI chrome. The useful
+    # collar detail is in the upper-middle of the garment, so use that original
+    # resolution crop directly instead of embedding the whole screenshot.
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    side_w = max(1, int(width * 0.07))
+    sample_h = max(1, int(height * 0.80))
+    left_dark = float(np.mean(gray[:sample_h, :side_w] < 35))
+    right_dark = float(np.mean(gray[:sample_h, width - side_w :] < 35))
+    center_dark = float(
+        np.mean(gray[:sample_h, int(width * 0.30) : int(width * 0.70)] < 35)
+    )
+    if left_dark >= 0.60 and right_dark >= 0.60 and center_dark <= 0.30:
+        views.append(
+            image.crop(
+                (
+                    int(width * 0.38),
+                    int(height * 0.25),
+                    int(width * 0.88),
+                    int(height * 0.53),
+                )
+            )
+        )
+        return views
+
+    # Detect a long red/white striped accessory draped over a garment. Requiring
+    # a sustained run of alternating red and light rows keeps isolated red
+    # patches and plaid trousers from creating this crop.
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    red = ((hsv[:, :, 0] <= 10) | (hsv[:, :, 0] >= 170)) & (hsv[:, :, 1] >= 65) & (hsv[:, :, 2] >= 55)
+    light = (hsv[:, :, 1] < 45) & (hsv[:, :, 2] > 180)
+    x0, x1 = int(width * 0.25), int(width * 0.75)
+    stripe_hits: list[bool] = []
+    for y_ratio in np.linspace(0.08, 0.85, 32):
+        y0 = int(y_ratio * height)
+        y1 = max(y0 + 1, int((y_ratio + 0.025) * height))
+        stripe_hits.append(
+            float(np.mean(red[y0:y1, x0:x1])) > 0.12
+            and float(np.mean(light[y0:y1, x0:x1])) > 0.10
+        )
+    longest_stripe_run = run = 0
+    for hit in stripe_hits:
+        run = run + 1 if hit else 0
+        longest_stripe_run = max(longest_stripe_run, run)
+    if longest_stripe_run >= 14:
+        views.append(
+            image.crop(
+                (
+                    int(width * 0.30),
+                    int(height * 0.18),
+                    int(width * 0.80),
+                    int(height * 0.80),
+                )
+            )
+        )
+        return views
+
     # Isolate small dark-blue garment panels such as knitted chest pockets.
     mask = cv2.inRange(hsv, np.array([90, 45, 0]), np.array([145, 255, 150]))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8), iterations=2)
