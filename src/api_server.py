@@ -15423,6 +15423,24 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                     roi_source = query_original_img.crop(roi_box)
                                     roi_source_kind = "crop"
                             query_roi_views = propose_query_views(roi_source)
+                            # A user crop can still contain a tall slice of a
+                            # catalog collage. The collage-detail coordinates
+                            # are calibrated against the uploaded image, so
+                            # applying them again inside that manual crop
+                            # would shift the ROI and can lose the target.
+                            if crop_active and any(
+                                str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                == "collage_detail"
+                                for view in query_roi_views
+                            ):
+                                full_query_roi_views = propose_query_views(query_original_img)
+                                if any(
+                                    str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                    == "collage_detail"
+                                    for view in full_query_roi_views
+                                ):
+                                    query_roi_views = full_query_roi_views
+                                    roi_source_kind = "full"
                         else:
                             with Image.open(query_path) as roi_source:
                                 query_roi_views = propose_query_views(roi_source.convert("RGB"))
