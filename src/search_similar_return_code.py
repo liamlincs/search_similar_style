@@ -824,6 +824,43 @@ def build_label_memory_prior_from_refs(
     return prior
 
 
+def build_label_memory_prior_from_views(
+    query_views: List[Image.Image],
+    refs: List[Tuple[str, np.ndarray]],
+    sim_threshold: float = 0.90,
+    max_boost: float = 0.08,
+    min_boost: float = 0.0,
+    min_score_margin: float = 0.04,
+) -> Dict[str, float]:
+    """Return a label prior only for a clear match from focused query views."""
+    if not query_views or not refs:
+        return {}
+    try:
+        q = np.vstack([extract_feature_clip(view.convert("RGB")) for view in query_views]).astype(np.float32)
+    except Exception:
+        return {}
+
+    best_by_code: Dict[str, float] = {}
+    for code, ref_features in refs:
+        r = np.asarray(ref_features, dtype=np.float32)
+        if r.ndim == 1:
+            r = r.reshape(1, -1)
+        if r.size == 0:
+            continue
+        score = float(np.max(q @ r.T))
+        best_by_code[code] = max(best_by_code.get(code, -1.0), score)
+    if not best_by_code:
+        return {}
+    ordered = sorted(best_by_code.items(), key=lambda item: item[1], reverse=True)
+    best_code, best_score = ordered[0]
+    second_score = float(ordered[1][1]) if len(ordered) > 1 else -1.0
+    if best_score < float(sim_threshold) or best_score - second_score < max(0.0, float(min_score_margin)):
+        return {}
+    strength = min(1.0, max(0.0, (best_score - float(sim_threshold)) / max(1e-6, 1.0 - float(sim_threshold))))
+    boost = max(float(min_boost), float(max_boost) * strength)
+    return {best_code: boost} if boost > 0.0 else {}
+
+
 def precompute_rerank_candidate_cache(
     standard_dir: Path,
     names: List[str],
