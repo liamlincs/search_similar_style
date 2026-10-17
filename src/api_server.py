@@ -15403,18 +15403,36 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 )
                 if (
                     full_context_query_roi_enabled
-                    and not crop_active
                     and active_match_mode == "similar_style"
                     and not primary_region_index_ready
                     and len(req_names) == len(req_feats)
                 ):
                     try:
                         if query_original_img is not None:
-                            query_roi_views = propose_query_views(query_original_img)
+                            roi_source = query_original_img
+                            roi_source_kind = "full"
+                            if crop_active and crop_norm_w > 0.0 and crop_norm_h > 0.0:
+                                original_w, original_h = query_original_img.size
+                                roi_box = (
+                                    int(round(crop_norm_x * original_w)),
+                                    int(round(crop_norm_y * original_h)),
+                                    int(round((crop_norm_x + crop_norm_w) * original_w)),
+                                    int(round((crop_norm_y + crop_norm_h) * original_h)),
+                                )
+                                if roi_box[2] - roi_box[0] >= 48 and roi_box[3] - roi_box[1] >= 48:
+                                    roi_source = query_original_img.crop(roi_box)
+                                    roi_source_kind = "crop"
+                            query_roi_views = propose_query_views(roi_source)
                         else:
                             with Image.open(query_path) as roi_source:
                                 query_roi_views = propose_query_views(roi_source.convert("RGB"))
+                            roi_source_kind = "crop" if crop_active else "full"
                         if query_roi_views:
+                            region_debug = (
+                                f"{region_debug}|query_roi={roi_source_kind}:{len(query_roi_views)}"
+                                if region_debug
+                                else f"query_roi={roi_source_kind}:{len(query_roi_views)}"
+                            )
                             ranked_query_rois = _search_topk_images_from_views(
                                 query_roi_views,
                                 req_names,
