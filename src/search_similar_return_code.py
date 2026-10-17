@@ -841,24 +841,46 @@ def build_label_memory_prior_from_views(
         return {}
 
     best_by_code: Dict[str, float] = {}
+    best_ref_by_code: Dict[str, np.ndarray] = {}
     for code, ref_features in refs:
         r = np.asarray(ref_features, dtype=np.float32)
         if r.ndim == 1:
             r = r.reshape(1, -1)
         if r.size == 0:
             continue
-        score = float(np.max(q @ r.T))
-        best_by_code[code] = max(best_by_code.get(code, -1.0), score)
+        similarities = q @ r.T
+        flat_index = int(np.argmax(similarities))
+        score = float(similarities.reshape(-1)[flat_index])
+        if score > best_by_code.get(code, -1.0):
+            best_by_code[code] = score
+            ref_index = flat_index % r.shape[0]
+            best_ref_by_code[code] = r[ref_index].copy()
     if not best_by_code:
         return {}
     ordered = sorted(best_by_code.items(), key=lambda item: item[1], reverse=True)
     best_code, best_score = ordered[0]
     second_score = float(ordered[1][1]) if len(ordered) > 1 else -1.0
-    if best_score < float(sim_threshold) or best_score - second_score < max(0.0, float(min_score_margin)):
+    if best_score < float(sim_threshold):
         return {}
+    equivalent_codes: List[str] = []
+    required_margin = max(0.0, float(min_score_margin))
+    if best_score - second_score < required_margin:
+        winner_ref = best_ref_by_code.get(best_code)
+        if winner_ref is not None:
+            equivalent_codes = [
+                code
+                for code, score in ordered[1:]
+                if best_score - score < required_margin
+                and code in best_ref_by_code
+                and np.allclose(winner_ref, best_ref_by_code[code], rtol=1e-6, atol=1e-6)
+            ]
+        if not equivalent_codes:
+            return {}
     strength = min(1.0, max(0.0, (best_score - float(sim_threshold)) / max(1e-6, 1.0 - float(sim_threshold))))
     boost = max(float(min_boost), float(max_boost) * strength)
-    return {best_code: boost} if boost > 0.0 else {}
+    if boost <= 0.0:
+        return {}
+    return {code: boost for code in [best_code, *equivalent_codes]}
 
 
 def precompute_rerank_candidate_cache(
