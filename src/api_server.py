@@ -13609,11 +13609,11 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 float(base_code_prior_boost.get(code, 0.0)),
                                 float(boost),
                             )
-                    # Flat-lay photos can show several small accessories
-                    # scattered across larger garments. Score four overlapping
-                    # detail windows so the garment context does not drown out
-                    # a scarf, pocket, or other labeled item. The lower score
-                    # threshold is paired with a strict winner margin.
+                    # Portrait and flat-lay photos can hide a distinct collar
+                    # or small accessory among larger garments. Score focused
+                    # detail windows so broad garment context does not drown
+                    # out a labeled item. The lower threshold is paired with a
+                    # strict winner margin.
                     if label_h >= 640 and 0.50 <= label_aspect <= 1.10:
                         accessory_views = [
                             label_source.crop(
@@ -13629,6 +13629,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 (0.60, 0.10, 0.94, 0.40),
                                 (0.00, 0.27, 0.38, 0.59),
                                 (0.28, 0.49, 0.62, 0.83),
+                                (0.15, 0.38, 0.76, 0.49),
                             )
                         ]
                         accessory_prior = build_label_memory_prior_from_views(
