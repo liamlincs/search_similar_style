@@ -13609,6 +13609,41 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                 float(base_code_prior_boost.get(code, 0.0)),
                                 float(boost),
                             )
+                    # Flat-lay photos can show several small accessories
+                    # scattered across larger garments. Score four overlapping
+                    # detail windows so the garment context does not drown out
+                    # a scarf, pocket, or other labeled item. The lower score
+                    # threshold is paired with a strict winner margin.
+                    if label_h >= 640 and 0.50 <= label_aspect <= 1.10:
+                        accessory_views = [
+                            label_source.crop(
+                                (
+                                    int(label_w * left),
+                                    int(label_h * top),
+                                    int(label_w * right),
+                                    int(label_h * bottom),
+                                )
+                            )
+                            for left, top, right, bottom in (
+                                (0.17, 0.00, 0.48, 0.29),
+                                (0.60, 0.10, 0.94, 0.40),
+                                (0.00, 0.27, 0.38, 0.59),
+                                (0.28, 0.49, 0.62, 0.83),
+                            )
+                        ]
+                        accessory_prior = build_label_memory_prior_from_views(
+                            accessory_views,
+                            req_label_memory_refs,
+                            sim_threshold=max(0.0, float(label_memory_sim_threshold) - 0.04),
+                            max_boost=label_memory_max_boost,
+                            min_boost=label_memory_min_boost,
+                            min_score_margin=0.04,
+                        )
+                        for code, boost in accessory_prior.items():
+                            base_code_prior_boost[code] = max(
+                                float(base_code_prior_boost.get(code, 0.0)),
+                                float(boost),
+                            )
                 except Exception:
                     logging.exception("center chest label-memory proposal failed")
             t_label_memory = time.perf_counter() - t_label_memory0
