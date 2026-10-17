@@ -13577,38 +13577,38 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 if label_memory_enabled and not (strict_small_region_crop and search_scope == "region_primary")
                 else {}
             )
-            # Full portrait uploads can hide a labeled garment motif inside
-            # the chest area. Compare a focused center crop against labeled
-            # query refs; only a high-similarity, clearly separated match is
-            # allowed to create an extra label prior.
-            if label_memory_enabled and not crop_active and not base_code_prior_boost and query_path.exists():
+            # Portrait uploads can hide a labeled garment motif inside the
+            # chest area. Keep the original upload available for this proposal
+            # even when the request also contains an H5 selection rectangle:
+            # the expanded search crop can dilute a distinctive patch. Only a
+            # high-similarity, clearly separated focused match adds a prior.
+            if label_memory_enabled and query_original_img is not None:
                 try:
-                    with Image.open(query_path) as label_source0:
-                        label_source = label_source0.convert("RGB")
-                        label_w, label_h = label_source.size
-                        label_aspect = label_w / float(max(1, label_h))
-                        if label_h >= 640 and 0.55 <= label_aspect <= 0.90:
-                            chest_view = label_source.crop(
-                                (
-                                    int(label_w * 0.31),
-                                    int(label_h * 0.47),
-                                    int(label_w * 0.63),
-                                    int(label_h * 0.79),
-                                )
+                    label_source = query_original_img.convert("RGB")
+                    label_w, label_h = label_source.size
+                    label_aspect = label_w / float(max(1, label_h))
+                    if label_h >= 640 and 0.55 <= label_aspect <= 0.90:
+                        chest_view = label_source.crop(
+                            (
+                                int(label_w * 0.31),
+                                int(label_h * 0.47),
+                                int(label_w * 0.63),
+                                int(label_h * 0.79),
                             )
-                            chest_prior = build_label_memory_prior_from_views(
-                                [chest_view],
-                                req_label_memory_refs,
-                                sim_threshold=label_memory_sim_threshold,
-                                max_boost=label_memory_max_boost,
-                                min_boost=label_memory_min_boost,
-                                min_score_margin=0.04,
+                        )
+                        chest_prior = build_label_memory_prior_from_views(
+                            [chest_view],
+                            req_label_memory_refs,
+                            sim_threshold=label_memory_sim_threshold,
+                            max_boost=label_memory_max_boost,
+                            min_boost=label_memory_min_boost,
+                            min_score_margin=0.04,
+                        )
+                        for code, boost in chest_prior.items():
+                            base_code_prior_boost[code] = max(
+                                float(base_code_prior_boost.get(code, 0.0)),
+                                float(boost),
                             )
-                            for code, boost in chest_prior.items():
-                                base_code_prior_boost[code] = max(
-                                    float(base_code_prior_boost.get(code, 0.0)),
-                                    float(boost),
-                                )
                 except Exception:
                     logging.exception("center chest label-memory proposal failed")
             t_label_memory = time.perf_counter() - t_label_memory0
