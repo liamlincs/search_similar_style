@@ -76,6 +76,7 @@ from catalog_store import (
 )
 from color_card_store import ColorCardStore
 from color_card_importer import read_color_rows, slugify_library_id
+from query_region_proposals import propose_query_views
 from extract_style_codes import build_header_crops, code_to_filename_prefix, try_extract_code_from_image, _run_rapidocr
 
 
@@ -457,13 +458,15 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     strict_small_dark_motif_rescue_max_rows = int(search_cfg.get("strict_small_dark_motif_rescue_max_rows", 9))
     exact_region_code_prior_scale = float(search_cfg.get("exact_region_code_prior_scale", 0.45))
     exact_region_rescue_enabled = bool(search_cfg.get("exact_region_rescue_enabled", False))
-    region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", True))
+    region_crop_recall_enabled = bool(search_cfg.get("region_crop_recall_enabled", False))
     region_crop_recall_backend = str(search_cfg.get("region_crop_recall_backend", secondary_feature_backend or feature_backend)).strip().lower()
     region_crop_recall_weight = float(search_cfg.get("region_crop_recall_weight", 1.12))
     region_crop_recall_topn_cap = int(search_cfg.get("region_crop_recall_topn_cap", 1200))
     full_context_region_probe_enabled = bool(search_cfg.get("full_context_region_probe_enabled", True))
     full_context_region_probe_max_aspect = float(search_cfg.get("full_context_region_probe_max_aspect", 0.72))
     full_context_region_probe_min_height = int(search_cfg.get("full_context_region_probe_min_height", 640))
+    full_context_query_roi_enabled = bool(search_cfg.get("full_context_query_roi_enabled", True))
+    full_context_query_roi_weight = float(search_cfg.get("full_context_query_roi_weight", 1.15))
     region_crop_suppress_accessory_enabled = bool(search_cfg.get("region_crop_suppress_accessory_enabled", True))
     region_crop_suppress_accessory_min_score = float(search_cfg.get("region_crop_suppress_accessory_min_score", 0.68))
     region_crop_suppress_accessory_wide_min_score = float(search_cfg.get("region_crop_suppress_accessory_wide_min_score", 0.74))
@@ -13347,6 +13350,12 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
             if not upload_bytes:
                 raise HTTPException(status_code=400, detail="empty file")
             _check_search_upload_content_security(upload_bytes, file.filename)
+            query_original_img: Image.Image | None = None
+            try:
+                with Image.open(io.BytesIO(upload_bytes)) as original_image:
+                    query_original_img = ImageOps.exif_transpose(original_image).convert("RGB")
+            except Exception:
+                query_original_img = None
             tf.write(upload_bytes)
             tf.flush()
             query_path = Path(tf.name)
@@ -15278,6 +15287,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     row["score"] = round(display_score, 4)
                     prev_score = display_score
 
+            full_context_query_roi_scores: Dict[str, float] = {}
+
             def _run_search_pass(
                 cand_multiplier: int,
                 recall_cap: int,
@@ -15296,6 +15307,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 pass_region_query_view_consensus_weight: float,
             ) -> tuple[List[tuple[str, float]], List[Dict[str, Any]], float, float, float]:
                 nonlocal region_debug, region_strong_code, region_best_score, region_has_confident_match
+                full_context_query_roi_scores.clear()
 
                 def _search_topk_images_from_views(
                     query_views: List[Image.Image],
@@ -15384,6 +15396,49 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                         ranked_secondary,
                         secondary_weight=secondary_recall_weight,
                     )
+                primary_region_index_ready = bool(
+                    req_region_feats is not None
+                    and len(req_region_names) > 0
+                    and len(req_region_names) == len(req_region_feats)
+                )
+                if (
+                    full_context_query_roi_enabled
+                    and not crop_active
+                    and active_match_mode == "similar_style"
+                    and not primary_region_index_ready
+                    and len(req_names) == len(req_feats)
+                ):
+                    try:
+                        if query_original_img is not None:
+                            query_roi_views = propose_query_views(query_original_img)
+                        else:
+                            with Image.open(query_path) as roi_source:
+                                query_roi_views = propose_query_views(roi_source.convert("RGB"))
+                        if query_roi_views:
+                            ranked_query_rois = _search_topk_images_from_views(
+                                query_roi_views,
+                                req_names,
+                                req_feats,
+                                image_topk,
+                                feature_backend,
+                                eff_w_clip,
+                                eff_w_shape,
+                                eff_w_color,
+                                eff_w_stripe,
+                                query_view_consensus_weight_local=0.0,
+                            )
+                            if ranked_query_rois:
+                                full_context_query_roi_scores.update(
+                                    (name, float(score))
+                                    for name, score in ranked_query_rois[: max(30, top_k * 3)]
+                                )
+                                ranked = merge_ranked_image_lists(
+                                    ranked,
+                                    ranked_query_rois,
+                                    secondary_weight=full_context_query_roi_weight,
+                                )
+                    except Exception:
+                        logging.exception("full-context query ROI recall failed")
                 if region_probe_active and region_crop_recall_enabled and req_region_feats is not None and len(req_region_names) == len(req_region_feats):
                     effective_region_recall_topn_cap = (
                         strict_small_region_recall_topn_cap if strict_small_region_crop else region_crop_recall_topn_cap
@@ -16341,6 +16396,31 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                 scene_text_tokens = [f"skip-region:{region_best_score:.3f}"]
             elif scene_text_hint_enabled and not scene_text_crop_allowed:
                 scene_text_tokens = [f"skip-crop-area:{crop_final_area:.3f}"]
+
+            if full_context_query_roi_scores:
+                roi_min_score = float(search_cfg.get("full_context_query_roi_min_score", min_score))
+                roi_score_by_name = {
+                    name: score
+                    for name, score in full_context_query_roi_scores.items()
+                    if score >= roi_min_score
+                }
+                if roi_score_by_name:
+                    ranked_images = [
+                        (name, max(float(score), roi_score_by_name.get(name, float("-inf"))))
+                        for name, score in ranked_images
+                    ]
+                    rows = topk_style_codes(
+                        ranked_images,
+                        top_k,
+                        min_score=min_score,
+                        code_agg_top_n=code_agg_top_n,
+                        code_agg_alpha=code_agg_alpha,
+                        query_hint_code=query_hint_code,
+                        query_hint_boost=ocr_hint_boost if ocr_hint_enabled else 0.0,
+                        code_prior_boost=code_prior_boost,
+                        display_score_scale=display_score_scale,
+                        display_score_bias=display_score_bias,
+                    )
 
             t_rescue_chain0 = time.perf_counter()
             rescue_step_debug: List[str] = []

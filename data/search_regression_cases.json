@@ -1,6 +1,76 @@
 {
   "cases": [
     {
+      "id": "116_full_image",
+      "query_image": "data/test_samples/116.JPG",
+      "expected_style_code": "KFX23-0041",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "117_full_image",
+      "query_image": "data/test_samples/117.JPG",
+      "expected_style_code": "KF22-0151",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "118_full_image",
+      "query_image": "data/test_samples/118.JPG",
+      "expected_style_code": "GZ23-1360-4",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "120_full_image",
+      "query_image": "data/test_samples/120.JPG",
+      "expected_style_code": "GZ24-0067",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "211_full_image",
+      "query_image": "data/test_samples/211.JPG",
+      "expected_style_code": "GZ24-0450",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "212_full_image",
+      "query_image": "data/test_samples/212.JPG",
+      "expected_style_code": "GZ24-0450",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "264_full_image",
+      "query_image": "data/test_samples/264.JPG",
+      "expected_style_code": "KFZ24-0213",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "288_full_image",
+      "query_image": "data/test_samples/288.JPG",
+      "expected_style_code": "KFB24-0119",
+      "max_rank": 9,
+      "description": "Full uploaded photo. Expected style-code match without a user crop."
+    },
+    {
+      "id": "gb26_0134_2_full_image_t02",
+      "query_image": "data/test_samples/T02.jpg",
+      "expected_style_code": "GB26-0134-2",
+      "max_rank": 1,
+      "description": "Full uploaded product photo with measuring ruler. Regression for full-context retrieval without a user crop."
+    },
+    {
+      "id": "gb26_0203_full_image_t03",
+      "query_image": "data/test_samples/T03.jpg",
+      "expected_style_code": "GB26-0203",
+      "max_rank": 1,
+      "description": "Full uploaded sock product photo. Regression for full-context retrieval without a user crop."
+    },
+    {
       "id": "gz24_0450_region_212",
       "query_image": "data/test_samples/GZ24-0450_region_212.jpg",
       "expected_style_code": "GZ24-0450",

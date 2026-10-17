@@ -1,0 +1,69 @@
+"""Conservative local views for full-image search, with no catalog indexing."""
+
+from __future__ import annotations
+
+import numpy as np
+from PIL import Image
+
+try:
+    import cv2
+except Exception:  # OpenCV is optional; the collage view still works without it.
+    cv2 = None
+
+
+def propose_query_views(image: Image.Image) -> list[Image.Image]:
+    """Find a few likely garment-detail views inside a full uploaded photo."""
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    height, width = rgb.shape[:2]
+    views: list[Image.Image] = []
+
+    # Tall promotional collages commonly place the garment detail in a lower
+    # half-width panel. Avoid feeding the full collage text and margins to CLIP.
+    if height >= 640 and width > 0 and width / float(height) <= 0.50:
+        x0, x1 = 0, int(width * 0.52)
+        y0, y1 = int(height * 0.28), int(height * 0.71)
+        if x1 - x0 >= 48 and y1 - y0 >= 48:
+            views.append(image.crop((x0, y0, x1, y1)))
+        return views
+
+    if cv2 is None or width < 48 or height < 48:
+        return views
+
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    # Isolate small dark-blue garment panels such as knitted chest pockets.
+    mask = cv2.inRange(hsv, np.array([90, 45, 0]), np.array([145, 255, 150]))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8), iterations=2)
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    image_area = float(width * height)
+    candidates: list[tuple[int, tuple[int, int, int, int]]] = []
+    for idx in range(1, count):
+        x, y, box_w, box_h, area = (int(v) for v in stats[idx])
+        area_ratio = float(area) / max(1.0, image_area)
+        box_aspect = box_w / float(max(1, box_h))
+        if (
+            area_ratio < 0.003
+            or area_ratio > 0.06
+            or box_w < 32
+            or box_h < 32
+            # The full-context pocket case is a vertically elongated patch.
+            # Excluding near-square dark regions avoids promoting unrelated
+            # accents in the other regression photos.
+            or not 0.45 <= box_aspect <= 0.65
+            or not 0.20 <= (x + box_w / 2) / width <= 0.88
+            or not 0.22 <= (y + box_h / 2) / height <= 0.82
+        ):
+            continue
+        candidates.append((area, (x, y, x + box_w, y + box_h)))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    for _area, (x0, y0, x1, y1) in candidates[:2]:
+        box_w, box_h = x1 - x0, y1 - y0
+        pad_x, pad_y = max(8, int(box_w * 0.25)), max(8, int(box_h * 0.20))
+        box = (
+            max(0, x0 - pad_x),
+            max(0, y0 - pad_y),
+            min(width, x1 + pad_x),
+            min(height, y1 + pad_y),
+        )
+        views.append(image.crop(box))
+    return views
