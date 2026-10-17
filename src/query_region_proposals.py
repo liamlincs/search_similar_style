@@ -114,6 +114,44 @@ def propose_query_views(image: Image.Image) -> list[Image.Image]:
         )
         return views
 
+    # A saturated pink chest motif on a dark panel is a strong signature of
+    # some garment designs. When it forms a compact, substantial component in
+    # the central body, search a chest crop that keeps the panel and its
+    # surrounding garment context together.
+    if height >= 640 and 0.60 <= width / float(height) <= 1.20:
+        pink = (
+            (hsv[:, :, 0] >= 150)
+            & (hsv[:, :, 0] <= 170)
+            & (hsv[:, :, 1] >= 90)
+            & (hsv[:, :, 2] >= 100)
+        ).astype(np.uint8)
+        count, _labels, stats, centroids = cv2.connectedComponentsWithStats(pink, connectivity=8)
+        image_area = float(width * height)
+        for idx in range(1, count):
+            x, y, box_w, box_h, area = (int(v) for v in stats[idx])
+            center_x, center_y = centroids[idx]
+            fill_ratio = float(area) / max(1.0, float(box_w * box_h))
+            if (
+                float(area) < image_area * 0.004
+                or box_w < 32
+                or box_h < 32
+                or not 0.65 <= box_w / float(max(1, box_h)) <= 1.50
+                or fill_ratio < 0.30
+                or not 0.25 <= float(center_x) / width <= 0.75
+                or not 0.30 <= float(center_y) / height <= 0.70
+            ):
+                continue
+            patch_view = image.crop(
+                (
+                    int(width * 0.22),
+                    int(height * 0.22),
+                    int(width * 0.69),
+                    int(height * 0.68),
+                )
+            )
+            patch_view.info["search_roi_profile"] = "contrast_patch"
+            return [patch_view]
+
     # Isolate small dark-blue garment panels such as knitted chest pockets.
     mask = cv2.inRange(hsv, np.array([90, 45, 0]), np.array([145, 255, 150]))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8), iterations=2)
