@@ -15494,44 +15494,63 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                                     roi_source = query_original_img.crop(roi_box)
                                     roi_source_kind = "crop"
                             query_roi_views = propose_query_views(roi_source)
-                            # A user crop can still contain a tall slice of a
-                            # catalog collage. The collage-detail coordinates
-                            # are calibrated against the uploaded image, so
-                            # applying them again inside that manual crop
-                            # would shift the ROI and can lose the target.
-                            if crop_active and any(
-                                str(getattr(view, "info", {}).get("search_roi_profile", ""))
-                                == "collage_detail"
-                                for view in query_roi_views
-                            ):
+                            # Some proposal coordinates are calibrated against
+                            # the original upload. Recompute them there for a
+                            # user crop so a tight/expanded crop cannot hide a
+                            # detected collage detail or contrasting chest
+                            # motif.
+                            if crop_active:
                                 full_query_roi_views = propose_query_views(query_original_img)
-                                if any(
+                                full_contrast_views = [
+                                    view
+                                    for view in full_query_roi_views
+                                    if str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                    == "contrast_patch"
+                                ]
+                                if full_contrast_views:
+                                    query_roi_views = full_contrast_views
+                                    roi_source_kind = "full"
+                                elif any(
                                     str(getattr(view, "info", {}).get("search_roi_profile", ""))
                                     == "collage_detail"
                                     for view in full_query_roi_views
+                                ) and any(
+                                    str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                    == "collage_detail"
+                                    for view in query_roi_views
                                 ):
-                                    query_roi_views = full_query_roi_views
+                                    query_roi_views = [
+                                        view
+                                        for view in full_query_roi_views
+                                        if str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                        == "collage_detail"
+                                    ]
                                     roi_source_kind = "full"
                         else:
                             with Image.open(query_path) as roi_source:
                                 query_roi_views = propose_query_views(roi_source.convert("RGB"))
                             roi_source_kind = "crop" if crop_active else "full"
                         if query_roi_views:
-                            focused_collage_detail = any(
+                            focused_query_roi = any(
                                 str(getattr(view, "info", {}).get("search_roi_profile", ""))
-                                == "collage_detail"
+                                in {"collage_detail", "contrast_patch"}
                                 for view in query_roi_views
                             )
                             query_roi_weight = (
                                 max(full_context_query_roi_weight, 1.25)
-                                if focused_collage_detail
+                                if focused_query_roi
                                 else full_context_query_roi_weight
                             )
-                            query_roi_label = (
-                                f"{roi_source_kind}:collage_detail:{len(query_roi_views)}"
-                                if focused_collage_detail
-                                else f"{roi_source_kind}:{len(query_roi_views)}"
+                            query_roi_profile = next(
+                                (
+                                    str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                    for view in query_roi_views
+                                    if str(getattr(view, "info", {}).get("search_roi_profile", ""))
+                                    in {"collage_detail", "contrast_patch"}
+                                ),
+                                "",
                             )
+                            query_roi_label = f"{roi_source_kind}:{query_roi_profile + ':' if query_roi_profile else ''}{len(query_roi_views)}"
                             region_debug = (
                                 f"{region_debug}|query_roi={query_roi_label}"
                                 if region_debug
