@@ -9133,17 +9133,21 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         return text;
       }
     }
+    function imageSearchGuideMarkup(noMatch = false) {
+      return `
+        <div class="image-search-empty-guide">
+          ${noMatch ? '<strong>暂无匹配结果</strong>' : ''}
+          <strong>整图搜索和手动框选有什么不同？</strong>
+          <p><b>整图搜索：</b>系统综合整张照片，并自动尝试识别口袋、袖口、领口等局部细节来辅助匹配。</p>
+          <p><b>手动框选：</b>优先根据框内内容找相似款，适合突出领口、口袋或袖口等细节。</p>
+          ${noMatch ? '<p>没有找到结果时，可以换另一种方式再试。</p>' : ''}
+        </div>`;
+    }
     function renderImageSearchResults(rows) {
       const box = $("imageSearchResults");
       const list = rows || [];
       if (!list.length) {
-        box.innerHTML = `
-          <div class="image-search-empty-guide">
-            <strong>整图搜索和手动框选有什么不同？</strong>
-            <p><b>整图搜索：</b>综合整张照片，并尝试识别口袋、袖口、领口等局部细节。</p>
-            <p><b>手动框选：</b>优先根据框内内容找相似款，适合突出领口、口袋或袖口等细节。</p>
-            <p>没有找到结果时，可以换另一种方式再试。</p>
-          </div>`;
+        box.innerHTML = imageSearchGuideMarkup(true);
         return;
       }
       box.innerHTML = list.map((item, index) => `
@@ -9169,6 +9173,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         });
       });
     }
+    $("imageSearchResults").innerHTML = imageSearchGuideMarkup();
     function setImageSearchFile(file) {
       state.imageSearchFile = file || null;
       if (state.imageSearchPreviewUrl) URL.revokeObjectURL(state.imageSearchPreviewUrl);
@@ -9316,7 +9321,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       setImageSearchFile(null);
       $("imageSearchFile").value = "";
       $("imageSearchCamera").value = "";
-      $("imageSearchResults").innerHTML = "";
+      $("imageSearchResults").innerHTML = imageSearchGuideMarkup();
       state.imageSearchCrop = null;
       state.imageSearchDrag = null;
       renderImageCropRect();
