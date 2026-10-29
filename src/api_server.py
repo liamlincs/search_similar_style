@@ -6326,6 +6326,9 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     .color-form-panel .primary { background: #1987d7; color: #fff; }
     .color-form-panel .secondary { background: #eef2f7; color: #0f172a; }
     .empty { padding: 28px 0; color: #64748b; text-align: center; }
+    .image-search-empty-guide { grid-column: 1 / -1; padding: 16px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; color: #475569; font-size: 13px; line-height: 1.6; }
+    .image-search-empty-guide strong { display: block; margin-bottom: 8px; color: #1e293b; font-size: 14px; }
+    .image-search-empty-guide p { margin: 4px 0; }
     .image-search-card { position: sticky; top: 0; z-index: 15; display: grid; gap: 10px; margin: -12px -14px 8px; padding: 0 14px 9px; color: #64748b; background: rgba(245,246,248,.98); border-bottom: 1px solid #e5e7eb; backdrop-filter: blur(10px); }
     .image-search-hint { display: none; }
     .image-upload-box { min-height: 260px; position: relative; display: grid; place-items: center; text-align: center; border: 1px dashed #cfd5df; border-radius: 6px; background: #fafafa; color: #777; padding: 18px; overflow: hidden; }
@@ -9134,7 +9137,13 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
       const box = $("imageSearchResults");
       const list = rows || [];
       if (!list.length) {
-        box.innerHTML = '<div class="empty">暂无匹配结果</div>';
+        box.innerHTML = `
+          <div class="image-search-empty-guide">
+            <strong>整图搜索和手动框选有什么不同？</strong>
+            <p><b>整图搜索：</b>综合整张照片，并尝试识别口袋、袖口、领口等局部细节。</p>
+            <p><b>手动框选：</b>优先根据框内内容找相似款，适合突出领口、口袋或袖口等细节。</p>
+            <p>没有找到结果时，可以换另一种方式再试。</p>
+          </div>`;
         return;
       }
       box.innerHTML = list.map((item, index) => `
