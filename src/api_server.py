@@ -762,6 +762,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     catalog_tags_api_cache: Dict[str, Any] = {"signature": None, "data": None}
     catalog_web_auth_cfg = catalog_cfg.get("web_auth", {})
     catalog_web_auth_enabled = bool(catalog_web_auth_cfg.get("enabled", True))
+    catalog_web_password_login_enabled = bool(catalog_web_auth_cfg.get("password_login_enabled", True))
     catalog_web_users_cfg = catalog_web_auth_cfg.get("users", [])
     catalog_web_users: Dict[str, str] = {}
     if isinstance(catalog_web_users_cfg, list):
@@ -2798,6 +2799,16 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
         is_catalog_api = path.startswith("/api/v1/catalog/")
         is_color_card_api = path.startswith("/api/v1/color-card/")
         is_catalog_route = is_catalog_ui or is_catalog_mobile_alias or is_catalog_login or is_catalog_logout or is_catalog_api or is_color_card_api
+        catalog_token = _catalog_request_token(request) if is_catalog_route else ""
+        if catalog_token:
+            token_fingerprint = hashlib.sha256(catalog_token.encode("utf-8")).hexdigest()[:12]
+            logging.info(
+                "catalog token fingerprint ip=%s method=%s path=%s sha256_12=%s",
+                client_ip,
+                request.method,
+                path,
+                token_fingerprint,
+            )
         allow_public = (
             path in {
                 "/health",
@@ -2909,7 +2920,7 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
                     ua[:200],
                 )
                 return resp
-            web_user = _catalog_read_session_user(request)
+            web_user = _catalog_read_session_user(request) if catalog_web_password_login_enabled else ""
             if web_user:
                 request.state.api_user = f"catalog-web:{web_user}"
                 request.state.catalog_permissions = None
@@ -10023,6 +10034,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     def catalog_login_page(request: Request, error: int = 0) -> HTMLResponse:
         if catalog_web_auth_enabled and _catalog_read_session_user(request):
             return HTMLResponse("", status_code=303, headers={"Location": "/catalog"})
+        if not catalog_web_password_login_enabled:
+            return HTMLResponse("<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>请从小程序进入</title><body style=\"font:16px -apple-system,BlinkMacSystemFont,sans-serif;padding:32px;color:#334155\"><h2>请从微信小程序进入</h2><p>此页面仅接受小程序的有效访问凭证，不提供网页登录。</p></body></html>", status_code=401)
         err_html = '<div class="err">用户名、密码或验证码错误</div>' if int(error or 0) else ""
         html = f"""<!doctype html>
 <html lang="zh-CN">
@@ -10066,6 +10079,8 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     ) -> RedirectResponse:
         if not catalog_web_auth_enabled:
             return RedirectResponse(url="/catalog", status_code=303)
+        if not catalog_web_password_login_enabled:
+            raise HTTPException(status_code=401, detail="web password login disabled; enter through the mini program")
         if (not _catalog_is_login_ok(username, password)) or (not _catalog_is_captcha_ok(captcha)):
             return RedirectResponse(url="/catalog/login?error=1", status_code=303)
         session_value, exp_ts = _catalog_build_session_value(username.strip())
