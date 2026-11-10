@@ -7401,19 +7401,19 @@ def create_app(config_path: Path = DEFAULT_CONFIG) -> FastAPI:
     function productOriginalImageUrl(imageName, fallbackUrl = "") {
       const name = String(imageName || "").trim();
       if (!name) return fallbackUrl || "";
+      // The thumbnail URL already carries the correct image path and any auth/signature
+      // parameters. Rebuilding it from imageName can point at a different/missing file
+      // (and drops deployment prefixes), so retain it and remove only preview options.
+      try {
+        const sourceUrl = new URL(fallbackUrl, window.location.origin);
+        if (sourceUrl.pathname.startsWith("/images/")) {
+          sourceUrl.searchParams.delete("max_edge");
+          sourceUrl.searchParams.delete("q");
+          return sourceUrl.pathname + sourceUrl.search + sourceUrl.hash;
+        }
+      } catch (_) {}
       const query = new URLSearchParams();
       if (token) query.set("token", token);
-      if (!token && fallbackUrl) {
-        try {
-          const sourceUrl = new URL(fallbackUrl, window.location.origin);
-          const exp = sourceUrl.searchParams.get("exp") || "";
-          const sig = sourceUrl.searchParams.get("sig") || "";
-          if (exp && sig) {
-            query.set("exp", exp);
-            query.set("sig", sig);
-          }
-        } catch (_) {}
-      }
       return "/images/" + encodeURIComponent(name) + (query.toString() ? "?" + query.toString() : "");
     }
     function renderProducts() {
